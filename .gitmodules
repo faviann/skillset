@@ -1,0 +1,3 @@
+[submodule "sources/faviann/skills"]
+	path = sources/faviann/skills
+	url = https://github.com/faviann/skills.git
