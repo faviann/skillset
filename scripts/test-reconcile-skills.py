@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -118,15 +118,55 @@ class ReconcileIntegrationTests(unittest.TestCase):
                 del env[key]
         env["HOME"] = str(self.home)
         env.update(extra_env or {})
-        return subprocess.run(
-            [str(checkout / "scripts/reconcile-skills.sh"), *args],
-            cwd=checkout,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        failure = env.pop("SKILLSET_TEST_FAIL_AT", "")
+        replacement = env.pop("SKILLSET_TEST_REPLACE_BEFORE_REMOVE", "")
+        command = [str(checkout / "scripts/reconcile-skills.sh"), *args]
+        if failure or replacement:
+            # Faults belong to this subprocess test driver, never production flags.
+            driver = r"""
+import importlib.util, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('reconciler_under_test', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+failure, replacement = sys.argv[2:4]
+entry = Path(os.environ['HOME']) / '.agents/skills/alpha'
+receipt = Path(os.environ['HOME']) / '.agents/.skillset/receipts/alpha'
+original_sync = m.fsync_dir
+published = False
+original_link = m.os.link
+def link(*args, **kwargs):
+    global published
+    result = original_link(*args, **kwargs)
+    published = True
+    return result
+m.os.link = link
+def sync(path):
+    original_sync(path)
+    if failure == 'after-receipt-create' and Path(path) == receipt.parent and receipt.is_symlink() and not entry.is_symlink():
+        os._exit(73)
+    if failure == 'after-consumer-remove' and Path(path) == entry.parent and receipt.is_symlink() and not entry.is_symlink():
+        os._exit(73)
+    if failure == 'after-consumer-publish' and published:
+        os._exit(73)
+m.fsync_dir = sync
+original_apply = m.apply_plan
+def apply(plan):
+    if replacement:
+        victim = plan.removals[0].path
+        victim.unlink()
+        victim.symlink_to(replacement)
+    return original_apply(plan)
+m.apply_plan = apply
+raise SystemExit(m.main(sys.argv[4:]))
+"""
+            command = [sys.executable, "-c", driver,
+                       str(checkout / "scripts/reconcile_skills.py"), failure, replacement, *args]
+        return subprocess.run(command, cwd=checkout, env=env, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              check=False, timeout=30)
 
     def assert_reconcile_fails(self, result: subprocess.CompletedProcess[str], text: str) -> None:
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -187,6 +227,32 @@ class ReconcileIntegrationTests(unittest.TestCase):
         self.assertIn("missing:", result.stderr)
         self.assertEqual(set(self.home.iterdir()), before)
 
+    def test_check_never_initializes_or_uses_network(self) -> None:
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        guard = self.base / "guard-bin"
+        guard.mkdir()
+        wrapper = guard / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            '[ "$GIT_NO_LAZY_FETCH" = 1 ] && [ "$GIT_OPTIONAL_LOCKS" = 0 ] || { echo missing-offline-guard >&2; exit 98; }\n'
+            "case \" $* \" in\n"
+            "  *' submodule update '*|*' fetch '*|*' pull '*|*' clone '*) echo forbidden git network/init command >&2; exit 97;;\n"
+            f"esac\nexec {real_git} \"$@\"\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        result = self.run_reconciler("--check", extra_env={"PATH": f"{guard}:{os.environ['PATH']}"})
+        self.assertEqual(result.returncode, 1)  # missing links, but guard itself did not fire
+        self.assertNotIn("forbidden git", result.stderr)
+        self.assertIn("missing:", result.stderr)
+        self.assertFalse((self.home / ".agents").exists())
+        guarded = {"PATH": f"{guard}:{os.environ['PATH']}", "GIT_NO_LAZY_FETCH": "0"}
+        applied = self.run_reconciler(extra_env=guarded)
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        checked = self.run_reconciler("--check", extra_env=guarded)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_selected_name_collision_fails_before_any_effect(self) -> None:
         write_skill(self.source, "productivity", "alpha")
         self.commit_source(pin=True)
@@ -204,7 +270,7 @@ class ReconcileIntegrationTests(unittest.TestCase):
         skill_file.write_text("---\nname: \"alpha\"\ndescription: fixture\n---\n", encoding="utf-8")
         self.commit_source(pin=True)
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "use plain `name: skill-name`")
+        self.assert_reconcile_fails(result, "unsupported frontmatter identity")
         self.assertFalse((self.home / ".agents").exists())
 
     def test_duplicate_frontmatter_identity_fails_closed(self) -> None:
@@ -212,7 +278,39 @@ class ReconcileIntegrationTests(unittest.TestCase):
         skill_file.write_text("---\nname: alpha\nname: beta\n---\n", encoding="utf-8")
         self.commit_source(pin=True)
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "expected one plain name field")
+        self.assert_reconcile_fails(result, "unsupported")
+
+    def test_ambiguous_yaml_identity_shapes_fail_closed(self) -> None:
+        cases = [
+            'name: alpha\n"na\\u006de": beta',
+            "name: alpha\n? name: beta",
+            "name: alpha\n  continuation: beta",
+        ]
+        for index, fields in enumerate(cases):
+            with self.subTest(fields=fields):
+                file = self.source / "skills/engineering/alpha/SKILL.md"
+                file.write_text(f"---\n{fields}\ndescription: fixture\n---\n", encoding="utf-8")
+                self.commit_source(pin=True)
+                result = self.run_reconciler()
+                self.assert_reconcile_fails(result, "unsupported")
+                # Restore a valid source revision before the next subcase.
+                file.write_text("---\nname: alpha\ndescription: fixture\n---\n", encoding="utf-8")
+                self.commit_source(pin=True)
+
+    def test_synced_name_is_reserved(self) -> None:
+        write_skill(self.source, "engineering", "synced")
+        self.commit_source(pin=True)
+        self.selection.append("sources/acme/skills/skills/engineering/synced")
+        self.write_selection()
+        self.commit_skillset()
+        self.assert_reconcile_fails(self.run_reconciler(), "reserved by Claude Code")
+
+    def test_existing_consumer_skill_identity_collision_is_detected(self) -> None:
+        local = self.home / ".agents/skills/local-folder"
+        local.mkdir(parents=True)
+        (local / "SKILL.md").write_text("---\nname: alpha\ndescription: local\n---\n", encoding="utf-8")
+        self.assert_reconcile_fails(self.run_reconciler(), "existing consumer skill identity collision")
+        self.assertFalse((self.home / ".claude").exists())
 
     def test_unowned_same_target_symlink_is_not_adopted(self) -> None:
         expected = self.source / "skills/engineering/alpha"
@@ -221,10 +319,20 @@ class ReconcileIntegrationTests(unittest.TestCase):
         link.symlink_to(expected)
 
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "unowned symlink collision (same target)")
+        self.assert_reconcile_fails(result, "unowned or changed consumer entry collision")
         self.assertEqual(os.readlink(link), str(expected))
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".local").exists())
+
+        # Removing the selection grants no ownership: the identical-target link
+        # remains untouched because no receipt was ever published.
+        self.selection = []
+        self.write_selection()
+        self.commit_skillset("remove alpha selection")
+        removed = self.run_reconciler()
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(os.readlink(link), str(expected))
 
     def test_unrelated_entries_are_preserved(self) -> None:
         agents = self.home / ".agents/skills"
@@ -250,7 +358,7 @@ class ReconcileIntegrationTests(unittest.TestCase):
         (collision / "marker").write_text("keep", encoding="utf-8")
 
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "unowned entry collision")
+        self.assert_reconcile_fails(result, "unowned or changed consumer entry collision")
         self.assertEqual((collision / "marker").read_text(encoding="utf-8"), "keep")
         self.assertFalse((self.home / ".agents/skills/beta").exists())
         self.assertFalse((self.home / ".claude").exists())
@@ -276,7 +384,7 @@ class ReconcileIntegrationTests(unittest.TestCase):
     def test_blocking_harness_parent_is_rejected_before_other_destination_changes(self) -> None:
         (self.home / ".claude").write_text("preserve", encoding="utf-8")
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "managed destination is not a directory")
+        self.assert_reconcile_fails(result, "managed parent is not a directory")
         self.assertFalse((self.home / ".agents").exists())
         self.assertEqual((self.home / ".claude").read_text(encoding="utf-8"), "preserve")
 
@@ -343,22 +451,31 @@ class ReconcileIntegrationTests(unittest.TestCase):
         self.assert_reconcile_fails(result, "tracked skillset changes are not committed")
         self.assertFalse((self.home / ".agents").exists())
 
-    def test_changed_link_during_pending_update_fails_closed(self) -> None:
-        self.assertEqual(self.run_reconciler().returncode, 0)
-        state_path = self.home / ".local/state/skillset/ownership.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["phase"] = "pending"
-        state_path.write_text(json.dumps(state), encoding="utf-8")
-        link = self.home / ".agents/skills/alpha"
-        link.unlink()
-        replacement = self.base / "replacement"
-        replacement.mkdir()
-        link.symlink_to(replacement)
+    def test_staged_gitlink_difference_is_rejected_even_when_worktree_is_at_head_pin(self) -> None:
+        write_skill(self.source, "misc", "newer")
+        newer = self.commit_source(pin=False)
+        git(["add", "sources/acme/skills"], self.repo)
+        git(["checkout", self.initial_source_commit], self.source)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.source), self.initial_source_commit)
+        self.assertNotEqual(git(["rev-parse", ":sources/acme/skills"], self.repo), self.initial_source_commit)
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "unowned or changed symlink collision")
-        self.assertEqual(os.readlink(link), str(replacement))
-        self.assertTrue((self.home / ".claude/skills/alpha").is_symlink())
-        self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["phase"], "pending")
+        self.assert_reconcile_fails(result, "not committed")
+        self.assertNotEqual(newer, self.initial_source_commit)
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_ignored_untracked_selected_content_is_rejected(self) -> None:
+        (self.source / ".gitignore").write_text("skills/engineering/shadow/\n", encoding="utf-8")
+        write_skill(self.source, "engineering", "shadow")
+        self.commit_source(pin=True)
+        shadow = self.source / "skills/engineering/shadow"
+        shadow.mkdir(parents=True, exist_ok=True)
+        (shadow / "SKILL.md").write_text("---\nname: shadow\ndescription: fixture\n---\n", encoding="utf-8")
+        self.selection.append("sources/acme/skills/skills/engineering/shadow")
+        self.write_selection()
+        self.commit_skillset()
+        result = self.run_reconciler()
+        self.assert_reconcile_fails(result, "selected skill contains untracked or ignored content")
+        self.assertFalse((self.home / ".agents").exists())
 
     def test_relocation_uses_recorded_old_target_to_relink(self) -> None:
         self.assertEqual(self.run_reconciler().returncode, 0)
@@ -373,52 +490,44 @@ class ReconcileIntegrationTests(unittest.TestCase):
         self.assert_link("claude", "alpha", expected)
         self.assertIn("removed 2 owned skill links and created 2 skill links", result.stdout)
 
-    def test_pending_ownership_record_recovers_interrupted_apply(self) -> None:
-        target = str(self.source / "skills/engineering/alpha")
-        records = [
-            {"harness": harness, "name": "alpha", "target": target}
-            for harness in ("agents", "claude")
-        ]
-        state_dir = self.home / ".local/state/skillset"
-        state_dir.mkdir(parents=True)
-        state = {"version": 1, "phase": "pending", "links": records}
-        (state_dir / "ownership.json").write_text(json.dumps(state), encoding="utf-8")
-        agents_link = self.home / ".agents/skills/alpha"
-        agents_link.parent.mkdir(parents=True)
-        agents_link.symlink_to(target)
-
+    def test_receipt_before_publication_recovers_without_adopting(self) -> None:
+        failed = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-receipt-create"})
+        self.assertEqual(failed.returncode, 73)
+        self.assertFalse((self.home / ".agents/skills/alpha").exists())
+        receipt = self.home / ".agents/.skillset/receipts/alpha"
+        self.assertTrue(receipt.is_symlink())
         result = self.run_reconciler()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_link("agents", "alpha", Path(target))
-        self.assert_link("claude", "alpha", Path(target))
-        final = json.loads((state_dir / "ownership.json").read_text(encoding="utf-8"))
-        self.assertEqual(final["phase"], "complete")
+        self.assertTrue(os.path.samestat(receipt.lstat(), (self.home / ".agents/skills/alpha").lstat()))
 
-    def test_corrupt_ownership_state_fails_without_touching_links(self) -> None:
-        state_dir = self.home / ".local/state/skillset"
-        state_dir.mkdir(parents=True)
-        (state_dir / "ownership.json").write_text("not json", encoding="utf-8")
+    def test_interrupted_remove_recovers_and_unlinks_receipt(self) -> None:
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        self.selection = []
+        self.write_selection()
+        self.commit_skillset("remove selection")
+        failed = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-consumer-remove"})
+        self.assertEqual(failed.returncode, 73)
+        entry = self.home / ".agents/skills/alpha"
+        receipt = self.home / ".agents/.skillset/receipts/alpha"
+        self.assertFalse(entry.is_symlink())
+        self.assertTrue(receipt.is_symlink())
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "ownership state is unreadable or invalid")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(receipt.exists())
+        self.assertFalse((self.home / ".claude/.skillset/receipts/alpha").exists())
 
-    def test_structurally_ambiguous_ownership_state_fails_closed(self) -> None:
-        state_dir = self.home / ".local/state/skillset"
-        state_dir.mkdir(parents=True)
-        (state_dir / "ownership.json").write_text(
-            '{"version": 1, "phase": [], "links": []}', encoding="utf-8"
-        )
-        result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "invalid ownership state structure")
-        self.assertFalse((self.home / ".agents").exists())
-
-    def test_symlinked_state_parent_is_rejected(self) -> None:
-        outside = self.base / "outside-state"
-        outside.mkdir()
-        (self.home / ".local").symlink_to(outside)
-        result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "managed directory is a symlink")
-        self.assertEqual(list(outside.iterdir()), [])
+    def test_replacement_after_plan_is_not_removed(self) -> None:
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        self.selection = []
+        self.write_selection()
+        self.commit_skillset("remove selection")
+        replacement = self.base / "replacement-target"
+        replacement.mkdir()
+        result = self.run_reconciler(extra_env={"SKILLSET_TEST_REPLACE_BEFORE_REMOVE": str(replacement)})
+        self.assert_reconcile_fails(result, "changed during reconciliation")
+        entry = self.home / ".agents/skills/alpha"
+        self.assertTrue(entry.is_symlink())
+        self.assertEqual(os.readlink(entry), str(replacement))
 
     def test_git_environment_cannot_change_primary_checkout_detection(self) -> None:
         bogus = self.base / "bogus"
@@ -451,16 +560,24 @@ class ReconcileIntegrationTests(unittest.TestCase):
         original_selection = (self.repo / "skills.txt").read_text(encoding="utf-8")
         old_skillset_commit = git(["rev-parse", "HEAD"], self.repo)
         old_source_commit = git(["rev-parse", "HEAD"], self.source)
+        old_body = (self.source / "skills/engineering/alpha/SKILL.md").read_text()
+        self.assertEqual(self.run_reconciler().returncode, 0)
 
+        (self.source / "skills/engineering/alpha/SKILL.md").write_text(old_body + "Version two\n")
         write_skill(self.source, "engineering", "gamma")
         self.commit_source(pin=True)
-        self.assertNotEqual(git(["rev-parse", "HEAD"], self.source), old_source_commit)
+        self.selection = [self.beta]
+        self.write_selection()
+        self.commit_skillset("select beta")
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        self.assert_link("agents", "beta", self.source / "skills/engineering/beta")
+        self.assertFalse((self.home / ".agents/skills/alpha").exists())
 
         historical = self.base / "historical"
         git(["clone", "-q", str(self.repo), str(historical)], self.base)
         git(["checkout", "-q", old_skillset_commit], historical)
         git(
-            ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"],
+            ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "--checkout", "-q"],
             historical,
         )
         self.assertEqual(
@@ -470,6 +587,203 @@ class ReconcileIntegrationTests(unittest.TestCase):
         self.assertEqual(
             (historical / "skills.txt").read_text(encoding="utf-8"), original_selection
         )
+        restored = self.run_reconciler(repo=historical)
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assert_link("agents", "alpha", historical / "sources/acme/skills/skills/engineering/alpha")
+        self.assert_link("claude", "alpha", historical / "sources/acme/skills/skills/engineering/alpha")
+        self.assertFalse((self.home / ".agents/skills/beta").exists())
+        self.assertEqual(self.run_reconciler("--check", repo=historical).returncode, 0)
+        self.assertEqual((self.home / ".agents/skills/alpha/SKILL.md").read_text(), old_body)
+
+
+    def test_multiline_description_and_nested_metadata_preserve_plain_identity(self) -> None:
+        file = self.source / "skills/engineering/alpha/SKILL.md"
+        file.write_text("---\n# comment\nname: alpha\ndescription: |\n  Uses a filename and a name.\n  name: text, not a field\nmetadata:\n  author: fixture\n---\nbody\n")
+        self.commit_source()
+        result = self.run_reconciler()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_escaped_first_character_of_duplicate_identity_is_rejected(self) -> None:
+        file = self.source / "skills/engineering/alpha/SKILL.md"
+        file.write_text('---\nname: alpha\n"\\u006eame": beta\ndescription: fixture\n---\n')
+        self.commit_source()
+        self.assert_reconcile_fails(self.run_reconciler(), "unsupported frontmatter")
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_symlinked_unrelated_skill_identity_collision_is_detected(self) -> None:
+        other = self.base / "unrelated-skill"
+        other.mkdir()
+        (other / "SKILL.md").write_text("---\nname: alpha\ndescription: unrelated\n---\n")
+        alias = self.home / ".agents/skills/local-folder"
+        alias.parent.mkdir(parents=True)
+        alias.symlink_to(other)
+        self.assert_reconcile_fails(self.run_reconciler(), "existing consumer skill identity collision")
+        self.assertTrue(alias.is_symlink())
+        self.assertFalse((self.home / ".claude").exists())
+
+    def test_ambiguous_unrelated_metadata_cannot_hide_a_collision(self) -> None:
+        other = self.home / ".agents/skills/local-folder"
+        other.mkdir(parents=True)
+        (other / "SKILL.md").write_text('---\nname: local\n"\\u006eame": alpha\ndescription: fixture\n---\n')
+        self.assert_reconcile_fails(self.run_reconciler(), "ambiguous existing skill metadata")
+        self.assertFalse((self.home / ".claude").exists())
+
+    def test_symlinked_lock_does_not_create_or_write_its_target(self) -> None:
+        lock = self.home / ".agents/.skillset/lock"
+        lock.parent.mkdir(parents=True)
+        target = self.base / "unrelated-lock-target"
+        lock.symlink_to(target)
+        self.assert_reconcile_fails(self.run_reconciler(), "symlink")
+        self.assertFalse(target.exists())
+        self.assertFalse((self.home / ".claude").exists())
+
+    def test_non_regular_lock_is_rejected_without_opening_it(self) -> None:
+        lock = self.home / ".agents/.skillset/lock"
+        lock.parent.mkdir(parents=True)
+        os.mkfifo(lock)
+        self.assert_reconcile_fails(self.run_reconciler(), "lock is not a regular file")
+
+    def test_source_ancestor_symlink_is_rejected(self) -> None:
+        owner = self.repo / "sources/acme"
+        moved = self.base / "moved-owner"
+        owner.rename(moved)
+        owner.symlink_to(moved)
+        self.assert_reconcile_fails(self.run_reconciler(), "source path traverses a symlink")
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_staged_gitlink_guard_overrides_local_ignore_setting(self) -> None:
+        file = self.source / "skills/engineering/alpha/SKILL.md"
+        file.write_text(file.read_text()+"changed body\n")
+        self.commit_source(pin=False)
+        git(["add", "sources/acme/skills"], self.repo)
+        git(["checkout", "--detach", self.initial_source_commit], self.source)
+        git(["config", "submodule.sources/acme/skills.ignore", "all"], self.repo)
+        self.assert_reconcile_fails(self.run_reconciler(), "not committed")
+
+    def test_nested_submodule_is_rejected_even_when_initialized(self) -> None:
+        git(["-c", "protocol.file.allow=always", "submodule", "add", "-q",
+             str(self.origin), "nested"], self.source)
+        self.commit_source()
+        self.assert_reconcile_fails(self.run_reconciler(), "nested source submodules are unsupported")
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_missing_receipt_never_reclaims_same_target_consumer(self) -> None:
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        entry = self.home / ".agents/skills/alpha"
+        before = entry.lstat()
+        (self.home / ".agents/.skillset/receipts/alpha").unlink()
+        self.assert_reconcile_fails(self.run_reconciler(), "unowned or changed consumer entry collision")
+        self.assertTrue(os.path.samestat(before, entry.lstat()))
+
+    def test_corrupt_receipt_is_rejected_without_removing_consumer(self) -> None:
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        receipt = self.home / ".agents/.skillset/receipts/alpha"
+        entry = self.home / ".agents/skills/alpha"
+        before = entry.lstat()
+        receipt.unlink()
+        receipt.write_text("not a receipt")
+        self.assert_reconcile_fails(self.run_reconciler(), "invalid ownership receipt")
+        self.assertTrue(os.path.samestat(before, entry.lstat()))
+
+    def test_backup_restore_preserving_hardlinks_preserves_ownership(self) -> None:
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        restored = self.base / "restored-home"
+        subprocess.run(["cp", "-a", str(self.home), str(restored)], check=True)
+        self.home = restored
+        result = self.run_reconciler("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(os.path.samestat(
+            (self.home / ".agents/.skillset/receipts/alpha").lstat(),
+            (self.home / ".agents/skills/alpha").lstat()))
+
+    def test_pending_receipt_cannot_adopt_or_delete_identical_unrelated_link(self) -> None:
+        result = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-receipt-create"})
+        self.assertEqual(result.returncode, 73, result.stderr)
+        entry = self.home / ".agents/skills/alpha"
+        entry.symlink_to(self.source / "skills/engineering/alpha")
+        before = entry.lstat()
+        self.assert_reconcile_fails(self.run_reconciler(), "unowned or changed consumer entry collision")
+        self.selection = []
+        self.write_selection()
+        self.commit_skillset()
+        self.assert_reconcile_fails(self.run_reconciler(), "owned consumer entry changed")
+        self.assertTrue(os.path.samestat(before, entry.lstat()))
+
+    def test_interrupted_receipt_can_switch_to_a_new_target_in_one_run(self) -> None:
+        result = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-receipt-create"})
+        self.assertEqual(result.returncode, 73, result.stderr)
+        moved = self.source / "skills/productivity/alpha"
+        moved.parent.mkdir()
+        (self.source / "skills/engineering/alpha").rename(moved)
+        self.commit_source()
+        self.selection = ["sources/acme/skills/skills/productivity/alpha"]
+        self.write_selection()
+        self.commit_skillset()
+        result = self.run_reconciler()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_link("agents", "alpha", moved)
+        self.assertEqual(self.run_reconciler("--check").returncode, 0)
+
+    def test_interruption_after_publication_keeps_exact_ownership(self) -> None:
+        result = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-consumer-publish"})
+        self.assertEqual(result.returncode, 73, result.stderr)
+        entry = self.home / ".agents/skills/alpha"
+        receipt = self.home / ".agents/.skillset/receipts/alpha"
+        before = entry.lstat()
+        self.assertTrue(os.path.samestat(before, receipt.lstat()))
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        self.assertTrue(os.path.samestat(before, entry.lstat()))
+        self.assertEqual(self.run_reconciler("--check").returncode, 0)
+
+    def test_same_target_replacement_after_preflight_is_not_removed(self) -> None:
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        target = str(self.source / "skills/engineering/alpha")
+        self.selection = []
+        self.write_selection()
+        self.commit_skillset()
+        result = self.run_reconciler(extra_env={"SKILLSET_TEST_REPLACE_BEFORE_REMOVE": target})
+        self.assert_reconcile_fails(result, "changed during reconciliation")
+        entry = self.home / ".agents/skills/alpha"
+        self.assertTrue(entry.is_symlink())
+        self.assertEqual(os.readlink(entry), target)
+
+    def test_malformed_committed_gitmodules_fails_before_effects(self) -> None:
+        (self.repo / ".gitmodules").write_text("[not valid config\n")
+        self.commit_skillset()
+        self.assert_reconcile_fails(self.run_reconciler(), "git config")
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_missing_committed_source_url_is_rejected(self) -> None:
+        (self.repo / ".gitmodules").write_text('[submodule "sources/acme/skills"]\npath = sources/acme/skills\n')
+        self.commit_skillset()
+        self.assert_reconcile_fails(self.run_reconciler(), "no committed URL")
+        self.assertFalse((self.home / ".agents").exists())
+
+
+    def test_single_skill_at_source_root_needs_no_layout_adapter(self) -> None:
+        shutil.rmtree(self.source / "skills")
+        (self.source / "SKILL.md").write_text("---\nname: skills\ndescription: root skill\n---\n")
+        self.commit_source()
+        self.selection = ["sources/acme/skills"]
+        self.write_selection()
+        self.commit_skillset()
+        result = self.run_reconciler()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_link("agents", "skills", self.source)
+
+    def test_selected_directory_cannot_implicitly_expose_nested_skills(self) -> None:
+        nested = self.source / "skills/engineering/alpha/nested"
+        nested.mkdir()
+        (nested / "SKILL.md").write_text("---\nname: nested\ndescription: unselected\n---\n")
+        self.commit_source()
+        self.assert_reconcile_fails(self.run_reconciler(), "additional SKILL.md")
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_directory_symlink_cannot_smuggle_unselected_skills(self) -> None:
+        (self.source / "skills/engineering/alpha/linked").symlink_to("../beta")
+        self.commit_source()
+        self.assert_reconcile_fails(self.run_reconciler(), "directory symlinks")
+        self.assertFalse((self.home / ".agents").exists())
 
 
 if __name__ == "__main__":

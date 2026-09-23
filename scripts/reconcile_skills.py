@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
-"""Project committed skill selections into the two local harness directories."""
+"""Project committed skill selections into local harness directories."""
 
 from __future__ import annotations
 
 import fcntl
-import json
 import os
 import re
 import stat
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
-
 
 ROOT = Path(__file__).resolve().parent.parent
 SELECTION = ROOT / "skills.txt"
-STATE_RELATIVE = Path(".local/state/skillset/ownership.json")
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z", re.ASCII)
-NAME_KEY_PATTERN = re.compile(r"^\s*(?:name|['\"]name['\"])\s*:", re.IGNORECASE)
-FRONTMATTER_NAME_PATTERN = re.compile(r"name: ([a-z0-9]+(?:-[a-z0-9]+)*)\Z", re.ASCII)
+PLAIN_NAME = re.compile(r"name: ([a-z0-9]+(?:-[a-z0-9]+)*)\Z", re.ASCII)
 
 
 class ReconcileError(Exception):
@@ -38,65 +32,52 @@ class LinkRecord:
     def path(self) -> Path:
         return home_path() / f".{self.harness}" / "skills" / self.name
 
+    @property
+    def receipt(self) -> Path:
+        return home_path() / f".{self.harness}" / ".skillset" / "receipts" / self.name
+
 
 @dataclass
 class Plan:
-    desired: dict[tuple[str, str], str]
-    pending_records: set[LinkRecord]
-    removals: list[Path]
-    removal_targets: dict[Path, set[str]]
+    head: str
+    removals: list[LinkRecord]
     creations: list[LinkRecord]
-    state_is_current: bool
+    receipt_cleanup: list[LinkRecord]
 
 
 def home_path() -> Path:
     value = os.environ.get("HOME")
     if not value:
         raise ReconcileError("HOME must be set")
-    path = Path(os.path.abspath(value))
-    if not path.is_absolute():
+    if not Path(value).is_absolute():
         raise ReconcileError("HOME must be an absolute path")
-    return path
+    return Path(os.path.abspath(value))
 
 
 def git(args: list[str], cwd: Path = ROOT, *, check: bool = True) -> str:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    env["GIT_OPTIONAL_LOCKS"] = "0"
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1",
+               GIT_NO_REPLACE_OBJECTS="1", GIT_TERMINAL_PROMPT="0",
+               GIT_LITERAL_PATHSPECS="1")
+    result = subprocess.run(["git", *args], cwd=cwd, env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if check and result.returncode:
-        detail = result.stderr.strip() or result.stdout.strip()
-        raise ReconcileError(f"git {' '.join(args)} failed: {detail}")
-    if not check and result.returncode:
-        return ""
-    return result.stdout.rstrip("\n")
+        raise ReconcileError(f"git {' '.join(args)} failed: {result.stderr.strip() or result.stdout.strip()}")
+    return result.stdout.rstrip("\n") if result.returncode == 0 else ""
 
 
 def require_primary_checkout() -> str:
     try:
         top = Path(git(["rev-parse", "--show-toplevel"])).resolve()
-        git_dir = Path(git(["rev-parse", "--absolute-git-dir"])).resolve()
-        common_value = git(["rev-parse", "--git-common-dir"])
-        common_dir = Path(common_value)
-        if not common_dir.is_absolute():
-            common_dir = ROOT / common_dir
-        common_dir = common_dir.resolve()
+        gd = Path(git(["rev-parse", "--absolute-git-dir"])).resolve()
+        common = Path(git(["rev-parse", "--git-common-dir"]))
+        common = (common if common.is_absolute() else ROOT / common).resolve()
     except (ReconcileError, OSError) as error:
         raise ReconcileError(f"run from a Git skillset checkout: {error}") from error
     if top != ROOT:
         raise ReconcileError(f"script is not running from its skillset checkout: {ROOT}")
-    if git_dir != common_dir:
-        raise ReconcileError(
-            f"skill links belong to the primary checkout at {common_dir.parent}; "
-            "run scripts/reconcile-skills.sh there"
-        )
+    if gd != common:
+        raise ReconcileError(f"skill links belong to the primary checkout at {common.parent}; run scripts/reconcile-skills.sh there")
     return git(["rev-parse", "HEAD"])
 
 
@@ -104,66 +85,50 @@ def parse_modules() -> dict[str, str]:
     modules_file = ROOT / ".gitmodules"
     if not modules_file.is_file() or modules_file.is_symlink():
         raise ReconcileError(".gitmodules is missing or is not a regular file")
-    output = git(
-        ["config", "--null", "--file", str(modules_file), "--get-regexp", r"^submodule\..*\.path$"],
-        check=False,
-    )
-    modules: dict[str, str] = {}
-    if output:
-        for item in output.split("\0"):
-            if not item:
-                continue
-            try:
-                _key, path = item.split("\n", 1)
-            except ValueError as error:
-                raise ReconcileError("could not parse submodule paths in .gitmodules") from error
-            parts = Path(path).parts
-            if (
-                len(parts) != 3
-                or parts[0] != "sources"
-                or any(part in {"", ".", ".."} for part in parts)
-                or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts[1:])
-            ):
-                raise ReconcileError(
-                    f"submodule path must follow sources/<owner>/<repo>: {path}"
-                )
-            if path in modules:
-                raise ReconcileError(f"duplicate submodule path in .gitmodules: {path}")
-            modules[path] = path
-
-    tree = git(["ls-tree", "-r", "--full-tree", "HEAD"])
-    gitlinks: dict[str, str] = {}
-    for line in tree.splitlines():
-        if not line:
+    # --list succeeds for an empty file but still fails for malformed Git config.
+    config = git(["config", "--null", "--file", str(modules_file), "--list"])
+    paths: dict[str, str] = {}
+    urls: dict[str, str] = {}
+    for row in config.split("\0"):
+        key, _, value = row.partition("\n")
+        if not re.fullmatch(r"submodule\..*\.(path|url)", key):
             continue
-        metadata, path = line.split("\t", 1)
+        section, field = key.rsplit(".", 1)
+        mapping = paths if field == "path" else urls
+        if section in mapping:
+            raise ReconcileError(f"duplicate submodule {field}: {section}")
+        mapping[section] = value
+    modules: set[str] = set()
+    for section, path in paths.items():
+        parts = Path(path).parts
+        if (len(parts) != 3 or parts[0] != "sources"
+                or Path(path).as_posix() != path
+                or any(x in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9_.-]+", x)
+                       for x in parts[1:])):
+            raise ReconcileError(f"submodule path must follow sources/<owner>/<repo>: {path}")
+        if path in modules:
+            raise ReconcileError(f"duplicate submodule path: {path}")
+        if not urls.get(section, "").strip():
+            raise ReconcileError(f"submodule has no committed URL: {path}")
+        modules.add(path)
+    pins: dict[str, str] = {}
+    for row in git(["ls-tree", "-r", "--full-tree", "HEAD"]).splitlines():
+        metadata, path = row.split("\t", 1)
         mode, kind, oid = metadata.split()
         if mode == "160000" and kind == "commit":
-            gitlinks[path] = oid
-    if set(gitlinks) != set(modules):
-        missing = sorted(set(gitlinks) - set(modules))
-        extra = sorted(set(modules) - set(gitlinks))
+            pins[path] = oid
+    if set(pins) != modules:
         raise ReconcileError(
-            f".gitmodules and committed submodules differ (unconfigured={missing}, "
-            f"not-pinned={extra})"
+            ".gitmodules and committed submodules differ "
+            f"(unconfigured={sorted(set(pins)-modules)}, not-pinned={sorted(modules-set(pins))})"
         )
-    modules.update({path: gitlinks[path] for path in gitlinks})
-    return modules
-
+    return pins
 
 def validate_sources(modules: dict[str, str]) -> None:
     for path, expected in sorted(modules.items()):
         source = ROOT / path
-        if source.is_symlink() or not source.is_dir():
-            raise ReconcileError(
-                f"source is missing or uninitialized: {path}; explicitly run "
-                "git submodule update --init --recursive"
-            )
-        if not (source / ".git").exists():
-            raise ReconcileError(
-                f"source is missing or uninitialized: {path}; explicitly run "
-                "git submodule update --init --recursive"
-            )
+        if source.is_symlink() or not source.is_dir() or not (source / ".git").exists():
+            raise ReconcileError(f"source is missing or uninitialized: {path}; explicitly run git submodule update --init --recursive")
         if source.resolve() != source.absolute():
             raise ReconcileError(f"source path traverses a symlink: {path}")
         try:
@@ -174,65 +139,85 @@ def validate_sources(modules: dict[str, str]) -> None:
         if top != source.resolve():
             raise ReconcileError(f"source checkout root does not match its submodule path: {path}")
         if actual != expected:
-            raise ReconcileError(
-                f"source revision mismatch for {path}: expected {expected}, found {actual}; "
-                "check out the committed gitlink explicitly"
-            )
-        dirty = git(
-            ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"],
-            cwd=source,
-        )
-        if dirty:
+            raise ReconcileError(f"source revision mismatch for {path}: expected {expected}, found {actual}; check out the committed gitlink explicitly")
+        if git(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], cwd=source):
             raise ReconcileError(f"source checkout is dirty: {path}")
+        nested = git(["ls-tree", "-r", "HEAD"], cwd=source)
+        if any(line.startswith("160000 commit ") for line in nested.splitlines()):
+            raise ReconcileError(f"nested source submodules are unsupported: {path}")
 
 
 def ensure_skillset_committed() -> None:
-    dirty = git(
-        ["status", "--porcelain=v1", "--untracked-files=no", "--ignore-submodules=all"]
-    )
-    if dirty:
-        raise ReconcileError(
-            "tracked skillset changes are not committed; commit the selection, source pins, "
-            "and reconciler before deployment"
-        )
+    # Check both comparisons: a staged gitlink can differ even when its worktree
+    # has been returned to HEAD. Override local submodule.ignore configuration.
+    for staged in ([], ["--cached"]):
+        if git(["diff", *staged, "--name-only", "--no-ext-diff",
+                "--ignore-submodules=none", "HEAD", "--"]):
+            raise ReconcileError(
+                "tracked skillset changes are not committed; commit selection, "
+                "source pins, and reconciler before deployment"
+            )
+    for item in (".gitmodules", "skills.txt", "scripts/reconcile-skills.sh",
+                 "scripts/reconcile_skills.py"):
+        if git(["ls-files", "-z", "--", item]) != item + "\0":
+            raise ReconcileError(f"required deployment input is not tracked: {item}")
+    if git(["ls-files", "--others", "--exclude-standard", "--", "scripts"]):
+        raise ReconcileError("untracked deployment input is present")
 
+def identity(file: Path) -> str:
+    """Read an intentionally restricted YAML mapping, never guess an identity.
 
-def skill_name(skill_dir: Path) -> str:
-    skill_file = skill_dir / "SKILL.md"
-    if skill_file.is_symlink() or not skill_file.is_file():
-        raise ReconcileError(f"selected skill has no regular SKILL.md: {skill_dir}")
+    The first field is a plain name scalar. Subsequent top-level keys must be
+    plain and unique. Indentation is allowed for other fields (descriptions,
+    metadata), but not as continuation of name. Other YAML shapes fail closed.
+    """
     try:
-        lines = skill_file.read_text(encoding="utf-8").splitlines()
+        lines = file.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as error:
-        raise ReconcileError(f"cannot read selected skill metadata: {skill_file}") from error
+        raise ReconcileError(f"cannot read skill metadata: {file}") from error
     if not lines or lines[0] != "---":
-        raise ReconcileError(f"unsupported frontmatter: expected opening --- in {skill_file}")
+        raise ReconcileError(f"unsupported frontmatter: expected opening --- in {file}")
     try:
         end = lines.index("---", 1)
     except ValueError as error:
-        raise ReconcileError(f"unsupported frontmatter: missing closing --- in {skill_file}") from error
-    frontmatter = lines[1:end]
-    if any(re.match(r"^\s*<<\s*:", line) for line in frontmatter):
-        raise ReconcileError(f"unsupported frontmatter identity merge in {skill_file}")
-    fields = [line for line in frontmatter if NAME_KEY_PATTERN.match(line)]
-    if len(fields) != 1:
-        raise ReconcileError(
-            f"unsupported frontmatter identity in {skill_file}: expected one plain name field"
-        )
-    match = FRONTMATTER_NAME_PATTERN.fullmatch(fields[0])
-    if not match:
-        raise ReconcileError(
-            f"unsupported frontmatter identity in {skill_file}: use plain `name: skill-name`"
-        )
-    name = match.group(1)
-    if len(name) > 64 or NAME_PATTERN.fullmatch(name) is None:
-        raise ReconcileError(f"invalid skill name in {skill_file}: {name}")
-    if skill_dir.name != name:
-        raise ReconcileError(
-            f"skill identity does not match its parent directory in {skill_file}: {name}"
-        )
+        raise ReconcileError(f"unsupported frontmatter: missing closing --- in {file}") from error
+    name = None
+    last_key = None
+    keys: set[str] = set()
+    for row in lines[1:end]:
+        if not row.strip() or row.lstrip().startswith("#"):
+            continue
+        if name is None:
+            match = PLAIN_NAME.fullmatch(row)
+            if not match:
+                raise ReconcileError(f"unsupported frontmatter identity in {file}: plain name field must be first")
+            name, last_key = match.group(1), "name"
+            keys.add("name")
+            continue
+        if row.startswith((" ", "\t")):
+            if last_key == "name" or row.startswith("\t"):
+                raise ReconcileError(f"unsupported frontmatter identity continuation in {file}")
+            continue
+        match = re.fullmatch(r"([A-Za-z][A-Za-z0-9_-]*):(?:[ \t].*)?", row)
+        if not match:
+            raise ReconcileError(f"unsupported frontmatter identity mapping in {file}")
+        last_key = match.group(1)
+        if last_key in keys:
+            raise ReconcileError(f"unsupported duplicate or ambiguous identity key in {file}")
+        keys.add(last_key)
+    if name is None or len(name) > 64 or not NAME_PATTERN.fullmatch(name):
+        raise ReconcileError(f"invalid or missing skill name in {file}")
     return name
 
+
+def skill_name(skill_dir: Path) -> str:
+    file = skill_dir / "SKILL.md"
+    if file.is_symlink() or not file.is_file():
+        raise ReconcileError(f"selected skill has no regular SKILL.md: {skill_dir}")
+    name = identity(file)
+    if skill_dir.name != name:
+        raise ReconcileError(f"skill identity does not match its parent directory in {file}: {name}")
+    return name
 
 def selected_skills(modules: dict[str, str]) -> list[tuple[str, str]]:
     if SELECTION.is_symlink() or not SELECTION.is_file():
@@ -241,305 +226,265 @@ def selected_skills(modules: dict[str, str]) -> list[tuple[str, str]]:
         rows = SELECTION.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as error:
         raise ReconcileError("could not read skills.txt as UTF-8") from error
-
-    module_paths = sorted(modules, key=len, reverse=True)
-    selections: list[tuple[str, str]] = []
-    seen_paths: set[str] = set()
-    seen_names: dict[str, str] = {}
+    names: dict[str, str] = {}
+    paths: set[str] = set()
+    result = []
     for number, raw in enumerate(rows, 1):
         value = raw.strip()
         if not value or value.startswith("#"):
             continue
-        if "\\" in value or value.startswith("/") or any(ord(c) < 32 for c in value):
+        if "\\" in value or value.startswith("/") or any(ord(c) < 32 for c in value) or Path(value).as_posix() != value or any(p in {".", ".."} for p in Path(value).parts):
             raise ReconcileError(f"invalid selection path on skills.txt:{number}")
-        parts = Path(value).parts
-        if any(part in {".", ".."} for part in parts) or Path(value).as_posix() != value:
-            raise ReconcileError(f"selection path is not normalized on skills.txt:{number}: {value}")
-        if value in seen_paths:
+        if value in paths:
             raise ReconcileError(f"duplicate selected path on skills.txt:{number}: {value}")
-        seen_paths.add(value)
-        module = next(
-            (candidate for candidate in module_paths if value.startswith(candidate + "/") or value == candidate),
-            None,
-        )
+        paths.add(value)
+        module = next((m for m in sorted(modules, key=len, reverse=True) if value == m or value.startswith(m + "/")), None)
         if module is None:
-            raise ReconcileError(
-                f"selection is not under a configured submodule on skills.txt:{number}: {value}"
-            )
+            raise ReconcileError(f"selection is not under a configured submodule on skills.txt:{number}: {value}")
         skill_dir = ROOT / value
-        relative = Path(value).relative_to(module)
-        current = ROOT / module
-        for part in relative.parts:
-            current = current / part
-            if current.is_symlink():
+        rel = skill_dir.relative_to(ROOT / module)
+        cursor = ROOT / module
+        for part in rel.parts:
+            cursor /= part
+            if cursor.is_symlink():
                 raise ReconcileError(f"selected skill path traverses a symlink: {value}")
         if not skill_dir.is_dir():
             raise ReconcileError(f"selected skill directory is missing: {value}")
+        # Reject any selected subtree content Git does not track, including ignored files.
+        extras = git(["ls-files", "--others", "--exclude-standard", "--ignored", "-z", "--", str(rel)], cwd=ROOT / module)
+        if extras:
+            raise ReconcileError(f"selected skill contains untracked or ignored content: {value}")
+        descriptor = str(rel / "SKILL.md")
+        tracked = git(["ls-files", "-z", "--", str(rel)], cwd=ROOT / module).split("\0")
+        if descriptor not in tracked:
+            raise ReconcileError(f"selected SKILL.md is not tracked: {value}")
+        if sum(Path(path).name == "SKILL.md" for path in tracked) != 1:
+            raise ReconcileError(f"selected directory contains additional SKILL.md files: {value}")
+        for directory, children, _ in os.walk(skill_dir, followlinks=False):
+            children.sort()
+            if any((Path(directory) / child).is_symlink() for child in children):
+                raise ReconcileError(f"selected skill contains directory symlinks: {value}")
         name = skill_name(skill_dir)
-        if name in seen_names:
-            raise ReconcileError(
-                f"selected skill-name collision: {name}\n  {seen_names[name]}\n  {value}"
-            )
-        seen_names[name] = value
-        target = str(skill_dir.absolute())
-        selections.append((name, target))
-    return sorted(selections)
+        if name == "synced":
+            raise ReconcileError("skill name 'synced' is reserved by Claude Code")
+        if name in names:
+            raise ReconcileError(f"selected skill-name collision: {name}\n  {names[name]}\n  {value}")
+        names[name] = value
+        result.append((name, str(skill_dir.absolute())))
+    return sorted(result)
 
 
-def lstat_or_none(path: Path) -> os.stat_result | None:
+def lstat(path: Path):
     try:
         return path.lstat()
     except FileNotFoundError:
         return None
 
 
-def check_path_components(path: Path, *, directory: bool = True) -> None:
+def safe_components(path: Path, *, directory: bool = False) -> None:
     home = home_path()
-    if path != home and home not in path.parents:
+    if home not in path.parents and path != home:
         raise ReconcileError(f"managed path is outside HOME: {path}")
-    cursor = home
-    status = lstat_or_none(cursor)
-    if status is None or not stat.S_ISDIR(status.st_mode):
+    cur = home
+    st = lstat(cur)
+    if st is None or not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
         raise ReconcileError(f"HOME is missing or is not a real directory: {home}")
-    if stat.S_ISLNK(status.st_mode):
-        raise ReconcileError(f"HOME is a symlink: {home}")
-    relative = path.relative_to(home)
-    for index, part in enumerate(relative.parts):
-        cursor = cursor / part
-        status = lstat_or_none(cursor)
-        if status is None:
+    for i, part in enumerate(path.relative_to(home).parts):
+        cur /= part
+        st = lstat(cur)
+        if st is None:
             continue
-        if stat.S_ISLNK(status.st_mode):
-            label = "directory" if directory or index < len(relative.parts) - 1 else "file"
-            raise ReconcileError(f"managed {label} is a symlink: {cursor}")
-        is_last = index == len(relative.parts) - 1
-        if not is_last and not stat.S_ISDIR(status.st_mode):
-            raise ReconcileError(f"managed parent is not a directory: {cursor}")
-        if is_last and directory and not stat.S_ISDIR(status.st_mode):
-            raise ReconcileError(f"managed destination is not a directory: {cursor}")
+        if stat.S_ISLNK(st.st_mode):
+            raise ReconcileError(f"managed directory is a symlink: {cur}")
+        last = i == len(path.relative_to(home).parts) - 1
+        if not last and not stat.S_ISDIR(st.st_mode):
+            raise ReconcileError(f"managed parent is not a directory: {cur}")
+        if last and directory and not stat.S_ISDIR(st.st_mode):
+            raise ReconcileError(f"managed destination is not a directory: {cur}")
 
 
-def ownership_path() -> Path:
-    return home_path() / STATE_RELATIVE
+def owned(receipt: Path, entry: Path, expected: str | None = None) -> bool:
+    a, b = lstat(receipt), lstat(entry)
+    return bool(a and b and stat.S_ISLNK(a.st_mode) and stat.S_ISLNK(b.st_mode)
+                and os.path.samestat(a, b) and os.readlink(receipt) == os.readlink(entry)
+                and (expected is None or os.readlink(receipt) == expected))
 
+def local_collision(desired: set[str], retiring: set[Path]) -> None:
+    # Include symlinked skills. Directory spelling is not Codex's only identity.
+    # This checks user-level consumer entries, not plugins/project/built-in skills.
+    for harness in ("agents", "claude"):
+        directory = home_path() / f".{harness}/skills"
+        if not directory.is_dir():
+            continue
+        for child in sorted(directory.iterdir()):
+            if child.name in desired or child in retiring:
+                continue
+            if not child.is_dir() or not (child / "SKILL.md").is_file():
+                continue
+            try:
+                name = identity(child / "SKILL.md")
+            except (ReconcileError, OSError, UnicodeError) as error:
+                raise ReconcileError(f"ambiguous existing skill metadata: {child}: {error}") from error
+            if name in desired:
+                raise ReconcileError(f"existing consumer skill identity collision: {name} at {child}")
 
-def read_ownership() -> tuple[str | None, set[LinkRecord]]:
-    path = ownership_path()
-    check_path_components(path, directory=False)
-    status = lstat_or_none(path)
-    if status is None:
-        return None, set()
-    if not stat.S_ISREG(status.st_mode):
-        raise ReconcileError(f"ownership state is not a regular file: {path}")
-    try:
-        data = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_json_keys
-        )
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ReconcileError(f"ownership state is unreadable or invalid: {path}") from error
-    if (
-        not isinstance(data, dict)
-        or type(data.get("version")) is not int
-        or data.get("version") != 1
-    ):
-        raise ReconcileError(f"unsupported ownership state format: {path}")
-    phase = data.get("phase")
-    rows = data.get("links")
-    if not isinstance(phase, str) or phase not in {"complete", "pending"} or not isinstance(rows, list):
-        raise ReconcileError(f"invalid ownership state structure: {path}")
-    records: set[LinkRecord] = set()
-    for row in rows:
-        if not isinstance(row, dict) or set(row) != {"harness", "name", "target"}:
-            raise ReconcileError(f"invalid ownership record in {path}")
-        harness, name, target = row["harness"], row["name"], row["target"]
-        if (
-            not isinstance(harness, str)
-            or harness not in {"agents", "claude"}
-            or not isinstance(name, str)
-            or NAME_PATTERN.fullmatch(name) is None
-            or len(name) > 64
-            or not isinstance(target, str)
-            or not Path(target).is_absolute()
-        ):
-            raise ReconcileError(f"invalid ownership record in {path}")
-        record = LinkRecord(harness, name, target)
-        if record in records:
-            raise ReconcileError(f"duplicate ownership record in {path}")
-        records.add(record)
-    return phase, records
-
-
-def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
 
 
 def build_plan() -> Plan:
-    require_primary_checkout()
+    head = require_primary_checkout()
     modules = parse_modules()
     validate_sources(modules)
     ensure_skillset_committed()
     selected = selected_skills(modules)
-    phase, records = read_ownership()
-    desired: dict[tuple[str, str], str] = {}
-    for name, target in selected:
-        desired[("agents", name)] = target
-        desired[("claude", name)] = target
-    desired_records = {LinkRecord(harness, name, target) for (harness, name), target in desired.items()}
-    pending_records = records | desired_records
-
+    desired = {(h, n): t for n, t in selected for h in ("agents", "claude")}
     for harness in ("agents", "claude"):
-        check_path_components(home_path() / f".{harness}", directory=True)
-        check_path_components(home_path() / f".{harness}" / "skills", directory=True)
-
-    removals: list[Path] = []
-    removal_targets: dict[Path, set[str]] = {}
-    creations: list[LinkRecord] = []
-    keys = {(record.harness, record.name) for record in records} | set(desired)
-    records_by_key: dict[tuple[str, str], set[str]] = {}
-    for record in records:
-        records_by_key.setdefault((record.harness, record.name), set()).add(record.target)
-
-    for harness, name in sorted(keys):
-        link = home_path() / f".{harness}" / "skills" / name
-        wanted = desired.get((harness, name))
-        known = records_by_key.get((harness, name), set())
-        status = lstat_or_none(link)
-        if status is None:
-            if wanted is not None:
-                creations.append(LinkRecord(harness, name, wanted))
+        safe_components(home_path() / f".{harness}/skills", directory=True)
+        safe_components(home_path() / f".{harness}/.skillset/receipts", directory=True)
+    lock = home_path() / ".agents/.skillset/lock"
+    safe_components(lock)
+    lock_stat = lstat(lock)
+    if lock_stat is not None and not stat.S_ISREG(lock_stat.st_mode):
+        raise ReconcileError(f"lock is not a regular file: {lock}")
+    removals, creations, receipt_cleanup = [], [], []
+    keys = set(desired)
+    for h in ("agents", "claude"):
+        receipt_dir = home_path() / f".{h}/.skillset/receipts"
+        if receipt_dir.is_dir():
+            keys |= {(h, p.name) for p in receipt_dir.iterdir()}
+    for h, name in sorted(keys):
+        entry = home_path() / f".{h}/skills/{name}"
+        receipt = home_path() / f".{h}/.skillset/receipts/{name}"
+        want = desired.get((h, name))
+        rs, es = lstat(receipt), lstat(entry)
+        if rs is not None and (not stat.S_ISLNK(rs.st_mode) or len(name) > 64 or NAME_PATTERN.fullmatch(name) is None):
+            raise ReconcileError(f"invalid ownership receipt: {receipt}")
+        if es is not None and not owned(receipt, entry):
+            if want is not None:
+                raise ReconcileError(f"unowned or changed consumer entry collision: {entry}")
+            # Unowned entries are never in the receipt directory; same name collision is still preserved.
+            if rs is not None:
+                raise ReconcileError(f"owned consumer entry changed: {entry}")
             continue
-        if not stat.S_ISLNK(status.st_mode):
-            owner_text = "owned entry was replaced" if known else "unowned entry collision"
-            raise ReconcileError(f"{owner_text}: {link}")
-        current = os.readlink(link)
-        if wanted is not None and current == wanted:
-            if current not in known:
-                raise ReconcileError(f"unowned symlink collision (same target): {link} -> {current}")
-            continue
-        if current not in known:
-            expected = sorted(known) or ([wanted] if wanted else [])
-            raise ReconcileError(
-                f"unowned or changed symlink collision: {link} -> {current}; "
-                f"expected one of {expected}"
-            )
-        removals.append(link)
-        removal_targets[link] = known
-        if wanted is not None:
-            creations.append(LinkRecord(harness, name, wanted))
-
-    final_is_current = phase == "complete" and records == desired_records
-    return Plan(
-        desired=desired,
-        pending_records=pending_records,
-        removals=sorted(set(removals)),
-        removal_targets=removal_targets,
-        creations=sorted(set(creations)),
-        state_is_current=final_is_current,
-    )
+        if owned(receipt, entry):
+            if want == os.readlink(receipt):
+                continue
+            else:
+                removals.append(LinkRecord(h, name, os.readlink(receipt)))
+                if want is not None:
+                    creations.append(LinkRecord(h, name, want))
+        elif rs is not None and es is None:
+            if want == os.readlink(receipt):
+                creations.append(LinkRecord(h, name, want))
+            else:
+                receipt_cleanup.append(LinkRecord(h, name, os.readlink(receipt)))
+                if want is not None:
+                    creations.append(LinkRecord(h, name, want))
+        elif want is not None:
+            if es is not None:
+                raise ReconcileError(f"unowned consumer entry collision: {entry}")
+            creations.append(LinkRecord(h, name, want))
+    local_collision({name for name, _ in selected}, {r.path for r in removals})
+    return Plan(head, removals, creations, receipt_cleanup)
 
 
-def serialize_state(phase: str, records: Iterable[LinkRecord]) -> bytes:
-    payload = {
-        "version": 1,
-        "phase": phase,
-        "links": [
-            {"harness": row.harness, "name": row.name, "target": row.target}
-            for row in sorted(set(records))
-        ],
-    }
-    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
-
-
-def write_state(phase: str, records: Iterable[LinkRecord]) -> None:
-    path = ownership_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix="ownership.", suffix=".tmp", dir=path.parent)
+def fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(serialize_state(phase, records))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        os.fsync(fd)
     finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        os.close(fd)
+
+
+def ensure_directory(path: Path) -> None:
+    if path.exists():
+        if path.is_symlink() or not path.is_dir():
+            raise ReconcileError(f"managed destination is not a real directory: {path}")
+        return
+    ensure_directory(path.parent)
+    path.mkdir()
+    fsync_dir(path.parent)
 
 
 def apply_plan(plan: Plan) -> str:
-    desired_records = {
-        LinkRecord(harness, name, target)
-        for (harness, name), target in plan.desired.items()
-    }
-    if not plan.removals and not plan.creations and plan.state_is_current:
+    if not plan.removals and not plan.creations and not plan.receipt_cleanup:
         return "skills are reconciled"
-
     for harness in ("agents", "claude"):
-        (home_path() / f".{harness}" / "skills").mkdir(parents=True, exist_ok=True)
-    write_state("pending", plan.pending_records)
-    for link in plan.removals:
-        status = lstat_or_none(link)
-        if status is not None:
-            if not stat.S_ISLNK(status.st_mode) or os.readlink(link) not in plan.removal_targets[link]:
-                raise ReconcileError(f"owned symlink changed during reconciliation: {link}")
-            os.unlink(link)
+        root = home_path() / f".{harness}"
+        (root / "skills").mkdir(parents=True, exist_ok=True)
+        (root / ".skillset/receipts").mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Persist directory ancestry as well as each receipt before publication.
+        for directory in (root / ".skillset/receipts", root / ".skillset",
+                          root / "skills", root, home_path()):
+            fsync_dir(directory)
+    removed = created = 0
+    for record in plan.removals:
+        if not owned(record.receipt, record.path, record.target):
+            raise ReconcileError(f"owned symlink changed during reconciliation: {record.path}")
+        os.unlink(record.path)
+        fsync_dir(record.path.parent)
+        os.unlink(record.receipt)
+        fsync_dir(record.receipt.parent)
+        removed += 1
+    for record in plan.receipt_cleanup:
+        current = lstat(record.receipt)
+        if (lstat(record.path) is not None or current is None
+                or not stat.S_ISLNK(current.st_mode)
+                or os.readlink(record.receipt) != record.target):
+            raise ReconcileError(f"orphan receipt changed during reconciliation: {record.receipt}")
+        os.unlink(record.receipt)
+        fsync_dir(record.receipt.parent)
     for record in plan.creations:
-        record.path.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(record.target, record.path)
-    write_state("complete", desired_records)
-
-    summary = []
-    if plan.removals:
-        summary.append(f"removed {len(plan.removals)} owned skill links")
-    if plan.creations:
-        summary.append(f"created {len(plan.creations)} skill links")
-    if not summary:
-        return "skills are reconciled"
-    return " and ".join(summary)
-
+        if lstat(record.receipt) is None:
+            os.symlink(record.target, record.receipt)
+        current = lstat(record.receipt)
+        if (current is None or not stat.S_ISLNK(current.st_mode)
+                or os.readlink(record.receipt) != record.target):
+            raise ReconcileError(f"ownership receipt changed during reconciliation: {record.receipt}")
+        fsync_dir(record.receipt.parent)
+        try:
+            # Exclusive publication: never replace or adopt an unrelated entry.
+            os.link(record.receipt, record.path, follow_symlinks=False)
+        except FileExistsError:
+            if not owned(record.receipt, record.path, record.target):
+                raise ReconcileError(f"unowned or changed consumer entry collision: {record.path}")
+        else:
+            fsync_dir(record.path.parent)
+            created += 1
+    messages = []
+    if removed:
+        messages.append(f"removed {removed} owned skill links")
+    if created:
+        messages.append(f"created {created} skill links")
+    return " and ".join(messages) or "skills are reconciled"
 
 def run(check_only: bool) -> int:
     plan = build_plan()
     if check_only:
-        discrepancies = []
-        discrepancies.extend(f"missing: {record.path}" for record in plan.creations)
-        discrepancies.extend(f"stale owned link: {path}" for path in plan.removals)
-        if not plan.state_is_current:
-            discrepancies.append("ownership state needs reconciliation")
+        discrepancies = [f"missing: {r.path}" for r in plan.creations]
+        discrepancies += [f"stale owned link: {r.path}" for r in plan.removals]
+        discrepancies += [f"stale receipt: {r.receipt}" for r in plan.receipt_cleanup]
         if discrepancies:
             print("\n".join(discrepancies), file=sys.stderr)
             return 1
-        print(f"skills are reconciled at skillset commit {git(['rev-parse', 'HEAD'])}")
+        print(f"skills are reconciled at skillset commit {plan.head}")
         return 0
-
-    # Lock after a side-effect-free preflight, then recheck all inputs and links.
-    state_dir = ownership_path().parent
-    state_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = state_dir / "lock"
-    check_path_components(lock_path, directory=False)
-    with lock_path.open("a", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        plan = build_plan()
-        print(apply_plan(plan))
+    lock = home_path() / ".agents/.skillset/lock"
+    lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_CREAT | os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW
+    fd = os.open(lock, flags, 0o600)
+    with os.fdopen(fd, "r+") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ReconcileError(f"lock is not a regular file: {lock}")
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        print(apply_plan(build_plan()))
     return 0
-
 
 def main(argv: list[str]) -> int:
     if argv not in ([], ["--check"]):
         print("usage: scripts/reconcile-skills.sh [--check]", file=sys.stderr)
         return 2
     try:
-        return run(check_only=argv == ["--check"])
+        return run(argv == ["--check"])
     except (ReconcileError, OSError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
