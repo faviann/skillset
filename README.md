@@ -5,9 +5,10 @@ Skill contents stay in independent source repositories. Git submodule pointers
 pin their exact commits; [skills.txt](skills.txt) explicitly selects the skills
 to expose. Adding a source or adding a skill upstream does not install it.
 
-The first source is `faviann/skills` under `sources/faviann/skills`. Its 31
-selected skills preserve the previous effective set, without inheriting an
-open-ended include-all rule.
+The first source is the canonical upstream `mattpocock/skills`, represented
+under `sources/mattpocock/skills` and currently fetched from the maintained
+`faviann/skills` fork. Its 31 selected skills preserve the previous effective
+set, without inheriting an open-ended include-all rule.
 
 ## Bootstrap a new installation
 

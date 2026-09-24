@@ -2,18 +2,28 @@
 
 ## Authority and committed inputs
 
-Source repositories own their skill contents. `faviann/skills` remains the
-independent authoring repository. `faviann/skillset` owns only the aggregate
-source configuration, explicit selection, and projection into consumers.
+Source repositories own their skill contents. `faviann/skillset` owns only the
+aggregate source configuration, explicit selection, and projection into
+consumers.
 
-Each source is a Git submodule below `sources/<owner>/<repo>`. `.gitmodules`
-records its URL and path; the superproject gitlink is the only source-commit
-lock. `skills.txt` lists selected skill directories, not an inventory of every
-available skill. Paths handle different source layouts without adapters or a
-second source manifest. Discover candidates from `SKILL.md` and select their
-paths; the reconciler derives names from frontmatter and checks the directory
-name. A single skill at a source root is supported when its identity matches
-that root directory. No content is copied and aliases are unsupported.
+A source's path identifies its canonical upstream repository, independent of
+the Git remote used to fetch it. Each source is a Git submodule below
+`sources/<upstream-owner>/<upstream-repo>`. A maintained fork may therefore be
+used as the submodule URL without changing the source identity. For example,
+the canonical `mattpocock/skills` source lives at
+`sources/mattpocock/skills` while it is currently fetched from the
+`faviann/skills` fork. This keeps source identity stable when fork names differ
+or must be renamed because unrelated upstream repositories share the same repo
+name.
+
+`.gitmodules` records the fetch URL and canonical source path; the superproject
+gitlink is the only source-commit lock. `skills.txt` lists selected skill
+directories, not an inventory of every available skill. Paths handle different
+source layouts without adapters or a second source manifest. Discover
+candidates from `SKILL.md` and select their paths; the reconciler derives names
+from frontmatter and checks the directory name. A single skill at a source root
+is supported when its identity matches that root directory. No content is
+copied and aliases are unsupported.
 
 The initial 31 selections preserve the old effective set: exclude the
 `in-progress`, `deprecated` and `node_modules` trees, plus
