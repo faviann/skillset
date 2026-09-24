@@ -1,6 +1,14 @@
 # skillset
 
-The versioned definition of the agent skills deployed on the workstation.
+Skillset is the versioned definition and eventual build system for reproducible
+agent harness environments.
+
+Today it pins skill sources and projects an explicit selection of skills onto
+local harnesses. Longer term, it is intended to assemble reproducible harness
+packages — skills, hooks, harness-specific adapters and configuration — that can
+be materialized consistently for interactive use or consumed by execution
+systems such as Broodling and ZeroShot.
+
 Skill contents stay in independent source repositories. Git submodule pointers
 pin their exact commits; [skills.txt](skills.txt) explicitly selects the skills
 to expose. Adding a source or adding a skill upstream does not install it.
