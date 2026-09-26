@@ -4,3 +4,6 @@
 [submodule "sources/b1rdmania/claude-plain-english-skill"]
 	path = sources/b1rdmania/claude-plain-english-skill
 	url = https://github.com/b1rdmania/claude-plain-english-skill.git
+[submodule "sources/rampstackco/claude-skills"]
+	path = sources/rampstackco/claude-skills
+	url = https://github.com/rampstackco/claude-skills.git

@@ -23,6 +23,13 @@ The second source is `b1rdmania/claude-plain-english-skill` under
 `plain-english` and `simple-english`. The repository-root `SKILL.md` copy, the
 plugin manifests and the output style are not selected.
 
+The third source is `rampstackco/claude-skills` under
+`sources/rampstackco/claude-skills`, pinned at commit 3d4510a from 2026-09-15.
+Its last release tag, v1.2.0, is 67 commits older, so the pin follows the
+default branch. It is a reference only. None of its 103 skills is selected. To
+expose one, add its directory to `skills.txt` as described in
+[docs/workflow.md](docs/workflow.md).
+
 ## Bootstrap a new installation
 
 ```bash
