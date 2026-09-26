@@ -31,3 +31,6 @@ sources/mattpocock/skills/skills/productivity/teach
 sources/mattpocock/skills/skills/productivity/to-questionnaire
 sources/mattpocock/skills/skills/productivity/wait-what
 sources/mattpocock/skills/skills/productivity/writing-for-agents
+
+sources/b1rdmania/claude-plain-english-skill/skills/plain-english
+sources/b1rdmania/claude-plain-english-skill/skills/simple-english
