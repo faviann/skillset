@@ -1,3 +1,6 @@
 [submodule "sources/mattpocock/skills"]
 	path = sources/mattpocock/skills
 	url = https://github.com/faviann/skills.git
+[submodule "sources/b1rdmania/claude-plain-english-skill"]
+	path = sources/b1rdmania/claude-plain-english-skill
+	url = https://github.com/b1rdmania/claude-plain-english-skill.git

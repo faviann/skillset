@@ -18,6 +18,11 @@ under `sources/mattpocock/skills` and currently fetched from the maintained
 `faviann/skills` fork. Its 31 selected skills preserve the previous effective
 set, without inheriting an open-ended include-all rule.
 
+The second source is `b1rdmania/claude-plain-english-skill` under
+`sources/b1rdmania/claude-plain-english-skill`, pinned at v0.6.1. It selects
+`plain-english` and `simple-english`. The repository-root `SKILL.md` copy, the
+plugin manifests and the output style are not selected.
+
 ## Bootstrap a new installation
 
 ```bash
