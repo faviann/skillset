@@ -7,3 +7,6 @@
 [submodule "sources/rampstackco/claude-skills"]
 	path = sources/rampstackco/claude-skills
 	url = https://github.com/rampstackco/claude-skills.git
+[submodule "sources/michael-denyer/pstack-claude"]
+	path = sources/michael-denyer/pstack-claude
+	url = https://github.com/michael-denyer/pstack-claude.git

@@ -30,6 +30,13 @@ default branch. It is a reference only. None of its 103 skills is selected. To
 expose one, add its directory to `skills.txt` as described in
 [docs/workflow.md](docs/workflow.md).
 
+The fourth source is `michael-denyer/pstack-claude` under
+`sources/michael-denyer/pstack-claude`, pinned at v0.9.45. It is a reference
+only. None of its 54 skills, all under `plugins/pstack/skills`, is selected.
+The same skills are installed on this workstation as the `pstack` Claude Code
+plugin, which also carries the agents and hook they depend on, so selecting
+them here would duplicate that plugin.
+
 ## Bootstrap a new installation
 
 ```bash
