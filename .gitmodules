@@ -1,6 +1,6 @@
 [submodule "sources/mattpocock/skills"]
 	path = sources/mattpocock/skills
-	url = https://github.com/faviann/skills.git
+	url = https://github.com/faviann/skills-mattpocock.git
 [submodule "sources/b1rdmania/claude-plain-english-skill"]
 	path = sources/b1rdmania/claude-plain-english-skill
 	url = https://github.com/b1rdmania/claude-plain-english-skill.git
@@ -13,3 +13,6 @@
 [submodule "sources/humanlayer/skills"]
 	path = sources/humanlayer/skills
 	url = https://github.com/humanlayer/skills.git
+[submodule "sources/faviann/agent-skills"]
+	path = sources/faviann/agent-skills
+	url = https://github.com/faviann/agent-skills.git
