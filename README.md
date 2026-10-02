@@ -37,6 +37,12 @@ The same skills are installed on this workstation as the `pstack` Claude Code
 plugin, which also carries the agents and hook they depend on, so selecting
 them here would duplicate that plugin.
 
+The fifth source is `humanlayer/skills` under `sources/humanlayer/skills`,
+pinned at commit ca7c808 from 2026-09-17 and fetched directly from upstream.
+It is a reference only. None of its six skills, under `plugins/*/skills`, is
+selected. Skill evaluation and any later selections are tracked in
+[#11](https://github.com/faviann/skillset/issues/11).
+
 ## Bootstrap a new installation
 
 ```bash
