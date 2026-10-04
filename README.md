@@ -15,8 +15,9 @@ to expose. Adding a source or adding a skill upstream does not install it.
 
 The first source is the canonical upstream `mattpocock/skills`, represented
 under `sources/mattpocock/skills` and currently fetched from the maintained
-`faviann/skills` fork. Its 31 selected skills preserve the previous effective
-set, without inheriting an open-ended include-all rule.
+`faviann/skills-mattpocock` fork. The fork was reset to upstream `main` on
+2026-10-02; its earlier history is kept under the tag
+`archive/pre-reset-2026-10`. It selects 27 skills.
 
 The second source is `b1rdmania/claude-plain-english-skill` under
 `sources/b1rdmania/claude-plain-english-skill`, pinned at v0.6.1. It selects
@@ -42,6 +43,12 @@ pinned at commit ca7c808 from 2026-09-17 and fetched directly from upstream.
 It is a reference only. None of its six skills, under `plugins/*/skills`, is
 selected. Skill evaluation and any later selections are tracked in
 [#11](https://github.com/faviann/skillset/issues/11).
+
+The sixth source is `faviann/agent-skills` under
+`sources/faviann/agent-skills`, the repository for first-party skills authored
+by faviann. It selects `publish-artifact`, which moved there with its history
+from the `mattpocock/skills` fork. Author new first-party skills in that
+repository, not in skillset.
 
 ## Bootstrap a new installation
 

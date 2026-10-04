@@ -12,9 +12,13 @@ the Git remote used to fetch it. Each source is a Git submodule below
 used as the submodule URL without changing the source identity. For example,
 the canonical `mattpocock/skills` source lives at
 `sources/mattpocock/skills` while it is currently fetched from the
-`faviann/skills` fork. This keeps source identity stable when fork names differ
-or must be renamed because unrelated upstream repositories share the same repo
-name.
+`faviann/skills-mattpocock` fork. This keeps source identity stable when fork
+names differ or must be renamed because unrelated upstream repositories share
+the same repo name. The fork was renamed from `faviann/skills` for that reason.
+
+Forks carry only maintained modifications of their upstream. Skills authored
+by faviann live in the first-party source `faviann/agent-skills`, at
+`sources/faviann/agent-skills`.
 
 `.gitmodules` records the fetch URL and canonical source path; the superproject
 gitlink is the only source-commit lock. `skills.txt` lists selected skill
@@ -25,10 +29,8 @@ from frontmatter and checks the directory name. A single skill at a source root
 is supported when its identity matches that root directory. No content is
 copied and aliases are unsupported.
 
-The initial 31 selections preserve the old effective set: exclude the
-`in-progress`, `deprecated` and `node_modules` trees, plus
-`migrate-to-shoehorn`, `obsidian-vault` and `work-on`. Those are initial
-selection decisions, not inherited rules. New source skills remain unselected.
+Selections are explicit decisions, not inherited rules. New source skills
+remain unselected.
 A selected directory must not contain additional `SKILL.md` files or directory
 symlinks that would expose other skills implicitly.
 

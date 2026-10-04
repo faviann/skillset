@@ -9,9 +9,7 @@ sources/mattpocock/skills/skills/engineering/grill-with-docs
 sources/mattpocock/skills/skills/engineering/implement
 sources/mattpocock/skills/skills/engineering/improve-codebase-architecture
 sources/mattpocock/skills/skills/engineering/prototype
-sources/mattpocock/skills/skills/engineering/publish-artifact
 sources/mattpocock/skills/skills/engineering/research
-sources/mattpocock/skills/skills/engineering/resolving-merge-conflicts
 sources/mattpocock/skills/skills/engineering/setup-matt-pocock-skills
 sources/mattpocock/skills/skills/engineering/tdd
 sources/mattpocock/skills/skills/engineering/to-spec
@@ -22,8 +20,6 @@ sources/mattpocock/skills/skills/engineering/wizard
 sources/mattpocock/skills/skills/misc/git-guardrails-claude-code
 sources/mattpocock/skills/skills/misc/scaffold-exercises
 sources/mattpocock/skills/skills/misc/setup-pre-commit
-sources/mattpocock/skills/skills/personal/edit-article
-sources/mattpocock/skills/skills/personal/select-issue
 sources/mattpocock/skills/skills/productivity/grill-me
 sources/mattpocock/skills/skills/productivity/grilling
 sources/mattpocock/skills/skills/productivity/handoff
@@ -34,3 +30,5 @@ sources/mattpocock/skills/skills/productivity/writing-for-agents
 
 sources/b1rdmania/claude-plain-english-skill/skills/plain-english
 sources/b1rdmania/claude-plain-english-skill/skills/simple-english
+
+sources/faviann/agent-skills/skills/publish-artifact
