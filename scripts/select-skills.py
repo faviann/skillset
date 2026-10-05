@@ -3,7 +3,7 @@
 # requires-python = ">=3.11,<3.15"
 # dependencies = ["textual==8.2.8", "pyyaml==6.0.3"]
 # ///
-"""Browse the pinned catalog and the selection without changing either."""
+"""Browse the pinned catalog and edit the selection without installing it."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from textual.content import Content
 from textual.events import Click
 from textual.geometry import Region
 from textual.message import Message
+from textual.screen import ModalScreen
 from textual.widgets import Markdown, Static
 from textual.widgets.markdown import MarkdownFence
 
@@ -34,6 +35,7 @@ import skill_catalog
 
 ACCENT = "#D77757"
 SECONDARY = "#999999"
+NOT_IN_CATALOG = "Not in catalog"
 
 
 @dataclass
@@ -69,10 +71,7 @@ def display_skill(name: str, path: str, common_root: Path) -> Skill:
     return skill
 
 
-def load_catalog(root: Path) -> dict[str, list[Skill]]:
-    modules = reconcile_skills.parse_modules(root)
-    reconcile_skills.validate_sources(root, modules)
-    catalog = skill_catalog.discover_catalog(root, modules)
+def display_catalog(root: Path, catalog: dict[str, skill_catalog.SourceCatalog]) -> dict[str, list[Skill]]:
     result = {}
     for module, source in catalog.items():
         paths = list(source.skills.values())
@@ -93,7 +92,7 @@ def load_catalog(root: Path) -> dict[str, list[Skill]]:
 
 @dataclass
 class Row:
-    key: str | None
+    key: str | int | None
     lines: list[Text]
 
 
@@ -102,7 +101,8 @@ class RowsView(Static):
 
     def on_click(self, event: Click) -> None:
         if isinstance(self.parent, CatalogList):
-            self.parent.clicked(event.y)
+            self.parent.clicked(event.x, event.y)
+            event.stop()
 
 
 class CatalogList(VerticalScroll, can_focus=True):
@@ -119,8 +119,13 @@ class CatalogList(VerticalScroll, can_focus=True):
         def control(self) -> CatalogList:
             return self.catalog_list
 
-    def __init__(self, **kwargs) -> None:
+    class Activated(Highlighted):
+        pass
+
+    def __init__(self, *, circle_toggle: bool = False, activate_on_click: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.circle_toggle = circle_toggle
+        self.activate_on_click = activate_on_click
         self.rows: list[Row] = []
         self.cursor: int | None = None
 
@@ -128,13 +133,16 @@ class CatalogList(VerticalScroll, can_focus=True):
         yield RowsView()
 
     @property
-    def current(self) -> str | None:
+    def current(self) -> str | int | None:
         return self.rows[self.cursor].key if self.cursor is not None else None
 
-    def set_rows(self, rows: list[Row]) -> None:
+    def set_rows(self, rows: list[Row], *, keep_cursor: bool = False) -> None:
+        current = self.current if keep_cursor else None
         self.rows = rows
-        self.cursor = next((i for i, row in enumerate(rows) if row.key is not None), None)
-        self.scroll_home(animate=False)
+        self.cursor = next((i for i, row in enumerate(rows) if row.key == current and current is not None),
+                           next((i for i, row in enumerate(rows) if row.key is not None), None))
+        if not keep_cursor:
+            self.scroll_home(animate=False)
         self.redraw()
 
     def redraw(self) -> None:
@@ -160,13 +168,15 @@ class CatalogList(VerticalScroll, can_focus=True):
             index = max(0, min(len(items) - 1, items.index(self.cursor) + delta))
             self.highlight(items[index])
 
-    def clicked(self, y: int) -> None:
+    def clicked(self, x: int, y: int) -> None:
         line = 0
         for index, row in enumerate(self.rows):
             if line <= y < line + len(row.lines):
                 if row.key is not None:
                     self.focus()
                     self.highlight(index)
+                    if self.activate_on_click or (self.circle_toggle and x == 2 and y == line):
+                        self.post_message(self.Activated(self))
                 return
             line += len(row.lines)
 
@@ -175,6 +185,58 @@ class CatalogList(VerticalScroll, can_focus=True):
 
     def on_blur(self) -> None:
         self.redraw()
+
+
+class ChoiceDialog(ModalScreen[int | None]):
+    """The same numbered, cancellable choices for replacement, saving and quitting."""
+
+    DEFAULT_CSS = """
+    ChoiceDialog { align: center bottom; background: transparent; }
+    #dialog { height: auto; max-height: 85%; margin: 0 2 2 2; padding: 1 2; border: round #D77757; }
+    #dialog-title { height: auto; color: #D77757; margin-bottom: 1; }
+    #dialog-review { height: 1fr; max-height: 12; margin-bottom: 1; }
+    #dialog-details { height: auto; }
+    #choices { height: auto; max-height: 6; }
+    #dialog-hint { height: 1; margin-top: 1; color: #999999; }
+    """
+    BINDINGS = [
+        Binding("enter", "confirm", show=False),
+        Binding("escape", "cancel", show=False),
+        Binding("1", "choose(1)", show=False),
+        Binding("2", "choose(2)", show=False),
+        Binding("3", "choose(3)", show=False),
+    ]
+
+    def __init__(self, title: str, choices: list[str], details: str = "") -> None:
+        super().__init__()
+        self.heading = title
+        self.choices = choices
+        self.details = details
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static(Text(self.heading), id="dialog-title")
+            with VerticalScroll(id="dialog-review"):
+                yield Static(Text(self.details), id="dialog-details")
+            yield CatalogList(activate_on_click=True, id="choices")
+            yield Static("Enter to confirm · Esc to cancel", id="dialog-hint")
+
+    def on_mount(self) -> None:
+        choices = self.query_one("#choices", CatalogList)
+        choices.set_rows([Row(number, [Text(f"{number}. {label}")])
+                          for number, label in enumerate(self.choices, 1)])
+        choices.focus()
+
+    def action_choose(self, number: int) -> None:
+        if 1 <= number <= len(self.choices):
+            self.dismiss(number)
+
+    @on(CatalogList.Activated, "#choices")
+    def action_confirm(self) -> None:
+        self.dismiss(self.query_one("#choices", CatalogList).current)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class SkillCodeBlock(MarkdownFence):
@@ -225,7 +287,9 @@ class SelectorApp(App):
     BINDINGS = [
         Binding("left", "column('sources')", show=False),
         Binding("right", "column('skills')", show=False),
-        Binding("enter", "column('skills')", show=False),
+        Binding("enter", "enter", show=False),
+        Binding("space", "toggle", show=False),
+        Binding("ctrl+s", "save", show=False),
         Binding("escape", "quit", show=False),
     ]
 
@@ -233,41 +297,79 @@ class SelectorApp(App):
         super().__init__()
         self.root = (root or Path(__file__).resolve().parent.parent).resolve()
         # Browsing needs source validation, not the reconciler's deployment gate.
-        self.catalog = load_catalog(self.root)
-        self.selected = frozenset(skill_catalog.read_selection(self.root))
-        self.source: str | None = next(iter(self.catalog), None)
+        modules = reconcile_skills.parse_modules(self.root)
+        reconcile_skills.validate_sources(self.root, modules)
+        catalog = skill_catalog.discover_catalog(self.root, modules)
+        self.catalog = display_catalog(self.root, catalog)
+        self.selected: dict[str | int, str] = {}
+        self.off_catalog: dict[int, skill_catalog.SelectionLine] = {}
+        for line in skill_catalog.read_selection_lines(self.root):
+            error = line.error or skill_catalog.selection_error(line.value, catalog)
+            if error:
+                self.off_catalog[line.number] = skill_catalog.SelectionLine(line.value, line.number, error, line.name)
+                self.selected[line.number] = line.value
+            else:
+                self.selected[line.value] = line.value
+        self.loaded = Counter(self.selected.values())
+        self.committed = Counter(line.value for line in skill_catalog.parse_selection(
+            skill_catalog.git(["show", "HEAD:skills.txt"], cwd=self.root),
+        ))
+        self.source: str | None = NOT_IN_CATALOG if self.off_catalog else next(iter(self.catalog), None)
         self.theme = "textual-dark"
         self.ansi_color = True
 
     def compose(self) -> ComposeResult:
-        yield Static(Text.assemble(("✻ ", ACCENT), ("Skill selector", "bold"),
-                                   (f"   {len(self.selected)} selected", SECONDARY)), id="title")
+        yield Static(id="title")
         with Horizontal(id="columns"):
             with Vertical(id="source-column", classes="column"):
                 yield Static("Sources", classes="heading")
                 yield CatalogList(id="sources")
             with Vertical(id="skill-column", classes="column"):
                 yield Static("Skills", id="skill-heading", classes="heading")
-                yield CatalogList(id="skills")
+                yield CatalogList(circle_toggle=True, id="skills")
             with VerticalScroll(id="details", classes="column"):
                 yield Static(id="skill-metadata")
                 yield SkillMarkdown(id="skill-body")
-        yield Static("⎿ Browse the catalog. Selection is read-only.", id="message")
+        yield Static(id="message")
         yield Static(id="hints")
 
     async def on_mount(self) -> None:
+        self.refresh_title()
+        self.fill_sources()
+        await self.fill_skills()
+        self.query_one("#sources", CatalogList).focus()
+
+    @property
+    def unsaved_count(self) -> int:
+        current = Counter(self.selected.values())
+        return (current - self.loaded).total() + (self.loaded - current).total()
+
+    def refresh_title(self) -> None:
+        self.query_one("#title", Static).update(Text.assemble(
+            ("✻ ", ACCENT), ("Skill selector", "bold"),
+            (f"   {len(self.selected)} selected · {self.unsaved_count} unsaved", SECONDARY),
+        ))
+
+    def fill_sources(self, *, keep_cursor: bool = False) -> None:
         rows = []
+        if self.off_catalog:
+            selected = sum(key in self.selected for key in self.off_catalog)
+            rows.append(Row(NOT_IN_CATALOG, [Text(NOT_IN_CATALOG),
+                                             Text(f"{selected}/{len(self.off_catalog)}", style=SECONDARY)]))
         for source, skills in self.catalog.items():
             owner, repo = source.split("/")
             selected = sum(f"{source}:{skill.name}" in self.selected for skill in skills)
             rows.append(Row(source, [Text(repo), Text(f"{owner} · {selected}/{len(skills)}", style=SECONDARY)]))
         sources = self.query_one("#sources", CatalogList)
-        sources.set_rows(rows)
-        await self.fill_skills()
-        sources.focus()
+        sources.set_rows(rows, keep_cursor=keep_cursor)
 
-    async def fill_skills(self) -> None:
+    async def fill_skills(self, *, keep_cursor: bool = False) -> None:
         rows = []
+        if self.source == NOT_IN_CATALOG:
+            for key, line in self.off_catalog.items():
+                text = Text("● " if key in self.selected else "○ ", style=ACCENT if key in self.selected else SECONDARY)
+                text.append(line.value, style="default")
+                rows.append(Row(key, [text, Text(line.error.replace("\n", " "), style=SECONDARY)]))
         group = ""
         for skill in self.catalog.get(self.source, []):
             if skill.group != group:
@@ -282,7 +384,7 @@ class SelectorApp(App):
             rows.append(Row(key, [line]))
         if not rows:
             rows.append(Row(None, [Text("No skills in this source.", style=SECONDARY)]))
-        self.query_one("#skills", CatalogList).set_rows(rows)
+        self.query_one("#skills", CatalogList).set_rows(rows, keep_cursor=keep_cursor)
         self.query_one("#skill-heading", Static).update(self.source or "Skills")
         await self.refresh_details()
 
@@ -293,6 +395,14 @@ class SelectorApp(App):
         self.query_one("#details", VerticalScroll).scroll_home(animate=False)
         if key is None:
             metadata.update("")
+            await body.update("")
+            return
+        if key in self.off_catalog:
+            line = self.off_catalog[key]
+            metadata.update(Text("\n".join([
+                line.value, "Selected" if key in self.selected else "Not selected",
+                f"skills.txt:{line.number}: {line.error}", "Can be deselected only.",
+            ])))
             await body.update("")
             return
         source, name = key.split(":")
@@ -322,16 +432,103 @@ class SelectorApp(App):
     async def skill_highlighted(self) -> None:
         await self.refresh_details()
 
+    async def refresh_selection(self) -> None:
+        self.refresh_title()
+        self.fill_sources(keep_cursor=True)
+        await self.fill_skills(keep_cursor=True)
+
+    async def action_enter(self) -> None:
+        if self.focused is self.query_one("#skills", CatalogList):
+            await self.action_toggle()
+        else:
+            self.action_column("skills")
+
+    @on(CatalogList.Activated, "#skills")
+    async def action_toggle(self) -> None:
+        key = self.query_one("#skills", CatalogList).current
+        if key is None:
+            return
+        if key in self.selected:
+            del self.selected[key]
+        elif key in self.off_catalog:
+            self.query_one("#message", Static).update(Text(
+                "⎿ Cannot select: " + self.off_catalog[key].error,
+            ))
+            return
+        else:
+            source, name = key.split(":")
+            other_key = next((selected_key for selected_key, value in self.selected.items()
+                              if value != key and value.partition(":")[2] == name), None)
+            if other_key is not None:
+                async def replace(choice: int | None) -> None:
+                    if choice == 1:
+                        del self.selected[other_key]
+                        self.selected[key] = key
+                        await self.refresh_selection()
+
+                self.push_screen(ChoiceDialog(f"Replace {name}?", [
+                    f"Yes, use {source}", f"No, keep {self.selected[other_key].split(':')[0]}",
+                ]), replace)
+                return
+            self.selected[key] = key
+        await self.refresh_selection()
+
+    def action_save(self) -> None:
+        current = Counter(self.selected.values())
+        names = Counter(line.name
+                        for line in skill_catalog.parse_selection("\n".join(self.selected.values()))
+                        if line.name is not None)
+        duplicates = sorted(name for name, count in names.items() if count > 1)
+        if duplicates:
+            self.query_one("#message", Static).update(Text(
+                "⎿ Cannot save: same name selected more than once: " + ", ".join(duplicates),
+            ))
+            return
+        if current == self.committed and not self.unsaved_count:
+            self.query_one("#message", Static).update("⎿ No changes to save.")
+            return
+        details = [f"+ {value}" for value in sorted((current - self.committed).elements())]
+        details.extend(f"- {value}" for value in sorted((self.committed - current).elements()))
+        self.push_screen(ChoiceDialog("Save these changes?", ["Save only", "Keep editing"],
+                                      "\n".join(details) or "No changes from the last commit."),
+                         self.save_choice)
+
+    def save_choice(self, choice: int | None) -> None:
+        if choice != 1:
+            return
+        try:
+            skill_catalog.write_selection(self.root, self.selected.values())
+        except OSError as error:
+            self.query_one("#message", Static).update(Text(f"⎿ Could not save: {error}"))
+            return
+        self.loaded = Counter(self.selected.values())
+        self.refresh_title()
+        self.query_one("#message", Static).update("⎿ Saved. Not installed yet.")
+
+    def action_quit(self) -> None:
+        if not self.unsaved_count:
+            self.exit()
+            return
+        self.push_screen(ChoiceDialog("Quit without saving?", [
+            "Keep editing", "Review and save", "Quit without saving",
+        ]), self.quit_choice)
+
+    def quit_choice(self, choice: int | None) -> None:
+        if choice == 2:
+            self.action_save()
+        elif choice == 3:
+            self.exit()
+
     def action_column(self, column: str) -> None:
         self.query_one(f"#{column}", CatalogList).focus()
 
     def on_descendant_focus(self) -> None:
         if self.focused is self.query_one("#details"):
-            hint = "↑↓ scroll · ← sources · → skills · esc quit"
+            hint = "↑↓ scroll · ← sources · → skills · ctrl+s save · esc quit"
         elif self.focused is self.query_one("#skills"):
-            hint = "↑↓ move · ← sources · tab details · esc quit"
+            hint = "↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save · esc quit"
         else:
-            hint = "↑↓ move · → or enter skills · esc quit"
+            hint = "↑↓ move · → or enter skills · space toggle · ctrl+s save · esc quit"
         self.query_one("#hints", Static).update(hint)
 
 

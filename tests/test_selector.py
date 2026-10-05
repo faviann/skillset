@@ -1,4 +1,4 @@
-"""Browse fixture catalogs through the app and reject broken checkouts at launch."""
+"""Browse and edit fixture selections through the app and reject broken checkouts."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
         git(["commit", "-qm", "update source pin"], fixture.repo)
 
     def text(self, app, query: str) -> str:
-        content = app.query_one(query, selector.Static).content
+        content = app.screen.query_one(query, selector.Static).content
         return content.plain if isinstance(content, selector.Text) else str(content)
 
     def lines(self, app, column: str) -> list[str]:
@@ -130,7 +130,7 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click("#sources RowsView", offset=(4, 3))
             self.assertEqual(self.lines(app, "skills"), ["○ gamma", "○ omega"])
             skills = app.query_one("#skills", selector.CatalogList)
-            await pilot.click("#skills RowsView", offset=(2, 1))
+            await pilot.click("#skills RowsView", offset=(6, 1))
             self.assertEqual(skills.current, "zebra/tools:omega")
             self.assertIn("zebra/tools:omega", self.text(app, "#skill-metadata"))
             self.assertIs(app.focused, skills)
@@ -187,8 +187,7 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
                 "Same name in other sources: zebra/tools:alpha",
                 "Alpha description.", str(skill_dir), "3 tracked files",
             ])
-            app.selected = frozenset(["zebra/tools:alpha"])
-            await app.refresh_details()
+            await pilot.press("down", "right", "space", "1", "left", "up")
             self.assertIn("acme/skills:alpha\nNot selected", self.text(app, "#skill-metadata"))
             await pilot.press("down")
             self.assertEqual(self.text(app, "#skill-metadata").splitlines(), [
@@ -255,6 +254,252 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.lines(app, "sources"), ["skills", "acme · 0/2", "tools", "zebra · 1/2"])
             await pilot.press("down")
             self.assertEqual(self.lines(app, "skills"), ["○ gamma", "● omega"])
+
+    async def test_space_enter_and_circle_toggle_the_highlighted_skill(self) -> None:
+        fixture = self.fixture()
+        before = (fixture.repo / "skills.txt").read_bytes()
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("right", "space")
+            self.assertEqual(self.lines(app, "skills"), ["● alpha", "● beta"])
+            self.assertIn("2 selected", self.text(app, "#title"))
+            self.assertIn("1 unsaved", self.text(app, "#title"))
+            self.assertIn("acme/skills:alpha\nSelected", self.text(app, "#skill-metadata"))
+            await pilot.press("enter")
+            self.assertEqual(self.lines(app, "skills"), ["○ alpha", "● beta"])
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            await pilot.click("#skills RowsView", offset=(2, 1))
+            self.assertEqual(self.lines(app, "skills"), ["○ alpha", "○ beta"])
+            self.assertIn("acme/skills:beta\nNot selected", self.text(app, "#skill-metadata"))
+            self.assertIn("0 selected", self.text(app, "#title"))
+            await pilot.click("#skills RowsView", offset=(2, 1))
+            self.assertEqual(self.lines(app, "skills"), ["○ alpha", "● beta"])
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+
+    async def test_replacement_dialog_keyboard_click_and_number_choices(self) -> None:
+        fixture = self.fixture({
+            "acme/skills": {"alpha": "alpha"},
+            "zebra/tools": {"alpha": "alpha"},
+        }, ["acme/skills:alpha"])
+        before = (fixture.repo / "skills.txt").read_bytes()
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("down", "right", "space")
+            self.assertEqual(self.text(app, "#dialog-title"), "Replace alpha?")
+            self.assertEqual(self.lines(app, "choices"), [
+                "1. Yes, use zebra/tools", "2. No, keep acme/skills",
+            ])
+            await pilot.press("down", "enter")
+            self.assertEqual(self.lines(app, "skills"), ["○ alpha"])
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            await pilot.press("enter")
+            await pilot.click("#choices RowsView", offset=(6, 0))
+            self.assertEqual(self.lines(app, "skills"), ["● alpha"])
+            self.assertIn("1 selected", self.text(app, "#title"))
+            self.assertIn("2 unsaved", self.text(app, "#title"))
+            await pilot.press("left", "up", "right", "space", "2")
+            self.assertEqual(self.lines(app, "skills"), ["○ alpha"])
+            await pilot.press("enter", "escape")
+            self.assertEqual(self.lines(app, "skills"), ["○ alpha"])
+            await pilot.press("enter", "down", "up", "enter")
+            self.assertEqual(self.lines(app, "skills"), ["● alpha"])
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            await pilot.press("left", "down")
+            self.assertEqual(self.lines(app, "skills"), ["○ alpha"])
+        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+
+    async def test_duplicate_names_refuse_save_until_one_is_deselected(self) -> None:
+        fixture = self.fixture({
+            "acme/skills": {"alpha": "alpha"},
+            "zebra/tools": {"alpha": "alpha"},
+        }, ["acme/skills:alpha"])
+        write_selection(fixture.repo, ["acme/skills:alpha", "zebra/tools:alpha"])
+        before = (fixture.repo / "skills.txt").read_bytes()
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+s")
+            message = self.text(app, "#message").lower()
+            self.assertIn("alpha", message)
+            self.assertIn("name", message)
+            self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+            self.assertEqual(len(app.screen.query("#dialog-title")), 0)
+            await pilot.press("right", "space", "ctrl+s")
+            self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
+            await pilot.press("1")
+            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], ["zebra/tools:alpha"])
+
+    async def test_off_catalog_reasons_are_preserved_and_can_only_be_deselected(self) -> None:
+        fixture = SkillsetFixture(self.base, {"acme/skills": {
+            "alpha": "alpha", "invalid": "wrong-name", "codex/lone": "lone",
+        }}, ["acme/skills:alpha"], sources_toml='["acme/skills".variants]\ncodex = "codex"\n')
+        reasons = {
+            "broken selection": "bad syntax",
+            "unknown/source:lost": "unknown source",
+            "acme/skills:missing": "name is missing at the pinned commit",
+            "acme/skills:invalid": "selected name is invalid",
+            "acme/skills:lone": "name is missing at the pinned commit",
+        }
+        values = ["acme/skills:alpha", *reasons]
+        write_selection(fixture.repo, values)
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            self.assertEqual(self.lines(app, "sources")[0], "Not in catalog")
+            for value, reason in reasons.items():
+                self.assertIn(value, self.text(app, "#skills RowsView"))
+                self.assertIn(reason, self.text(app, "#skills RowsView").lower())
+            await pilot.press("ctrl+s", "1")
+            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], sorted(values))
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            await pilot.press("right")
+            seen = set()
+            for count in range(len(reasons)):
+                details = self.text(app, "#skill-metadata")
+                value = next(value for value in reasons if value in details)
+                seen.add(value)
+                self.assertIn(reasons[value], details.lower())
+                await pilot.press("space")
+                self.assertIn(f"○ {value}", self.text(app, "#skills RowsView"))
+                self.assertIn(f"{count + 1} unsaved", self.text(app, "#title"))
+                await pilot.press("enter")
+                self.assertIn(f"○ {value}", self.text(app, "#skills RowsView"))
+                self.assertIn(f"{count + 1} unsaved", self.text(app, "#title"))
+                await pilot.press("down")
+            self.assertEqual(seen, set(reasons))
+            await pilot.press("ctrl+s", "1")
+            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], ["acme/skills:alpha"])
+
+    async def test_duplicate_selection_line_is_visible_and_removable(self) -> None:
+        fixture = self.fixture(selection=["acme/skills:beta"])
+        write_selection(fixture.repo, ["acme/skills:beta", "acme/skills:beta"])
+        before = (fixture.repo / "skills.txt").read_bytes()
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            self.assertEqual(self.lines(app, "sources")[0], "Not in catalog")
+            self.assertIn("acme/skills:beta", self.text(app, "#skill-metadata"))
+            self.assertIn("duplicate selection line", self.text(app, "#skill-metadata"))
+            await pilot.press("ctrl+s")
+            self.assertIn("beta", self.text(app, "#message"))
+            self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+            await pilot.press("right", "space", "enter")
+            self.assertIn("○ acme/skills:beta", self.text(app, "#skills RowsView"))
+            await pilot.press("ctrl+s", "1")
+            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], ["acme/skills:beta"])
+
+    async def test_save_reviews_head_changes_and_writes_sorted_selection_without_committing(self) -> None:
+        fixture = self.fixture()
+        write_selection(fixture.repo, ["zebra/tools:omega"])
+        before = (fixture.repo / "skills.txt").read_bytes()
+        head = git(["rev-parse", "HEAD"], fixture.repo)
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            await pilot.press("ctrl+s")
+            self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
+            review = self.text(app, "#dialog-details")
+            self.assertIn("+ zebra/tools:omega", review)
+            self.assertIn("- acme/skills:beta", review)
+            self.assertEqual(self.lines(app, "choices"), ["1. Save only", "2. Keep editing"])
+            await pilot.press("2")
+            self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+            await pilot.press("right", "space")
+            self.assertIn("1 unsaved", self.text(app, "#title"))
+            await pilot.press("ctrl+s")
+            review = self.text(app, "#dialog-details")
+            for line in ("+ acme/skills:alpha", "+ zebra/tools:omega", "- acme/skills:beta"):
+                self.assertIn(line, review)
+            await pilot.press("enter")
+            self.assertTrue(app.is_running)
+            self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            self.assertEqual((fixture.repo / "skills.txt").read_text(),
+                             "# Written by the skill selector. Comments and ordering are not kept.\n"
+                             "acme/skills:alpha\nzebra/tools:omega\n")
+        self.assertEqual(git(["rev-parse", "HEAD"], fixture.repo), head)
+        self.assertEqual(git(["status", "--porcelain"], fixture.repo), "M skills.txt")
+        self.assertEqual(list(fixture.home.iterdir()), [])
+
+    async def test_unchanged_save_reports_no_changes_and_escape_quits(self) -> None:
+        fixture = self.fixture()
+        before = (fixture.repo / "skills.txt").read_bytes()
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+s")
+            self.assertIn("no changes", self.text(app, "#message").lower())
+            self.assertEqual(len(app.screen.query("#dialog-title")), 0)
+            await pilot.press("escape")
+            self.assertFalse(app.is_running)
+        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+
+    async def test_long_save_review_can_scroll_to_final_change_and_save(self) -> None:
+        names = [f"skill-{number:02}" for number in range(20)]
+        fixture = self.fixture({"acme/skills": {name: name for name in names}}, [])
+        values = [f"acme/skills:{name}" for name in names]
+        write_selection(fixture.repo, values)
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+s")
+            self.assertNotIn(values[-1], self.screen_text(app))
+            await pilot.press("tab", "end")
+            await pilot.pause()
+            self.assertIn(values[-1], self.screen_text(app))
+            self.assertTrue(await pilot.click("#choices RowsView", offset=(6, 0)))
+            self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
+            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], values)
+
+    async def test_restoring_head_selection_still_saves_changes_to_loaded_file(self) -> None:
+        fixture = self.fixture()
+        write_selection(fixture.repo, ["acme/skills:alpha"])
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("right", "space", "down", "space")
+            self.assertIn("2 unsaved", self.text(app, "#title"))
+            await pilot.press("ctrl+s")
+            self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
+            self.assertIn("No changes from the last commit", self.text(app, "#dialog-details"))
+            await pilot.press("1")
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], ["acme/skills:beta"])
+
+    async def test_quit_can_keep_editing_cancel_or_discard_changes(self) -> None:
+        fixture = self.fixture()
+        before = (fixture.repo / "skills.txt").read_bytes()
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("right", "space", "escape")
+            self.assertEqual(self.text(app, "#dialog-title"), "Quit without saving?")
+            self.assertEqual(self.lines(app, "choices"), [
+                "1. Keep editing", "2. Review and save", "3. Quit without saving",
+            ])
+            await pilot.press("enter")
+            self.assertTrue(app.is_running)
+            self.assertIn("1 unsaved", self.text(app, "#title"))
+            await pilot.press("escape", "escape")
+            self.assertTrue(app.is_running)
+            self.assertIn("1 unsaved", self.text(app, "#title"))
+            await pilot.press("escape", "3")
+            self.assertFalse(app.is_running)
+        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+
+    async def test_quit_review_can_keep_editing_then_save(self) -> None:
+        fixture = self.fixture()
+        before = (fixture.repo / "skills.txt").read_bytes()
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("right", "space", "escape", "2")
+            self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
+            self.assertIn("+ acme/skills:alpha", self.text(app, "#dialog-details"))
+            await pilot.press("2")
+            self.assertTrue(app.is_running)
+            self.assertIn("1 unsaved", self.text(app, "#title"))
+            self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+            await pilot.press("escape", "2", "1")
+            self.assertTrue(app.is_running)
+            self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
+            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:],
+                             ["acme/skills:alpha", "acme/skills:beta"])
+            await pilot.press("escape")
+            self.assertFalse(app.is_running)
 
 
 class SelectorRealDataTests(unittest.IsolatedAsyncioTestCase):

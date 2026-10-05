@@ -41,6 +41,14 @@ class SourceCatalog:
     variants: dict[str, dict[str, str]]
 
 
+@dataclass(frozen=True)
+class SelectionLine:
+    value: str
+    number: int
+    error: str = ""
+    name: str | None = None
+
+
 def git(args: list[str], cwd: Path, *, check: bool = True) -> str:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1",
@@ -302,28 +310,60 @@ def discover_catalog(root: Path, modules: dict[str, str]) -> dict[str, SourceCat
     return catalog
 
 
-def read_selection(root: Path) -> dict[str, int]:
-    """Read name lines and their line numbers without requiring catalog resolution."""
+def read_selection_lines(root: Path) -> list[SelectionLine]:
+    """Retain every selection entry so the selector can repair invalid lines."""
     selection = root / SELECTION_PATH
     if selection.is_symlink() or not selection.is_file():
         raise ReconcileError(f"{SELECTION_PATH} is missing or is not a regular file")
     try:
-        rows = selection.read_text(encoding="utf-8").splitlines()
+        content = selection.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         raise ReconcileError(f"could not read {SELECTION_PATH} as UTF-8") from error
-    lines: dict[str, int] = {}
-    for number, raw in enumerate(rows, 1):
+    return parse_selection(content)
+
+
+def parse_selection(content: str) -> list[SelectionLine]:
+    lines = []
+    seen = set()
+    for number, raw in enumerate(content.splitlines(), 1):
         value = raw.strip()
         if not value or value.startswith("#"):
             continue
         match = re.fullmatch(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+):([^:/\\\s]+)", value)
-        if (match is None or any(part in {".", ".."} for part in match.group(1, 2))
-                or any(ord(c) < 32 for c in value)):
-            raise ReconcileError(f"{SELECTION_PATH}:{number}: bad syntax; expected owner/repo:name: {value}")
-        if value in lines:
-            raise ReconcileError(f"{SELECTION_PATH}:{number}: duplicate selection line: {value}")
-        lines[value] = number
+        error = ""
+        valid = (match is not None and not any(part in {".", ".."} for part in match.group(1, 2))
+                 and not any(ord(c) < 32 for c in value))
+        if not valid:
+            error = f"bad syntax; expected owner/repo:name: {value}"
+        elif value in seen:
+            error = f"duplicate selection line: {value}"
+        seen.add(value)
+        lines.append(SelectionLine(value, number, error, match.group(3) if valid else None))
     return lines
+
+
+def read_selection(root: Path) -> dict[str, int]:
+    """Read validated name lines without requiring catalog resolution."""
+    lines = read_selection_lines(root)
+    for line in lines:
+        if line.error:
+            raise ReconcileError(f"{SELECTION_PATH}:{line.number}: {line.error}")
+    return {line.value: line.number for line in lines}
+
+
+def selection_error(value: str, catalog: dict[str, SourceCatalog]) -> str:
+    """Explain why a syntactically valid line does not resolve to a skill."""
+    source_name, name = value.split(":")
+    source = catalog.get(f"sources/{source_name}")
+    if source is None:
+        return f"unknown source: {source_name}"
+    if name not in source.skills:
+        invalid = source.invalid.get(name, [])
+        if invalid:
+            reasons = "\n  ".join(entry.error for entry in invalid)
+            return f"selected name is invalid: {value}\n  {reasons}"
+        return f"name is missing at the pinned commit: {value}"
+    return ""
 
 
 def write_selection(root: Path, selection: Iterable[str]) -> None:
@@ -339,15 +379,10 @@ def selected_skills(root: Path, catalog: dict[str, SourceCatalog]) -> dict[tuple
     for value, number in read_selection(root).items():
         source_name, name = value.split(":")
         location = f"{SELECTION_PATH}:{number}"
-        source = catalog.get(f"sources/{source_name}")
-        if source is None:
-            raise ReconcileError(f"{location}: unknown source: {source_name}")
-        if name not in source.skills:
-            invalid = source.invalid.get(name, [])
-            if invalid:
-                reasons = "\n  ".join(entry.error for entry in invalid)
-                raise ReconcileError(f"{location}: selected name is invalid: {value}\n  {reasons}")
-            raise ReconcileError(f"{location}: name is missing at the pinned commit: {value}")
+        error = selection_error(value, catalog)
+        if error:
+            raise ReconcileError(f"{location}: {error}")
+        source = catalog[f"sources/{source_name}"]
         if name in names:
             raise ReconcileError(f"{location}: same name selected from two sources: {name}\n  {names[name]}\n  {value}")
         names[name] = value
