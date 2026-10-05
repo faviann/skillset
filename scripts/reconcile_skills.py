@@ -13,6 +13,7 @@ from pathlib import Path
 
 from skill_catalog import (
     NAME_PATTERN,
+    SELECTION_PATH,
     ReconcileError,
     discover_catalog,
     git,
@@ -85,7 +86,7 @@ def ensure_skillset_committed(root: Path) -> None:
                 "tracked skillset changes are not committed; commit selection, "
                 "source pins, and install code before installing"
             )
-    for item in (".gitmodules", "skills.txt", "sources.toml", "scripts/reconcile-skills.sh",
+    for item in (".gitmodules", SELECTION_PATH, "sources.toml", "scripts/reconcile-skills.sh",
                  "scripts/reconcile_skills.py", "scripts/skill_catalog.py"):
         if git(["ls-files", "-z", "--", item], cwd=root) != item + "\0":
             raise ReconcileError(f"required install input is not tracked: {item}")

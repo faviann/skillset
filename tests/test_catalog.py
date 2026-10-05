@@ -12,7 +12,16 @@ from pathlib import Path
 from fixture import CHECKOUT, SkillsetFixture, git, write_skill
 
 sys.path.insert(0, str(CHECKOUT / "scripts"))
-from skill_catalog import ReconcileError, SourceCatalog, discover_catalog, parse_modules
+from skill_catalog import (
+    SELECTION_PATH,
+    ReconcileError,
+    SourceCatalog,
+    discover_catalog,
+    parse_modules,
+    read_selection,
+    selected_skills,
+    write_selection,
+)
 
 
 class CatalogTests(unittest.TestCase):
@@ -32,6 +41,12 @@ class CatalogTests(unittest.TestCase):
         catalogs = discover_catalog(self.repo, parse_modules(self.repo))
         self.assertEqual(set(catalogs), {"sources/acme/skills"})
         return catalogs["sources/acme/skills"]
+
+    def selected(self) -> list[tuple[str, str]]:
+        return selected_skills(self.repo, discover_catalog(self.repo, parse_modules(self.repo)))
+
+    def selection_text(self, text: str) -> None:
+        (self.repo / SELECTION_PATH).write_text(text, encoding="utf-8")
 
     def commit_source(self) -> None:
         git(["add", "-A"], self.source)
@@ -62,6 +77,67 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog.skills, {"alpha": str(self.alpha)})
         self.assertEqual(catalog.invalid, {})
         self.assertEqual(catalog.variants, {})
+
+    def test_selection_resolves_frontmatter_name_and_skips_blank_and_comment_lines(self) -> None:
+        self.selection_text("\n# chosen skills\n  # another comment\n\n acme/skills:alpha \n")
+        self.assertEqual(read_selection(self.repo), {"acme/skills:alpha": 5})
+        self.assertEqual(self.selected(), [("alpha", str(self.alpha))])
+
+    def test_selection_syntax_errors_including_old_paths_have_line_numbers(self) -> None:
+        for line in ("sources/acme/skills/skills/engineering/alpha", "acme/skills",
+                     "acme/skills:alpha:extra", "acme:team/skills:alpha",
+                     "acme/skills:", "acme//skills:alpha", "../skills:alpha"):
+            with self.subTest(line=line):
+                self.selection_text(f"# selection\n\n{line}\n")
+                with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: bad syntax"):
+                    read_selection(self.repo)
+
+    def test_duplicate_selection_line_has_line_number(self) -> None:
+        self.selection_text("acme/skills:alpha\n# repeat\nacme/skills:alpha\n")
+        with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: duplicate selection line"):
+            read_selection(self.repo)
+
+    def test_unknown_source_has_line_number(self) -> None:
+        self.selection_text("# selection\nunknown/skills:alpha\n")
+        with self.assertRaisesRegex(ReconcileError, r"skills.txt:2: unknown source: unknown/skills"):
+            self.selected()
+
+    def test_missing_name_at_pin_has_line_number(self) -> None:
+        self.selection_text("\nacme/skills:missing\n")
+        with self.assertRaisesRegex(ReconcileError, r"skills.txt:2: name is missing at the pinned commit: acme/skills:missing"):
+            self.selected()
+
+    def test_invalid_selected_name_has_line_number_and_validation_reason(self) -> None:
+        self.write_metadata('name: "alpha"')
+        self.selection_text("# selection\nacme/skills:alpha\n")
+        with self.assertRaises(ReconcileError) as caught:
+            self.selected()
+        self.assertIn("skills.txt:2: selected name is invalid: acme/skills:alpha", str(caught.exception))
+        self.assertIn("unsupported frontmatter identity", str(caught.exception))
+        self.assertIn(str(self.alpha / "SKILL.md"), str(caught.exception))
+
+    def test_same_name_selected_from_two_sources_has_line_number(self) -> None:
+        self.fixture.add_source("other/tools", {"alpha": "alpha"})
+        git(["commit", "-qam", "add another source"], self.repo)
+        self.selection_text("acme/skills:alpha\n\nother/tools:alpha\n")
+        with self.assertRaises(ReconcileError) as caught:
+            self.selected()
+        self.assertIn("skills.txt:3: same name selected from two sources: alpha", str(caught.exception))
+        self.assertIn("acme/skills:alpha", str(caught.exception))
+        self.assertIn("other/tools:alpha", str(caught.exception))
+
+    def test_selection_writer_sorts_and_round_trips_even_without_catalog_entries(self) -> None:
+        self.selection_text("# handwritten choices\nretired/tools:gone\n\nacme/skills:alpha\n")
+        selection = read_selection(self.repo)
+        write_selection(self.repo, selection)
+        self.assertEqual((self.repo / SELECTION_PATH).read_text(encoding="utf-8"),
+                         "# Written by the skill selector. Comments and ordering are not kept.\n"
+                         "acme/skills:alpha\nretired/tools:gone\n")
+        self.assertEqual(set(read_selection(self.repo)), set(selection))
+        write_selection(self.repo, [])
+        self.assertEqual((self.repo / SELECTION_PATH).read_text(encoding="utf-8"),
+                         "# Written by the skill selector. Comments and ordering are not kept.\n")
+        self.assertEqual(read_selection(self.repo), {})
 
     def test_hidden_folders_are_discovered_without_plugin_manifests(self) -> None:
         hidden = write_skill(self.source, ".agents/skills/hidden")
@@ -180,6 +256,8 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(len(catalog.invalid["skills"]), 1)
         self.assertEqual(catalog.invalid["skills"][0].path, str(self.source))
         self.assertIn("additional SKILL.md", catalog.invalid["skills"][0].error)
+        self.selection_text("acme/skills:skills\n")
+        self.assertEqual(self.selected(), [("skills", str(canonical))])
 
     def test_invalid_copies_with_same_folder_name_keep_each_reason(self) -> None:
         duplicate = write_skill(self.source, "other/alpha", identity="beta")

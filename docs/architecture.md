@@ -21,8 +21,11 @@ by faviann live in the first-party source `faviann/agent-skills`, at
 `sources/faviann/agent-skills`.
 
 `.gitmodules` records the fetch URL and canonical source path; the superproject
-gitlink is the only source-commit lock. `skills.txt` lists selected skill
-directories, not an inventory of every available skill. The catalog discovers
+gitlink is the only source-commit lock. `skills.txt` lists selected skills as
+`owner/repo:name`, where `owner/repo` is the source folder under `sources/` and
+`name` is the frontmatter identity. Path selections are rejected. The catalog
+resolves these identities at the pinned commit, so moving a skill within its
+source leaves its selection valid when the name stays the same. It discovers
 every tracked `SKILL.md` outside declared variant trees and validates its skill
 directory. Hidden directories are included, and plugin manifests do not affect
 discovery. Names come from frontmatter and must match the directory name. A
@@ -52,8 +55,8 @@ per-skill Git calls. No content is copied and aliases are unsupported.
 
 Selections are explicit decisions, not inherited rules. New source skills
 remain unselected.
-A selected directory must not contain additional `SKILL.md` files or directory
-symlinks that would expose other skills implicitly.
+A selected skill's directory must not contain additional `SKILL.md` files or
+directory symlinks that would expose other skills implicitly.
 
 ## Reconciliation and ownership
 
@@ -114,7 +117,7 @@ be a plain `name: skill-name` scalar. Later top-level keys must be plain and
 unique. Block descriptions and nested metadata are supported, but continuation
 of the name, quoted/escaped keys, explicit keys, merges and duplicate fields
 fail closed. This is a restricted identity reader, not a general YAML validator.
-Names must match their selected directory, use 1-64 lowercase ASCII letters,
+Names must match their containing directory, use 1-64 lowercase ASCII letters,
 digits or hyphens, and have no leading, trailing or consecutive hyphens.
 `synced` is rejected because Claude Code reserves that local directory name.
 

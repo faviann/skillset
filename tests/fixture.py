@@ -50,14 +50,15 @@ def write_skill(repo: Path, path: str, *, identity: str | None = None) -> Path:
 
 
 def write_selection(repo: Path, selection: list[str]) -> None:
-    content = "# fixture selection\n" + "".join(f"{path}\n" for path in selection)
+    content = "# fixture selection\n" + "".join(f"{line}\n" for line in selection)
     (repo / "skills.txt").write_text(content, encoding="utf-8")
 
 
 class SkillsetFixture:
     """Build a committed skillset with sources keyed by owner/repo.
 
-    Each source maps source-relative skill paths to frontmatter names. Pass
+    Each source maps source-relative skill paths to frontmatter names; selection
+    contains owner/repo:name lines independently of those paths. Pass
     ``env`` to subprocesses so local source URLs remain usable by Git helpers.
     The caller owns the temporary base directory and its cleanup.
     """
