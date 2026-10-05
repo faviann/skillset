@@ -108,7 +108,7 @@ def validate_sources(root: Path, modules: dict[str, str]) -> None:
     for path, expected in sorted(modules.items()):
         source = root / path
         if source.is_symlink() or not source.is_dir() or not (source / ".git").exists():
-            raise ReconcileError(f"source is missing or uninitialized: {path}; explicitly run git submodule update --init --recursive")
+            raise ReconcileError(f"source is missing or uninitialized: {path}; run ./setup.sh")
         if source.resolve() != source.absolute():
             raise ReconcileError(f"source path traverses a symlink: {path}")
         try:
@@ -119,7 +119,7 @@ def validate_sources(root: Path, modules: dict[str, str]) -> None:
         if top != source.resolve():
             raise ReconcileError(f"source checkout root does not match its submodule path: {path}")
         if actual != expected:
-            raise ReconcileError(f"source revision mismatch for {path}: expected {expected}, found {actual}; check out the committed gitlink explicitly")
+            raise ReconcileError(f"source revision mismatch for {path}: expected {expected}, found {actual}; run ./setup.sh")
         if git(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], cwd=source):
             raise ReconcileError(f"source checkout is dirty: {path}")
 

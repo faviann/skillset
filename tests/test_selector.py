@@ -699,6 +699,7 @@ class SelectorStartupTests(unittest.TestCase):
         result = self.launch()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("source is missing or uninitialized: sources/acme/skills", result.stderr)
+        self.assertIn("run ./setup.sh", result.stderr)
         self.assertEqual(result.stdout, "")
 
     def test_invalid_sources_toml_refuses_to_open(self) -> None:

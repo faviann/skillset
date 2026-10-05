@@ -2,18 +2,23 @@
 
 ## Clone and bootstrap
 
-Clone the superproject, then explicitly initialize its pinned sources:
+Clone the superproject, then prepare the machine and open the selector:
 
 ```bash
 git clone https://github.com/faviann/skillset.git ~/repos/skillset
 cd ~/repos/skillset
-git submodule update --init --recursive --checkout
-scripts/reconcile-skills.sh
-scripts/reconcile-skills.sh --check
+./setup.sh
 ```
 
-If a clone already exists but a source is uninitialized, run the same explicit
-`git submodule update --init --recursive --checkout` command. Reconciliation itself never
+Setup checks for git, Python 3.11+ and uv. If uv is missing, it asks before using
+the official installer; Enter or EOF declines. It initializes sources at their
+pins, prepares locked selector dependencies, and links `select-skills` and its
+lockfile in `~/.local/bin`. It warns if that directory is missing from PATH.
+With terminal input and output it opens the selector; otherwise it prints
+`Ready. Run: select-skills`. Setup installs no skills.
+
+If a clone already exists but a source is missing or at the wrong commit, rerun
+`./setup.sh`. Reconciliation itself never
 fetches, pulls, initializes, or advances sources. It requires the skillset's
 tracked files to be committed and each initialized source to be clean and at
 the gitlink commit.
@@ -32,7 +37,7 @@ git add .gitmodules sources/owner/repo sources.toml skills.txt
 git commit -m "Select skills from owner/repo"
 ```
 
-Run `scripts/select-skills.py` to edit the selection. Space toggles the highlighted
+After setup, run `select-skills` to edit the selection. Space toggles the highlighted
 skill; Enter does the same in the skills column. Clicking a circle toggles it,
 and clicking a name highlights it. Selecting a name from another source asks
 before replacing its current selection.

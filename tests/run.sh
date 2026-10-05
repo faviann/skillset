@@ -15,5 +15,6 @@ fi
 if [[ "${1:-all}" != stdlib ]]; then
   selector=scripts/select-skills.py
   uv sync --locked --script "$selector"
-  "$(uv python find --script "$selector")" -m unittest discover -s tests -p 'test_selector*.py' -v
+  PYTHONPATH=tests "$(uv python find --script "$selector")" -m unittest -v \
+    test_selector test_selector_install test_setup
 fi
