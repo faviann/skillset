@@ -8,8 +8,11 @@ permissions:
   contents: read
 
 jobs:
-  reconcile:
+  stdlib:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.13']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,10 +20,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
       - name: Git and filesystem integration tests
-        run: python3 scripts/test-reconcile-skills.py
-      - name: Reconcile the committed real selection twice
+        run: tests/run.sh stdlib
+      - name: Install the committed selection twice
         shell: bash
         run: |
           set -euo pipefail

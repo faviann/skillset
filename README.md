@@ -76,7 +76,7 @@ identity, persistence, worktrees, and reproducibility decisions.
 ## Validation
 
 ```bash
-python3 scripts/test-reconcile-skills.py
+tests/run.sh
 ```
 
 Tests use temporary homes and real local Git repositories. CI also initializes

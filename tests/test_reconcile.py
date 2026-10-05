@@ -12,85 +12,34 @@ import unittest
 from pathlib import Path
 
 
-CHECKOUT = Path(__file__).resolve().parent.parent
-RECONCILER_FILES = ("scripts/reconcile-skills.sh", "scripts/reconcile_skills.py")
-
-
-def git(args: list[str], cwd: Path, *, ok: bool = True) -> str:
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    env["GIT_OPTIONAL_LOCKS"] = "0"
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-    )
-    if ok and result.returncode:
-        raise AssertionError(f"git {' '.join(args)} failed:\n{result.stderr}\n{result.stdout}")
-    return result.stdout.strip()
-
-
-def configure_git(repo: Path) -> None:
-    git(["config", "user.name", "Skillset integration tests"], repo)
-    git(["config", "user.email", "skillset-tests@example.invalid"], repo)
-
-
-def write_skill(repo: Path, bucket: str, directory: str, *, identity: str | None = None) -> Path:
-    skill_dir = repo / "skills" / bucket / directory
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    name = identity or directory
-    (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: fixture\n---\n\n# {directory}\n",
-        encoding="utf-8",
-    )
-    return skill_dir
+from fixture import SkillsetFixture, git, write_selection, write_skill
 
 
 class ReconcileIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="skillset-test-")
         self.base = Path(self.temp.name)
-        self.home = self.base / "home"
-        self.home.mkdir()
-        self.origin = self.base / "source-origin"
-        self.origin.mkdir()
-        git(["init", "-q"], self.origin)
-        configure_git(self.origin)
-        write_skill(self.origin, "engineering", "alpha")
-        write_skill(self.origin, "engineering", "beta")
-        write_skill(self.origin, "misc", "unselected")
-        git(["add", "skills"], self.origin)
-        git(["commit", "-qm", "initial source"], self.origin)
-        self.initial_source_commit = git(["rev-parse", "HEAD"], self.origin)
-
-        self.repo = self.base / "skillset"
-        self.repo.mkdir()
-        git(["init", "-q"], self.repo)
-        configure_git(self.repo)
-        (self.repo / "scripts").mkdir()
-        for name in RECONCILER_FILES:
-            destination = self.repo / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(CHECKOUT / name, destination)
-        (self.repo / "scripts/reconcile-skills.sh").chmod(0o755)
-        git(
-            ["-c", "protocol.file.allow=always", "submodule", "add", "-q",
-             str(self.origin), "sources/acme/skills"],
-            self.repo,
-        )
-        self.source = self.repo / "sources/acme/skills"
-        configure_git(self.source)
         self.alpha = "sources/acme/skills/skills/engineering/alpha"
         self.beta = "sources/acme/skills/skills/engineering/beta"
         self.selection = [self.alpha]
-        self.write_selection()
-        git(["add", ".gitmodules", "sources", "skills.txt", "scripts"], self.repo)
-        git(["commit", "-qm", "initial skillset"], self.repo)
+        self.fixture = SkillsetFixture(self.base, {
+            "acme/skills": {
+                "skills/engineering/alpha": "alpha",
+                "skills/engineering/beta": "beta",
+                "skills/misc/unselected": "unselected",
+            },
+        }, self.selection)
+        self.home = self.fixture.home
+        self.repo = self.fixture.repo
+        self.origin = self.fixture.origins["acme/skills"]
+        self.source = self.fixture.sources["acme/skills"]
+        self.initial_source_commit = git(["rev-parse", "HEAD"], self.source)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
     def write_selection(self) -> None:
-        content = "# fixture selection\n" + "".join(f"{path}\n" for path in self.selection)
-        (self.repo / "skills.txt").write_text(content, encoding="utf-8")
+        write_selection(self.repo, self.selection)
 
     def commit_skillset(self, message: str = "update skillset") -> None:
         git(["add", "-A"], self.repo)
@@ -112,13 +61,9 @@ class ReconcileIntegrationTests(unittest.TestCase):
         extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         checkout = repo or self.repo
-        env = os.environ.copy()
-        for key in list(env):
-            if key.startswith("GIT_"):
-                del env[key]
+        env = self.fixture.env.copy()
         env["HOME"] = str(self.home)
         env.update(extra_env or {})
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
         failure = env.pop("SKILLSET_TEST_FAIL_AT", "")
         replacement = env.pop("SKILLSET_TEST_REPLACE_BEFORE_REMOVE", "")
         command = [str(checkout / "scripts/reconcile-skills.sh"), *args]
@@ -195,19 +140,10 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertIn(git(["rev-parse", "HEAD"], self.repo), check.stdout)
 
     def test_additional_submodule_requires_an_explicit_skill_selection(self) -> None:
-        other_origin = self.base / "other-origin"
-        other_origin.mkdir()
-        git(["init", "-q"], other_origin)
-        configure_git(other_origin)
-        write_skill(other_origin, "engineering", "gamma")
-        write_skill(other_origin, "engineering", "not-selected")
-        git(["add", "skills"], other_origin)
-        git(["commit", "-qm", "other source"], other_origin)
-        git(
-            ["-c", "protocol.file.allow=always", "submodule", "add", "-q",
-             str(other_origin), "sources/other/tool"],
-            self.repo,
-        )
+        self.fixture.add_source("other/tool", {
+            "skills/engineering/gamma": "gamma",
+            "skills/engineering/not-selected": "not-selected",
+        })
         self.selection.append("sources/other/tool/skills/engineering/gamma")
         self.write_selection()
         self.commit_skillset("add and select another source")
@@ -254,7 +190,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_selected_name_collision_fails_before_any_effect(self) -> None:
-        write_skill(self.source, "productivity", "alpha")
+        write_skill(self.source, "skills/productivity/alpha")
         self.commit_source(pin=True)
         self.selection = [self.alpha, "sources/acme/skills/skills/productivity/alpha"]
         self.write_selection()
@@ -298,7 +234,7 @@ raise SystemExit(m.main(sys.argv[4:]))
                 self.commit_source(pin=True)
 
     def test_synced_name_is_reserved(self) -> None:
-        write_skill(self.source, "engineering", "synced")
+        write_skill(self.source, "skills/engineering/synced")
         self.commit_source(pin=True)
         self.selection.append("sources/acme/skills/skills/engineering/synced")
         self.write_selection()
@@ -437,7 +373,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertFalse((self.home / ".agents").exists())
 
     def test_wrong_source_revision_fails_before_consumer_changes(self) -> None:
-        write_skill(self.source, "misc", "new-commit")
+        write_skill(self.source, "skills/misc/new-commit")
         git(["add", "skills/misc/new-commit"], self.source)
         git(["commit", "-qm", "unrecorded source update"], self.source)
         self.assertNotEqual(git(["rev-parse", "HEAD"], self.source), self.initial_source_commit)
@@ -452,7 +388,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertFalse((self.home / ".agents").exists())
 
     def test_staged_gitlink_difference_is_rejected_even_when_worktree_is_at_head_pin(self) -> None:
-        write_skill(self.source, "misc", "newer")
+        write_skill(self.source, "skills/misc/newer")
         newer = self.commit_source(pin=False)
         git(["add", "sources/acme/skills"], self.repo)
         git(["checkout", self.initial_source_commit], self.source)
@@ -465,7 +401,7 @@ raise SystemExit(m.main(sys.argv[4:]))
 
     def test_ignored_untracked_selected_content_is_rejected(self) -> None:
         (self.source / ".gitignore").write_text("skills/engineering/shadow/\n", encoding="utf-8")
-        write_skill(self.source, "engineering", "shadow")
+        write_skill(self.source, "skills/engineering/shadow")
         self.commit_source(pin=True)
         shadow = self.source / "skills/engineering/shadow"
         shadow.mkdir(parents=True, exist_ok=True)
@@ -564,7 +500,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertEqual(self.run_reconciler().returncode, 0)
 
         (self.source / "skills/engineering/alpha/SKILL.md").write_text(old_body + "Version two\n")
-        write_skill(self.source, "engineering", "gamma")
+        write_skill(self.source, "skills/engineering/gamma")
         self.commit_source(pin=True)
         self.selection = [self.beta]
         self.write_selection()
