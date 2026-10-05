@@ -39,12 +39,18 @@ before replacing its current selection.
 
 Ctrl+S reviews additions and removals against the last commit. **Save and install**
 is the default: it writes `skills.txt`, closes the selector, commits only that
-file, and runs the installer in your terminal. When the branch is ahead of its
+file if needed, and runs the installer in your terminal. When the branch is ahead of its
 upstream, it reminds you to run `git push`; the selector never pushes. Install
 failures keep the commit, and commit failures keep the saved file without
 installing. This choice is disabled with a reason in linked worktrees, on a
 detached HEAD, during a merge or rebase, when other tracked changes are uncommitted,
 or while selected entries remain under **Not in catalog**.
+
+The title shows **not installed** when `skills.txt` differs from HEAD or a read-only
+installation check finds links to update. Ctrl+S then offers **Install** even with
+no unsaved changes; it preserves the saved file and commits only if needed. A
+failed check appears on the message line and disables Install with its reason.
+After an install failure, run the skill selector again and choose Install.
 
 **Save only** rewrites `skills.txt` in sorted order with its standard header and
 stays open. It becomes the default when Save and install is unavailable.

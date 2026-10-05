@@ -93,6 +93,7 @@ def ensure_skillset_committed(
             "tracked skillset changes are not committed; commit selection, "
             "source pins, and install code before installing:\n"
             + "\n".join(f"  {path}" for path in sorted(changed))
+            + ("\nrun select-skills and choose Install" if "skills.txt" in changed else "")
         )
     for item in (".gitmodules", SELECTION_PATH, "sources.toml", "scripts/reconcile-skills.sh",
                  "scripts/reconcile_skills.py", "scripts/skill_catalog.py"):

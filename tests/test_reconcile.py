@@ -453,6 +453,7 @@ raise SystemExit(m.main(sys.argv[4:]))
                 result = self.run_reconciler(*args)
                 self.assert_reconcile_fails(result, "tracked skillset changes are not committed")
                 self.assertIn("skills.txt", result.stderr)
+                self.assertIn("run select-skills and choose Install", result.stderr)
                 self.assertEqual(list(self.home.iterdir()), [])
 
     def test_committed_gate_allows_only_exempt_paths(self) -> None:
@@ -469,6 +470,7 @@ raise SystemExit(m.main(sys.argv[4:]))
             ensure_skillset_committed(self.repo, exempt={"skills.txt"})
         self.assertIn("README.md", str(caught.exception))
         self.assertNotIn("skills.txt", str(caught.exception))
+        self.assertNotIn("run select-skills and choose Install", str(caught.exception))
 
     def test_committed_gate_lists_staged_and_unstaged_paths(self) -> None:
         staged_path = "README caf\u00e9.md"
@@ -483,6 +485,13 @@ raise SystemExit(m.main(sys.argv[4:]))
             ensure_skillset_committed(self.repo)
         self.assertIn(staged_path, str(caught.exception))
         self.assertIn("skills.txt", str(caught.exception))
+        self.assertIn("run select-skills and choose Install", str(caught.exception))
+
+        git(["checkout", "HEAD", "--", "skills.txt"], self.repo)
+        with self.assertRaises(ReconcileError) as caught:
+            ensure_skillset_committed(self.repo)
+        self.assertIn(staged_path, str(caught.exception))
+        self.assertNotIn("run select-skills and choose Install", str(caught.exception))
 
     def test_staged_gitlink_difference_is_rejected_even_when_worktree_is_at_head_pin(self) -> None:
         write_skill(self.source, "skills/misc/newer")
