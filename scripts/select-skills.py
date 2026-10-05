@@ -194,7 +194,7 @@ class ChoiceDialog(ModalScreen[int | None]):
     ChoiceDialog { align: center bottom; background: transparent; }
     #dialog { height: auto; max-height: 85%; margin: 0 2 2 2; padding: 1 2; border: round #D77757; }
     #dialog-title { height: auto; color: #D77757; margin-bottom: 1; }
-    #dialog-details { height: auto; max-height: 12; overflow-y: auto; margin-bottom: 1; }
+    #dialog-details { height: 1fr; max-height: 12; overflow-y: auto; margin-bottom: 1; }
     #choices { height: auto; max-height: 6; }
     #dialog-hint { height: 1; margin-top: 1; color: #999999; }
     """
