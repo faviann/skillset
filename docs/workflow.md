@@ -26,18 +26,26 @@ In a non-live authoring clone of skillset, add a source and discover its candida
 git submodule add https://github.com/owner/repo.git sources/owner/repo
 git -C sources/owner/repo ls-files '**/SKILL.md' SKILL.md
 # Declare any harness variant trees in sources.toml.
-# Add only the desired canonical skill-directory paths to skills.txt.
+# Read each candidate's SKILL.md frontmatter name.
+# Add desired owner/repo:name lines to skills.txt by hand.
 git add .gitmodules sources/owner/repo sources.toml skills.txt
 git commit -m "Select skills from owner/repo"
 ```
 
-Each non-comment line in `skills.txt` is a normalized checkout-relative path
-to a selected canonical skill directory containing `SKILL.md`. Commit
-`.gitmodules`, the new gitlink, any `sources.toml` declarations, and the selection
-together. To remove a skill, delete its line and commit. To remove a whole source,
-remove its selected lines and `sources.toml` entry, then remove the submodule and
-commit the changes together. A later reconciliation cleans only links recorded
-as owned, including dangling links to removed sources.
+Until the interactive selector exists, edit `skills.txt` by hand. Each selection
+line is `owner/repo:name`: `owner/repo` is the source's folder under `sources/`,
+and `name` is the skill's frontmatter name. Neither part may contain `:`.
+For example, `faviann/agent-skills:publish-artifact` selects that named skill
+from `sources/faviann/agent-skills`. Blank lines and lines beginning with `#`
+are ignored. Directory-path selections are rejected; there is no conversion
+from the old format. This upgrade starts with an empty selection, so select
+the desired skills again.
+
+Commit `.gitmodules`, the new gitlink, any `sources.toml` declarations, and the
+selection together. To remove a skill, delete its line and commit. To remove a
+whole source, remove its selected lines and `sources.toml` entry, then remove the
+submodule and commit the changes together. A later reconciliation cleans only
+links recorded as owned, including dangling links to removed sources.
 
 The catalog includes valid tracked skills in every source layout, including
 hidden folders, except beneath declared variant trees. Plugin manifests do not
@@ -69,10 +77,14 @@ git add sources/owner/repo
 git commit -m "Update owner/repo source pin"
 ```
 
-If the new source commit adds, removes, or renames selected skills, update
-`skills.txt` in the same skillset commit. If it introduces a harness port tree,
-declare it in `sources.toml`; undeclared repeated canonical names fail `--check`
-in the update clone. Invalid copies do not count as repeats. A source-only
+If the new source commit removes or renames selected skills, update
+`skills.txt` in the same skillset commit. Moving a skill within its source while
+keeping its frontmatter name leaves its selection valid; reconciliation relinks
+it at the new location. If a selected name no longer exists, installation stops
+with a line error before changing any links. Remove that selection, commit, and
+reconcile again to remove its owned links. If the source introduces a harness
+port tree, declare it in `sources.toml`; undeclared repeated canonical names
+fail `--check` in the update clone. Invalid copies do not count as repeats. A source-only
 commit does not change the effective selection. Publish the new source commit
 before publishing the skillset pin, so a fresh clone can obtain it.
 

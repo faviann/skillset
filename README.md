@@ -17,38 +17,37 @@ The first source is the canonical upstream `mattpocock/skills`, represented
 under `sources/mattpocock/skills` and currently fetched from the maintained
 `faviann/skills-mattpocock` fork. The fork was reset to upstream `main` on
 2026-10-02; its earlier history is kept under the tag
-`archive/pre-reset-2026-10`. It selects 27 skills.
+`archive/pre-reset-2026-10`.
 
 The second source is `b1rdmania/claude-plain-english-skill` under
-`sources/b1rdmania/claude-plain-english-skill`, pinned at v0.6.1. It selects
-`plain-english` and `simple-english`. The repository-root `SKILL.md` copy, the
-plugin manifests and the output style are not selected.
+`sources/b1rdmania/claude-plain-english-skill`, pinned at v0.6.1.
 
 The third source is `rampstackco/claude-skills` under
 `sources/rampstackco/claude-skills`, pinned at commit 3d4510a from 2026-09-15.
 Its last release tag, v1.2.0, is 67 commits older, so the pin follows the
-default branch. It is a reference only. None of its 103 skills is selected. To
-expose one, add its directory to `skills.txt` as described in
-[docs/workflow.md](docs/workflow.md).
+default branch.
 
 The fourth source is `michael-denyer/pstack-claude` under
-`sources/michael-denyer/pstack-claude`, pinned at v0.9.45. It is a reference
-only. None of its 54 skills, all under `plugins/pstack/skills`, is selected.
+`sources/michael-denyer/pstack-claude`, pinned at v0.9.45, with skills under
+`plugins/pstack/skills`.
 The same skills are installed on this workstation as the `pstack` Claude Code
 plugin, which also carries the agents and hook they depend on, so selecting
 them here would duplicate that plugin.
 
 The fifth source is `humanlayer/skills` under `sources/humanlayer/skills`,
 pinned at commit ca7c808 from 2026-09-17 and fetched directly from upstream.
-It is a reference only. None of its six skills, under `plugins/*/skills`, is
-selected. Skill evaluation and any later selections are tracked in
+Its skills live under `plugins/*/skills`. Skill evaluation is tracked in
 [#11](https://github.com/faviann/skillset/issues/11).
 
 The sixth source is `faviann/agent-skills` under
 `sources/faviann/agent-skills`, the repository for first-party skills authored
-by faviann. It selects `publish-artifact`, which moved there with its history
+by faviann. It includes `publish-artifact`, which moved there with its history
 from the `mattpocock/skills` fork. Author new first-party skills in that
 repository, not in skillset.
+
+This upgrade empties `skills.txt`. Existing path selections are not converted;
+select skills again using `owner/repo:name` lines as described in the
+[workflow guide](docs/workflow.md#select-skills).
 
 ## Bootstrap a new installation
 

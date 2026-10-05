@@ -13,7 +13,8 @@ class FixtureTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="skillset-fixture-test-")
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
-        self.selection = ["sources/acme/skills/nested/alpha", "sources/other/beta"]
+        self.selection = ["acme/skills:alpha", "other/beta:beta"]
+        self.paths = ["sources/acme/skills/nested/alpha", "sources/other/beta"]
         self.fixture = SkillsetFixture(self.base, {
             "acme/skills": {"nested/alpha": "alpha", "unselected": "unselected"},
             "other/beta": {".": "beta"},
@@ -34,7 +35,7 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual((repo / "skills.txt").read_text(),
                          "# fixture selection\n" + "\n".join(self.selection) + "\n")
         self.assertEqual((repo / "sources.toml").read_text(), "")
-        for path, name in zip(self.selection, ("alpha", "beta")):
+        for path, name in zip(self.paths, ("alpha", "beta")):
             with self.subTest(skill=path):
                 self.assertIn(f"name: {name}\n", (repo / path / "SKILL.md").read_text())
         self.assertTrue((repo / "sources/acme/skills/unselected/SKILL.md").is_file())
@@ -54,7 +55,7 @@ class FixtureTests(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-        for path in self.selection:
+        for path in self.paths:
             self.assertEqual((clone / path / "SKILL.md").read_bytes(),
                              (repo / path / "SKILL.md").read_bytes())
 

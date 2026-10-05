@@ -23,8 +23,8 @@ class ReconcileIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="skillset-test-")
         self.base = Path(self.temp.name)
-        self.alpha = "sources/acme/skills/skills/engineering/alpha"
-        self.beta = "sources/acme/skills/skills/engineering/beta"
+        self.alpha = "acme/skills:alpha"
+        self.beta = "acme/skills:beta"
         self.selection = [self.alpha]
         self.fixture = SkillsetFixture(self.base, {
             "acme/skills": {
@@ -150,7 +150,7 @@ raise SystemExit(m.main(sys.argv[4:]))
             self.assertEqual(plan.head, git(["rev-parse", "HEAD"], self.repo))
             self.assertEqual(
                 {(record.path, record.target) for record in plan.creations},
-                {(self.home / directory / "alpha", str(self.repo / self.alpha))
+                {(self.home / directory / "alpha", str(self.source / "skills/engineering/alpha"))
                  for directory in (AGENTS_DIR, CLAUDE_DIR)},
             )
         self.assertEqual(list(self.home.iterdir()), [])
@@ -163,8 +163,8 @@ raise SystemExit(m.main(sys.argv[4:]))
                 capture_output=True, text=True, check=False, timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_link(AGENTS_DIR, "alpha", self.repo / self.alpha)
-        self.assert_link(CLAUDE_DIR, "alpha", self.repo / self.alpha)
+        self.assert_link(AGENTS_DIR, "alpha", self.source / "skills/engineering/alpha")
+        self.assert_link(CLAUDE_DIR, "alpha", self.source / "skills/engineering/alpha")
 
     def test_untracked_catalog_module_fails_the_gate(self) -> None:
         git(["rm", "--cached", "scripts/skill_catalog.py"], self.repo)
@@ -197,7 +197,7 @@ raise SystemExit(m.main(sys.argv[4:]))
             "skills/engineering/gamma": "gamma",
             "skills/engineering/not-selected": "not-selected",
         })
-        self.selection.append("sources/other/tool/skills/engineering/gamma")
+        self.selection.append("other/tool:gamma")
         self.write_selection()
         self.commit_skillset("add and select another source")
 
@@ -270,6 +270,30 @@ raise SystemExit(m.main(sys.argv[4:]))
                     self.assertEqual(os.readlink(path), str(self.source / "skills/engineering/alpha"))
                 for directory in (AGENTS_DIR, CLAUDE_DIR):
                     self.assertFalse((self.home / directory / "beta").exists())
+
+    def test_selection_resolution_error_stops_before_any_link_changes(self) -> None:
+        installed = self.run_reconciler()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        existing = {
+            self.home / directory / "alpha": (self.home / directory / "alpha").lstat()
+            for directory in (AGENTS_DIR, CLAUDE_DIR,
+                              Path(".agents/.skillset/receipts"),
+                              Path(".claude/.skillset/receipts"))
+        }
+        # Resolving beta first must not publish it or retire alpha when a later
+        # selection line cannot resolve.
+        self.selection = [self.beta, "acme/skills:missing"]
+        self.write_selection()
+        self.commit_skillset()
+        for args in ((), ("--check",)):
+            with self.subTest(args=args):
+                result = self.run_reconciler(*args)
+                self.assert_reconcile_fails(result, "skills.txt:3: name is missing at the pinned commit")
+                for path, before in existing.items():
+                    self.assertTrue(os.path.samestat(before, path.lstat()), str(path))
+                    self.assertEqual(os.readlink(path), str(self.source / "skills/engineering/alpha"))
+                for directory in (AGENTS_DIR, CLAUDE_DIR):
+                    self.assertFalse((self.home / directory / "beta").is_symlink())
 
     def test_existing_install_directory_skill_identity_collision_is_detected(self) -> None:
         local = self.home / ".agents/skills/local-folder"
@@ -354,7 +378,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertFalse((self.home / ".agents").exists())
         self.assertEqual((self.home / ".claude").read_text(encoding="utf-8"), "preserve")
 
-    def test_stale_link_is_removed_after_selected_source_path_disappears(self) -> None:
+    def test_deleted_selected_skill_blocks_install_until_its_line_is_removed(self) -> None:
         installed = self.run_reconciler()
         self.assertEqual(installed.returncode, 0, installed.stderr)
         stale_target = self.source / "skills/engineering/alpha"
@@ -363,10 +387,15 @@ raise SystemExit(m.main(sys.argv[4:]))
 
         git(["rm", "-r", "skills/engineering/alpha"], self.source)
         self.commit_source(pin=True)
+        self.assertFalse(stale_target.exists())
+        failed = self.run_reconciler()
+        self.assert_reconcile_fails(failed, "skills.txt:2: name is missing at the pinned commit: acme/skills:alpha")
+        for install_dir in (AGENTS_DIR, CLAUDE_DIR):
+            self.assert_link(install_dir, "alpha", stale_target)
+
         self.selection = []
         self.write_selection()
         self.commit_skillset("remove selection")
-        self.assertFalse(stale_target.exists())
 
         result = self.run_reconciler()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -436,11 +465,11 @@ raise SystemExit(m.main(sys.argv[4:]))
         shadow = self.source / "skills/engineering/shadow"
         shadow.mkdir(parents=True, exist_ok=True)
         (shadow / "SKILL.md").write_text("---\nname: shadow\ndescription: fixture\n---\n", encoding="utf-8")
-        self.selection.append("sources/acme/skills/skills/engineering/shadow")
+        self.selection.append("acme/skills:shadow")
         self.write_selection()
         self.commit_skillset()
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "selected path is not a valid canonical skill")
+        self.assert_reconcile_fails(result, "name is missing at the pinned commit")
         self.assertFalse((self.home / ".agents").exists())
 
     def test_relocation_uses_recorded_old_target_to_relink(self) -> None:
@@ -455,6 +484,22 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assert_link(AGENTS_DIR, "alpha", expected)
         self.assert_link(CLAUDE_DIR, "alpha", expected)
         self.assertIn("removed 2 owned skill links and created 2 skill links", result.stdout)
+
+    def test_moved_skill_folder_relinks_without_changing_selection(self) -> None:
+        installed = self.run_reconciler()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        selection = (self.repo / "skills.txt").read_text(encoding="utf-8")
+        moved = self.source / "skills/productivity/alpha"
+        moved.parent.mkdir()
+        (self.source / "skills/engineering/alpha").rename(moved)
+        self.commit_source()
+        result = self.run_reconciler()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.repo / "skills.txt").read_text(encoding="utf-8"), selection)
+        self.assertIn("removed 2 owned skill links and created 2 skill links", result.stdout)
+        for install_dir in (AGENTS_DIR, CLAUDE_DIR):
+            self.assert_link(install_dir, "alpha", moved)
+        self.assertEqual(self.run_reconciler("--check").returncode, 0)
 
     def test_receipt_before_publication_recovers_without_adopting(self) -> None:
         failed = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-receipt-create"})
@@ -668,9 +713,6 @@ raise SystemExit(m.main(sys.argv[4:]))
         moved.parent.mkdir()
         (self.source / "skills/engineering/alpha").rename(moved)
         self.commit_source()
-        self.selection = ["sources/acme/skills/skills/productivity/alpha"]
-        self.write_selection()
-        self.commit_skillset()
         result = self.run_reconciler()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_link(AGENTS_DIR, "alpha", moved)

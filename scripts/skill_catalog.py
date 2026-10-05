@@ -6,12 +6,15 @@ import os
 import re
 import subprocess
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z", re.ASCII)
 PLAIN_NAME = re.compile(r"name: ([a-z0-9]+(?:-[a-z0-9]+)*)\Z", re.ASCII)
 HARNESSES = {"claude-code", "codex", "pi", "opencode"}
+SELECTION_PATH = "skills.txt"
+SELECTION_HEADER = "# Written by the skill selector. Comments and ordering are not kept."
 
 
 class ReconcileError(Exception):
@@ -277,39 +280,54 @@ def discover_catalog(root: Path, modules: dict[str, str]) -> dict[str, SourceCat
     return catalog
 
 
-def selected_skills(root: Path, catalog: dict[str, SourceCatalog]) -> list[tuple[str, str]]:
-    selection = root / "skills.txt"
+def read_selection(root: Path) -> dict[str, int]:
+    """Read name lines and their line numbers without requiring catalog resolution."""
+    selection = root / SELECTION_PATH
     if selection.is_symlink() or not selection.is_file():
-        raise ReconcileError("skills.txt is missing or is not a regular file")
+        raise ReconcileError(f"{SELECTION_PATH} is missing or is not a regular file")
     try:
         rows = selection.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as error:
-        raise ReconcileError("could not read skills.txt as UTF-8") from error
-    names: dict[str, str] = {}
-    paths: set[str] = set()
-    result = []
+        raise ReconcileError(f"could not read {SELECTION_PATH} as UTF-8") from error
+    lines: dict[str, int] = {}
     for number, raw in enumerate(rows, 1):
         value = raw.strip()
         if not value or value.startswith("#"):
             continue
-        if "\\" in value or value.startswith("/") or any(ord(c) < 32 for c in value) or Path(value).as_posix() != value or any(p in {".", ".."} for p in Path(value).parts):
-            raise ReconcileError(f"invalid selection path on skills.txt:{number}")
-        if value in paths:
-            raise ReconcileError(f"duplicate selected path on skills.txt:{number}: {value}")
-        paths.add(value)
-        module = next((m for m in sorted(catalog, key=len, reverse=True) if value == m or value.startswith(m + "/")), None)
-        if module is None:
-            raise ReconcileError(f"selection is not under a configured submodule on skills.txt:{number}: {value}")
-        source = catalog[module]
-        skill_path = str((root / value).absolute())
-        for invalid in source.invalid.get(Path(value).name, []):
-            if invalid.path == skill_path:
-                raise ReconcileError(invalid.error)
-        name = next((name for name, path in source.skills.items() if path == skill_path), None)
-        if name is None:
-            raise ReconcileError(f"selected path is not a valid canonical skill: {value}")
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+):([^:/\\\s]+)", value)
+        if (match is None or any(part in {".", ".."} for part in match.group(1, 2))
+                or any(ord(c) < 32 for c in value)):
+            raise ReconcileError(f"{SELECTION_PATH}:{number}: bad syntax; expected owner/repo:name: {value}")
+        if value in lines:
+            raise ReconcileError(f"{SELECTION_PATH}:{number}: duplicate selection line: {value}")
+        lines[value] = number
+    return lines
+
+
+def write_selection(root: Path, selection: Iterable[str]) -> None:
+    """Write selection lines in the selector's stable format."""
+    (root / SELECTION_PATH).write_text(
+        "\n".join([SELECTION_HEADER, *sorted(selection)]) + "\n", encoding="utf-8",
+    )
+
+
+def selected_skills(root: Path, catalog: dict[str, SourceCatalog]) -> list[tuple[str, str]]:
+    names: dict[str, str] = {}
+    result = []
+    for value, number in read_selection(root).items():
+        source_name, name = value.split(":")
+        location = f"{SELECTION_PATH}:{number}"
+        source = catalog.get(f"sources/{source_name}")
+        if source is None:
+            raise ReconcileError(f"{location}: unknown source: {source_name}")
+        if name not in source.skills:
+            invalid = source.invalid.get(name, [])
+            if invalid:
+                reasons = "\n  ".join(entry.error for entry in invalid)
+                raise ReconcileError(f"{location}: selected name is invalid: {value}\n  {reasons}")
+            raise ReconcileError(f"{location}: name is missing at the pinned commit: {value}")
         if name in names:
-            raise ReconcileError(f"selected skill-name collision: {name}\n  {names[name]}\n  {value}")
+            raise ReconcileError(f"{location}: same name selected from two sources: {name}\n  {names[name]}\n  {value}")
         names[name] = value
-        result.append((name, skill_path))
+        result.append((name, source.skills[name]))
     return sorted(result)
