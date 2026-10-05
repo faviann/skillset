@@ -8,6 +8,21 @@ permissions:
   contents: read
 
 jobs:
+  selector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: scripts/select-skills.py.lock
+      - name: Selector tests
+        run: tests/run.sh selector
+
   stdlib:
     runs-on: ubuntu-latest
     strategy:
