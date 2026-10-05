@@ -1,4 +1,4 @@
-"""Discover canonical skills and validate selections in an explicit checkout."""
+"""Discover skills and resolve install-directory targets in an explicit checkout."""
 
 from __future__ import annotations
 
@@ -13,6 +13,13 @@ from pathlib import Path
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z", re.ASCII)
 PLAIN_NAME = re.compile(r"name: ([a-z0-9]+(?:-[a-z0-9]+)*)\Z", re.ASCII)
 HARNESSES = {"claude-code", "codex", "pi", "opencode"}
+# Install directories are relative to HOME; harness order defines precedence.
+AGENTS_DIR = Path(".agents/skills")
+CLAUDE_DIR = Path(".claude/skills")
+INSTALL_HARNESSES = {
+    AGENTS_DIR: ("codex", "pi", "opencode"),
+    CLAUDE_DIR: ("claude-code", "opencode"),
+}
 SELECTION_PATH = "skills.txt"
 SELECTION_HEADER = "# Written by the skill selector. Comments and ordering are not kept."
 
@@ -31,7 +38,7 @@ class InvalidSkill:
 class SourceCatalog:
     skills: dict[str, str]
     invalid: dict[str, list[InvalidSkill]]
-    variants: dict[str, str]
+    variants: dict[str, dict[str, str]]
 
 
 def git(args: list[str], cwd: Path, *, check: bool = True) -> str:
@@ -257,25 +264,40 @@ def discover_catalog(root: Path, modules: dict[str, str]) -> dict[str, SourceCat
                 raise ReconcileError(f"sources.toml variant tree is not tracked: {module}: {tree}")
         candidates: dict[str, list[str]] = {}
         invalid: dict[str, list[InvalidSkill]] = {}
+        variant_skills: dict[str, dict[str, str]] = {tree: {} for tree in trees.values()}
         tracked_paths = set(tracked)
         for path in sorted(tracked):
-            if Path(path).name != "SKILL.md" or any(Path(path).is_relative_to(tree) for tree in trees.values()):
+            if Path(path).name != "SKILL.md":
                 continue
+            matching_trees = [tree for tree in variant_skills if Path(path).is_relative_to(tree)]
             directory = (source / path).parent
             value = directory.relative_to(root).as_posix()
             try:
                 name, target = validate_skill(root, module, value, tracked_paths, extras)
             except ReconcileError as error:
+                if matching_trees:
+                    raise ReconcileError(f"invalid variant skill in {value}: {error}") from error
                 invalid.setdefault(directory.name, []).append(InvalidSkill(str(directory.absolute()), str(error)))
             else:
-                candidates.setdefault(name, []).append(target)
+                if matching_trees:
+                    for tree in matching_trees:
+                        copies = variant_skills[tree]
+                        if name in copies:
+                            raise ReconcileError(
+                                f"repeated variant skill name in {module}: {tree}: {name}\n"
+                                f"  {copies[name]}\n  {target}"
+                            )
+                        copies[name] = target
+                else:
+                    candidates.setdefault(name, []).append(target)
         repeats = {name: paths for name, paths in candidates.items() if len(paths) > 1}
         if repeats:
             copies = "\n".join(f"  {name}:\n    " + "\n    ".join(paths)
                                for name, paths in repeats.items())
             raise ReconcileError(f"undeclared repeated canonical skill names in {module}:\n{copies}")
         catalog[module] = SourceCatalog(
-            {name: paths[0] for name, paths in candidates.items()}, invalid, trees,
+            {name: paths[0] for name, paths in candidates.items()}, invalid,
+            {harness: variant_skills[tree] for harness, tree in trees.items()},
         )
     return catalog
 
@@ -311,9 +333,9 @@ def write_selection(root: Path, selection: Iterable[str]) -> None:
     )
 
 
-def selected_skills(root: Path, catalog: dict[str, SourceCatalog]) -> list[tuple[str, str]]:
+def selected_skills(root: Path, catalog: dict[str, SourceCatalog]) -> dict[tuple[Path, str], str]:
     names: dict[str, str] = {}
-    result = []
+    result = {}
     for value, number in read_selection(root).items():
         source_name, name = value.split(":")
         location = f"{SELECTION_PATH}:{number}"
@@ -329,5 +351,9 @@ def selected_skills(root: Path, catalog: dict[str, SourceCatalog]) -> list[tuple
         if name in names:
             raise ReconcileError(f"{location}: same name selected from two sources: {name}\n  {names[name]}\n  {value}")
         names[name] = value
-        result.append((name, source.skills[name]))
-    return sorted(result)
+        for directory, harnesses in INSTALL_HARNESSES.items():
+            # Choose the tree first: a gap in it uses canonical, not a later tree.
+            copies = next((source.variants[harness] for harness in harnesses
+                           if harness in source.variants), {})
+            result[directory, name] = copies.get(name, source.skills[name])
+    return dict(sorted(result.items()))

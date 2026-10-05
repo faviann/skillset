@@ -45,9 +45,27 @@ pi = "dist/pi/.agents/skills"
 
 Supported harness keys are `claude-code`, `codex`, `pi`, and `opencode`. Unknown
 sources or harnesses and missing, untracked, or symlinked trees fail validation.
-Variant trees are excluded from canonical discovery; their contents are not
-validated or linked as variants yet. A name present only in a variant tree is
-not in the catalog. Every install and `--check` rejects repeated valid canonical
+Variant trees are excluded from canonical discovery. Every tracked skill in a
+declared variant tree must pass the same per-skill validation as a canonical
+copy, even when unselected or present only in that tree. An invalid variant
+fails the whole install and `--check`. Valid copies match canonical skills by
+frontmatter name; a name present only in a variant tree is not in the catalog.
+Repeated names within one variant tree fail because the target is ambiguous.
+
+The catalog uses this fixed harness order for each install directory:
+
+| Install directory | Harness precedence |
+| --- | --- |
+| `~/.agents/skills` | `codex`, `pi`, `opencode` |
+| `~/.claude/skills` | `claude-code`, `opencode` |
+
+For each source and install directory, the first declared harness in that order
+chooses the variant tree. If it has no copy of a selected name, that directory
+gets the canonical copy, even if a later tree has a copy. With no matching
+declaration, it also gets the canonical copy. Thus rampstack's Codex variant
+goes into `~/.agents/skills` and its canonical copy into `~/.claude/skills`.
+
+Every install and `--check` rejects repeated valid canonical
 names within a source, even if the copies are unselected, and identifies the
 copies. Invalid copies do not count as repeats. Each source's tracked and
 untracked or ignored files are listed once for catalog discovery, with no
@@ -67,7 +85,7 @@ lazy fetching is disabled too. `--check` performs the same validation without
 creating a lock or writing state. A concurrent writer can cause a transient
 check failure; this is not a globally atomic snapshot.
 
-Each harness retains per-name symlink receipts:
+Each install directory retains per-name symlink receipts:
 
 ```text
 ~/.agents/.skillset/receipts/<name>
@@ -80,6 +98,11 @@ requires the same symlink inode and target text. An unrelated replacement
 pointing to exactly the same source is still a different object and is neither
 adopted nor deleted. No JSON journal, source-prefix heuristic, or duplicate
 source lockfile is needed.
+
+The desired links hold a separate target for each install directory and name.
+Switching between canonical and variant copies uses the existing relocation
+path: remove the owned old link and publish the new target with its receipt.
+Receipts keep the same format and require no migration.
 
 The receipt is durable before exclusive publication. Removal rechecks ownership
 immediately before unlinking, then persists the consumer removal before deleting
@@ -100,8 +123,8 @@ leave partial progress; rerun after repairing the cause.
 
 The workstation persists `~/.agents` and `~/.claude` through an LXC rebuild,
 but does not persist every directory under `~/.local/state`. Receipts therefore
-live beside the consumer trees. Each harness has its own receipt directory,
-so publication does not cross the separate harness bind mounts.
+live beside the install directories. Each install directory has its own receipt
+directory, so publication does not cross their separate bind mounts.
 
 Backup and restore must preserve the hard-link relationship between receipts
 and consumer symlinks. Copy each complete harness tree with `cp -a` or an

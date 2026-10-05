@@ -13,6 +13,8 @@ from fixture import CHECKOUT, SkillsetFixture, git, write_skill
 
 sys.path.insert(0, str(CHECKOUT / "scripts"))
 from skill_catalog import (
+    AGENTS_DIR,
+    CLAUDE_DIR,
     SELECTION_PATH,
     ReconcileError,
     SourceCatalog,
@@ -42,7 +44,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(set(catalogs), {"sources/acme/skills"})
         return catalogs["sources/acme/skills"]
 
-    def selected(self) -> list[tuple[str, str]]:
+    def selected(self) -> dict[tuple[Path, str], str]:
         return selected_skills(self.repo, discover_catalog(self.repo, parse_modules(self.repo)))
 
     def selection_text(self, text: str) -> None:
@@ -81,7 +83,10 @@ class CatalogTests(unittest.TestCase):
     def test_selection_resolves_frontmatter_name_and_skips_blank_and_comment_lines(self) -> None:
         self.selection_text("\n# chosen skills\n  # another comment\n\n acme/skills:alpha \n")
         self.assertEqual(read_selection(self.repo), {"acme/skills:alpha": 5})
-        self.assertEqual(self.selected(), [("alpha", str(self.alpha))])
+        self.assertEqual(self.selected(), {
+            (AGENTS_DIR, "alpha"): str(self.alpha),
+            (CLAUDE_DIR, "alpha"): str(self.alpha),
+        })
 
     def test_selection_syntax_errors_including_old_paths_have_line_numbers(self) -> None:
         for line in ("sources/acme/skills/skills/engineering/alpha", "acme/skills",
@@ -257,7 +262,10 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog.invalid["skills"][0].path, str(self.source))
         self.assertIn("additional SKILL.md", catalog.invalid["skills"][0].error)
         self.selection_text("acme/skills:skills\n")
-        self.assertEqual(self.selected(), [("skills", str(canonical))])
+        self.assertEqual(self.selected(), {
+            (AGENTS_DIR, "skills"): str(canonical),
+            (CLAUDE_DIR, "skills"): str(canonical),
+        })
 
     def test_invalid_copies_with_same_folder_name_keep_each_reason(self) -> None:
         duplicate = write_skill(self.source, "other/alpha", identity="beta")
@@ -268,16 +276,92 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("does not match its parent", errors[str(duplicate)])
 
     def test_declared_variant_copies_and_variant_only_names_are_excluded(self) -> None:
-        write_skill(self.source, "dist/codex/alpha")
-        write_skill(self.source, "dist/codex/only-variant")
-        invalid = write_skill(self.source, "dist/codex/invalid")
-        (invalid / "SKILL.md").write_text("not frontmatter", encoding="utf-8")
+        variant = write_skill(self.source, "dist/codex/other-group/alpha")
+        variant_only = write_skill(self.source, "dist/codex/only-variant")
         self.commit_source()
         self.declare_variant()
         catalog = self.catalog()
         self.assertEqual(catalog.skills, {"alpha": str(self.alpha)})
         self.assertEqual(catalog.invalid, {})
-        self.assertEqual(catalog.variants, {"codex": "dist/codex"})
+        self.assertEqual(catalog.variants, {"codex": {
+            "alpha": str(variant), "only-variant": str(variant_only),
+        }})
+        self.selection_text("acme/skills:alpha\n")
+        self.assertEqual(self.selected(), {
+            (AGENTS_DIR, "alpha"): str(variant),
+            (CLAUDE_DIR, "alpha"): str(self.alpha),
+        })
+        self.selection_text("acme/skills:only-variant\n")
+        with self.assertRaisesRegex(ReconcileError, "name is missing at the pinned commit"):
+            self.selected()
+
+    def test_install_directories_use_fixed_harness_precedence(self) -> None:
+        self.selection_text("acme/skills:alpha\n")
+        declarations = []
+        for added, agents_harness, claude_harness in (
+            (("opencode",), "opencode", "opencode"),
+            (("pi",), "pi", "opencode"),
+            (("claude-code", "codex"), "codex", "claude-code"),
+        ):
+            with self.subTest(added=added):
+                for harness in added:
+                    write_skill(self.source, f"dist/{harness}/alpha")
+                    declarations.append(f'{harness} = "dist/{harness}"\n')
+                self.commit_source()
+                self.manifest.write_text(
+                    '["acme/skills".variants]\n' + "".join(declarations), encoding="utf-8",
+                )
+                self.assertEqual(self.selected(), {
+                    (AGENTS_DIR, "alpha"): str(self.source / f"dist/{agents_harness}/alpha"),
+                    (CLAUDE_DIR, "alpha"): str(self.source / f"dist/{claude_harness}/alpha"),
+                })
+
+    def test_gap_in_first_declared_tree_falls_back_to_canonical(self) -> None:
+        for harness, name in (("codex", "other"), ("pi", "alpha"),
+                              ("claude-code", "other"), ("opencode", "alpha")):
+            write_skill(self.source, f"dist/{harness}/{name}")
+        self.commit_source()
+        self.manifest.write_text(
+            '["acme/skills".variants]\n'
+            'codex = "dist/codex"\npi = "dist/pi"\n'
+            'claude-code = "dist/claude-code"\nopencode = "dist/opencode"\n',
+            encoding="utf-8",
+        )
+        self.selection_text("acme/skills:alpha\n")
+        self.assertEqual(self.selected(), {
+            (AGENTS_DIR, "alpha"): str(self.alpha),
+            (CLAUDE_DIR, "alpha"): str(self.alpha),
+        })
+
+    def test_invalid_variant_fails_even_without_a_canonical_name_or_selection(self) -> None:
+        invalid = write_skill(self.source, "dist/codex/only-variant")
+        (invalid / "SKILL.md").write_text("not frontmatter", encoding="utf-8")
+        self.commit_source()
+        self.declare_variant()
+        with self.assertRaises(ReconcileError) as caught:
+            self.catalog()
+        self.assertIn("invalid variant skill", str(caught.exception))
+        self.assertIn(str(invalid / "SKILL.md"), str(caught.exception))
+        self.assertIn("unsupported frontmatter", str(caught.exception))
+
+    def test_variant_uses_the_same_directory_validation_as_canonical(self) -> None:
+        variant = write_skill(self.source, "dist/codex/alpha")
+        write_skill(variant, "nested")
+        self.commit_source()
+        self.declare_variant()
+        with self.assertRaisesRegex(ReconcileError, "invalid variant skill.*additional SKILL.md"):
+            self.catalog()
+
+    def test_repeated_name_within_one_variant_tree_reports_both_copies(self) -> None:
+        first = write_skill(self.source, "dist/codex/first/alpha")
+        second = write_skill(self.source, "dist/codex/second/alpha")
+        self.commit_source()
+        self.declare_variant()
+        with self.assertRaises(ReconcileError) as caught:
+            self.catalog()
+        self.assertIn("repeated variant skill name", str(caught.exception))
+        self.assertIn(str(first), str(caught.exception))
+        self.assertIn(str(second), str(caught.exception))
 
     def test_empty_manifest_source_and_variant_tables_are_valid(self) -> None:
         for content in ("", '["acme/skills"]\n', '["acme/skills".variants]\n'):
@@ -374,7 +458,7 @@ class CatalogTests(unittest.TestCase):
                     self.catalog()
 
     def test_all_supported_harness_keys_are_accepted(self) -> None:
-        write_skill(self.source, "dist/shared/alpha")
+        variant = write_skill(self.source, "dist/shared/alpha")
         self.commit_source()
         harnesses = ("claude-code", "codex", "pi", "opencode")
         self.manifest.write_text(
@@ -382,7 +466,8 @@ class CatalogTests(unittest.TestCase):
             + "".join(f'{harness} = "dist/shared"\n' for harness in harnesses),
             encoding="utf-8",
         )
-        self.assertEqual(self.catalog().variants, {harness: "dist/shared" for harness in harnesses})
+        self.assertEqual(self.catalog().variants,
+                         {harness: {"alpha": str(variant)} for harness in harnesses})
 
 
 if __name__ == "__main__":
