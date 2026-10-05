@@ -22,10 +22,12 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.events import Click
 from textual.geometry import Region
 from textual.message import Message
 from textual.widgets import Markdown, Static
+from textual.widgets.markdown import MarkdownFence
 
 import reconcile_skills
 import skill_catalog
@@ -175,6 +177,17 @@ class CatalogList(VerticalScroll, can_focus=True):
         self.redraw()
 
 
+class SkillCodeBlock(MarkdownFence):
+    @classmethod
+    def highlight(cls, code: str, language: str, ansi: bool = False, dark: bool = False) -> Content:
+        # Textual's highlighter embeds a theme foreground that overrides CSS.
+        return Content(code)
+
+
+class SkillMarkdown(Markdown):
+    BLOCKS = {**Markdown.BLOCKS, "fence": SkillCodeBlock, "code_block": SkillCodeBlock}
+
+
 class SelectorApp(App):
     TITLE = "Skill selector"
     ENABLE_COMMAND_PALETTE = False
@@ -232,7 +245,7 @@ class SelectorApp(App):
                 yield CatalogList(id="skills")
             with VerticalScroll(id="details", classes="column"):
                 yield Static(id="skill-metadata")
-                yield Markdown(id="skill-body")
+                yield SkillMarkdown(id="skill-body")
         yield Static("⎿ Browse the catalog. Selection is read-only.", id="message")
         yield Static(id="hints")
 
