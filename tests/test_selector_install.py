@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -37,6 +38,7 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
     async def choose_install(self) -> None:
         app = selector.SelectorApp(root=self.repo)
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
             await pilot.press("right", "space", "down", "space", "ctrl+s")
             self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
             self.assertEqual(app.screen.query_one("#choices", selector.CatalogList).current, 1)
@@ -75,6 +77,7 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
         head = git(["rev-parse", "HEAD"], self.repo)
         app = selector.SelectorApp(root=self.repo)
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
             await pilot.press("right", "space", "ctrl+s")
             self.assertIn(reason, self.text(app, "#dialog-details"))
             self.assertEqual(app.screen.query_one("#choices", selector.CatalogList).current, 2)
@@ -165,6 +168,105 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(unmanaged.is_symlink())
         self.assertEqual((unmanaged / "notes.txt").read_text(), "Keep my local work.\n")
         self.assertFalse((self.home / ".agents").exists())
+        self.assertEqual(output.splitlines()[-1], "run the skill selector again and choose Install")
+
+    async def test_committed_never_installed_selection_offers_install_without_a_new_commit(self) -> None:
+        before = (self.repo / "skills.txt").read_bytes()
+        head = git(["rev-parse", "HEAD"], self.repo)
+        main_thread = threading.get_ident()
+        planner = selector.reconcile_skills.build_plan
+
+        def check_in_worker(root):
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            return planner(root)
+
+        app = selector.SelectorApp(root=self.repo)
+        with patch.object(selector.reconcile_skills, "build_plan", side_effect=check_in_worker) as check:
+            async with app.run_test() as pilot:
+                await app.workers.wait_for_complete()
+                check.assert_called_once_with(self.repo)
+                self.assertIn("0 unsaved · not installed", self.text(app, "#title"))
+                self.assertEqual(list(self.home.iterdir()), [])
+                await pilot.press("ctrl+s")
+                self.assertEqual(app.screen.choices, ["Install", "Save only", "Keep editing"])
+                await pilot.press("1")
+                self.assertIs(app.return_value, True)
+        self.assertEqual((self.repo / "skills.txt").read_bytes(), before)
+
+        code, output = self.handoff()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
+        self.assertEqual((self.repo / "skills.txt").read_bytes(), before)
+        for directory in (".agents/skills", ".claude/skills"):
+            self.assertTrue((self.home / directory / "prototype").is_symlink())
+
+    async def test_saved_selection_skips_planner_and_counts_unsaved_against_loaded_file(self) -> None:
+        write_selection(self.repo, ["mattpocock/skills:tdd"])
+        with patch.object(selector.reconcile_skills, "build_plan") as check:
+            app = selector.SelectorApp(root=self.repo)
+            async with app.run_test() as pilot:
+                await app.workers.wait_for_complete()
+                self.assertIn("0 unsaved · not installed", self.text(app, "#title"))
+                await pilot.press("right", "space")
+                self.assertIn("1 unsaved · not installed", self.text(app, "#title"))
+                await pilot.press("space", "ctrl+s")
+                self.assertEqual(app.screen.choices[0], "Install")
+                self.assertIn("+ mattpocock/skills:tdd", self.text(app, "#dialog-details"))
+                self.assertIn("- mattpocock/skills:prototype", self.text(app, "#dialog-details"))
+                await pilot.press("escape")
+                self.assertIn("0 unsaved · not installed", self.text(app, "#title"))
+            check.assert_not_called()
+        self.assertEqual(list(self.home.iterdir()), [])
+
+    async def test_comment_only_change_offers_install_and_commits_saved_bytes(self) -> None:
+        head = git(["rev-parse", "HEAD"], self.repo)
+        selection = self.repo / "skills.txt"
+        selection.write_text(selection.read_text() + "# Kept comment\n", encoding="utf-8")
+        before = selection.read_bytes()
+        with patch.object(selector.reconcile_skills, "build_plan") as check:
+            app = selector.SelectorApp(root=self.repo)
+            async with app.run_test() as pilot:
+                await app.workers.wait_for_complete()
+                self.assertIn("0 unsaved · not installed", self.text(app, "#title"))
+                await pilot.press("ctrl+s")
+                self.assertEqual(app.screen.choices[0], "Install")
+                await pilot.press("1")
+                self.assertIs(app.return_value, True)
+            check.assert_not_called()
+        code, output = self.handoff()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), head)
+        self.assertEqual(selection.read_bytes(), before)
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+
+    async def test_unmanaged_collision_is_reported_once_and_disables_install(self) -> None:
+        unmanaged = self.home / ".agents/skills/prototype"
+        unmanaged.mkdir(parents=True)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            message = self.text(app, "#message")
+            reason = "unowned or changed install directory entry collision"
+            self.assertEqual(message.count(reason), 1)
+            self.assertIn(str(unmanaged), message)
+            # Subsequent refreshes must not repeat the startup error.
+            app.query_one("#message", selector.Static).update("A later message")
+            await pilot.press("right", "space", "space", "ctrl+s")
+            choices = app.screen.query_one("#choices", selector.CatalogList)
+            self.assertEqual(app.screen.choices[0], "Install")
+            self.assertEqual(choices.current, 2)
+            self.assertIsNone(choices.rows[0].key)
+            self.assertEqual(choices.rows[0].lines[0].style, selector.SECONDARY)
+            self.assertIn(reason, self.text(app, "#dialog-details"))
+            await pilot.press("1")
+            self.assertTrue(app.screen.is_modal)
+            await pilot.press("escape")
+            self.assertEqual(self.text(app, "#message"), "A later message")
+        self.assertTrue(unmanaged.is_dir())
+        self.assertFalse(unmanaged.is_symlink())
+        self.assertFalse((self.home / ".agents/.skillset").exists())
+        self.assertFalse((self.home / ".claude").exists())
 
     async def test_rejected_commit_keeps_saved_selection_and_does_not_install(self) -> None:
         hook = self.repo / ".git/hooks/pre-commit"

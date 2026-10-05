@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from xml.etree import ElementTree
 
 from fixture import CHECKOUT, SkillsetFixture, git, write_selection
@@ -24,6 +26,9 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="skillset-selector-test-")
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
+        environment = patch.dict(os.environ, HOME=str(self.base / "home"))
+        environment.start()
+        self.addCleanup(environment.stop)
 
     def fixture(self, sources=None, selection=None) -> SkillsetFixture:
         return SkillsetFixture(self.base, sources if sources is not None else {
@@ -90,8 +95,11 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
         self.pin_changes(fixture, "acme/skills")
         before = (fixture.repo / "skills.txt").read_bytes()
         head = git(["rev-parse", "HEAD"], fixture.repo)
+        subprocess.run([str(fixture.repo / "scripts/reconcile-skills.sh")],
+                       env=fixture.env, capture_output=True, check=True)
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
             sources = app.query_one("#sources", selector.CatalogList)
             skills = app.query_one("#skills", selector.CatalogList)
             self.assertIs(app.focused, sources)
@@ -116,7 +124,7 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
         self.assertEqual(git(["rev-parse", "HEAD"], fixture.repo), head)
         self.assertEqual(git(["status", "--porcelain"], fixture.repo), "")
-        self.assertEqual(list(fixture.home.iterdir()), [])
+        self.assertTrue((fixture.home / ".agents/skills/beta").is_symlink())
 
     async def test_search_filters_and_moves_to_first_matching_source(self) -> None:
         fixture = self.fixture({
@@ -468,7 +476,7 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             review = self.text(app, "#dialog-details")
             self.assertIn("+ zebra/tools:omega", review)
             self.assertIn("- acme/skills:beta", review)
-            self.assertEqual(self.lines(app, "choices"), ["1. Save and install", "2. Save only", "3. Keep editing"])
+            self.assertEqual(self.lines(app, "choices"), ["1. Install", "2. Save only", "3. Keep editing"])
             await pilot.press("3")
             self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
             await pilot.press("right", "space")
@@ -491,8 +499,12 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
     async def test_unchanged_save_reports_no_changes_and_escape_quits(self) -> None:
         fixture = self.fixture()
         before = (fixture.repo / "skills.txt").read_bytes()
+        subprocess.run([str(fixture.repo / "scripts/reconcile-skills.sh")],
+                       env=fixture.env, capture_output=True, check=True)
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            self.assertNotIn("not installed", self.text(app, "#title"))
             await pilot.press("ctrl+s")
             self.assertIn("no changes", self.text(app, "#message").lower())
             self.assertEqual(len(app.screen.query("#dialog-title")), 0)
@@ -525,8 +537,11 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("● broken gamma", rows)
             self.assertIn("bad syntax", rows)
             self.assertNotIn("stale", rows)
+            await app.workers.wait_for_complete()
             await pilot.press("ctrl+s")
-            self.assertIn("no changes", self.text(app, "#message").lower())
+            self.assertEqual(self.lines(app, "choices"), ["1. Install", "2. Save only", "3. Keep editing"])
+            self.assertIn("deselect the skills under Not in catalog", self.text(app, "#dialog-details"))
+            await pilot.press("escape")
             await pilot.press("space", "ctrl+s")
             self.assertIn("- unknown/source:gamma-lost", self.text(app, "#dialog-details"))
             await pilot.press("2")
@@ -635,6 +650,13 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SelectorRealDataTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="skillset-selector-real-data-")
+        self.addCleanup(temporary.cleanup)
+        environment = patch.dict(os.environ, HOME=temporary.name)
+        environment.start()
+        self.addCleanup(environment.stop)
+
     async def test_every_pinned_catalog_skill_renders(self) -> None:
         app = selector.SelectorApp(root=CHECKOUT)
         visited = set()
