@@ -633,7 +633,9 @@ class SelectorApp(App[bool]):
         if install:
             self.exit(True)
             return
-        self.not_installed = self.not_installed or selection_differs_from_head(self.root)
+        self.not_installed = selection_differs_from_head(self.root)
+        if not self.not_installed:
+            self.install_check = self.run_worker(self.check_install_status, thread=True)
         self.refresh_title()
         self.query_one("#message", Static).update("⎿ Saved. Not installed yet.")
 

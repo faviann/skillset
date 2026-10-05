@@ -219,6 +219,33 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
             check.assert_not_called()
         self.assertEqual(list(self.home.iterdir()), [])
 
+    async def test_save_then_restore_head_refreshes_actual_installation_status(self) -> None:
+        selector.skill_catalog.write_selection(self.repo, ["mattpocock/skills:prototype"])
+        git(["commit", "-qam", "normalize selection"], self.repo)
+        before = (self.repo / "skills.txt").read_bytes()
+        for installed in (False, True):
+            with self.subTest(installed=installed):
+                if installed:
+                    code, output = self.handoff()
+                    self.assertEqual(code, 0, output)
+                app = selector.SelectorApp(root=self.repo)
+                async with app.run_test() as pilot:
+                    await app.workers.wait_for_complete()
+                    await pilot.press("right", "down", "space", "ctrl+s", "2")
+                    self.assertIn("0 unsaved · not installed", self.text(app, "#title"))
+                    await pilot.press("space", "ctrl+s", "2")
+                    await app.workers.wait_for_complete()
+                    self.assertEqual((self.repo / "skills.txt").read_bytes(), before)
+                    self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+                    self.assertIn("0 unsaved", self.text(app, "#title"))
+                    self.assertEqual("not installed" in self.text(app, "#title"), not installed)
+                    await pilot.press("ctrl+s")
+                    if installed:
+                        self.assertFalse(app.screen.is_modal)
+                        self.assertIn("No changes to save", self.text(app, "#message"))
+                    else:
+                        self.assertEqual(app.screen.choices[0], "Install")
+
     async def test_comment_only_change_offers_install_and_commits_saved_bytes(self) -> None:
         head = git(["rev-parse", "HEAD"], self.repo)
         selection = self.repo / "skills.txt"
