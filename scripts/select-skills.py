@@ -22,10 +22,12 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.events import Click
 from textual.geometry import Region
 from textual.message import Message
-from textual.widgets import Static
+from textual.widgets import Markdown, Static
+from textual.widgets.markdown import MarkdownFence
 
 import reconcile_skills
 import skill_catalog
@@ -42,6 +44,8 @@ class Skill:
     group: str = ""
     manual_only: bool = False
     unreadable: bool = False
+    body: str = ""
+    file_count: int = 0
 
 
 def display_skill(name: str, path: str, common_root: Path) -> Skill:
@@ -51,7 +55,9 @@ def display_skill(name: str, path: str, common_root: Path) -> Skill:
     skill.group = parent.parts[0] if parent.parts else ""
     try:
         lines = (skill.path / "SKILL.md").read_text(encoding="utf-8").splitlines()
-        metadata = yaml.safe_load("\n".join(lines[1:lines.index("---", 1)]))
+        end = lines.index("---", 1)
+        skill.body = "\n".join(lines[end + 1:])
+        metadata = yaml.safe_load("\n".join(lines[1:end]))
         description = metadata.get("description", "")
         category = metadata.get("category", "")
         skill.description = description if isinstance(description, str) else ""
@@ -72,8 +78,11 @@ def load_catalog(root: Path) -> dict[str, list[Skill]]:
         paths = list(source.skills.values())
         common_root = Path(os.path.commonpath([Path(path).parent for path in paths])) if paths else root / module
         skills = [display_skill(name, path, common_root) for name, path in source.skills.items()]
+        tracked = [root / module / path for path in
+                   skill_catalog.git(["ls-files", "-z"], cwd=root / module).split("\0") if path]
         groups = Counter(skill.group for skill in skills)
         for skill in skills:
+            skill.file_count = sum(path.is_relative_to(skill.path) for path in tracked)
             if groups[skill.group] == 1:
                 skill.group = ""
         result[module.removeprefix("sources/")] = sorted(
@@ -168,6 +177,17 @@ class CatalogList(VerticalScroll, can_focus=True):
         self.redraw()
 
 
+class SkillCodeBlock(MarkdownFence):
+    @classmethod
+    def highlight(cls, code: str, language: str, ansi: bool = False, dark: bool = False) -> Content:
+        # Textual's highlighter embeds a theme foreground that overrides CSS.
+        return Content(code)
+
+
+class SkillMarkdown(Markdown):
+    BLOCKS = {**Markdown.BLOCKS, "fence": SkillCodeBlock, "code_block": SkillCodeBlock}
+
+
 class SelectorApp(App):
     TITLE = "Skill selector"
     ENABLE_COMMAND_PALETTE = False
@@ -179,6 +199,16 @@ class SelectorApp(App):
     #source-column { width: 30; }
     #skill-column { width: 1fr; }
     #details { width: 1.3fr; }
+    #skill-metadata { margin-bottom: 1; }
+    #skill-body { padding: 0; }
+    #skill-body, #skill-body * {
+        color: ansi_default;
+        link-color: ansi_default;
+        link-color-hover: ansi_default;
+        link-background-hover: transparent;
+    }
+    #skill-body MarkdownBlockQuote { background: transparent; }
+    #skill-body MarkdownBlock > .code_inline { color: ansi_default; }
     .heading { height: 1; color: #999999; margin-bottom: 1; }
     CatalogList {
         background: transparent;
@@ -188,7 +218,7 @@ class SelectorApp(App):
         scrollbar-color-active: #D77757;
     }
     CatalogList:focus { background-tint: transparent; }
-    Static { text-wrap: nowrap; text-overflow: ellipsis; }
+    #title, #message, #hints, .heading { text-wrap: nowrap; text-overflow: ellipsis; }
     #message, #hints { height: 1; padding: 0 2; color: #999999; }
     #hints { margin-bottom: 1; }
     """
@@ -219,11 +249,13 @@ class SelectorApp(App):
             with Vertical(id="skill-column", classes="column"):
                 yield Static("Skills", id="skill-heading", classes="heading")
                 yield CatalogList(id="skills")
-            yield Vertical(id="details", classes="column")
+            with VerticalScroll(id="details", classes="column"):
+                yield Static(id="skill-metadata")
+                yield SkillMarkdown(id="skill-body")
         yield Static("⎿ Browse the catalog. Selection is read-only.", id="message")
         yield Static(id="hints")
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         rows = []
         for source, skills in self.catalog.items():
             owner, repo = source.split("/")
@@ -231,10 +263,10 @@ class SelectorApp(App):
             rows.append(Row(source, [Text(repo), Text(f"{owner} · {selected}/{len(skills)}", style=SECONDARY)]))
         sources = self.query_one("#sources", CatalogList)
         sources.set_rows(rows)
-        self.fill_skills()
+        await self.fill_skills()
         sources.focus()
 
-    def fill_skills(self) -> None:
+    async def fill_skills(self) -> None:
         rows = []
         group = ""
         for skill in self.catalog.get(self.source, []):
@@ -252,18 +284,54 @@ class SelectorApp(App):
             rows.append(Row(None, [Text("No skills in this source.", style=SECONDARY)]))
         self.query_one("#skills", CatalogList).set_rows(rows)
         self.query_one("#skill-heading", Static).update(self.source or "Skills")
+        await self.refresh_details()
+
+    async def refresh_details(self) -> None:
+        key = self.query_one("#skills", CatalogList).current
+        metadata = self.query_one("#skill-metadata", Static)
+        body = self.query_one("#skill-body", Markdown)
+        self.query_one("#details", VerticalScroll).scroll_home(animate=False)
+        if key is None:
+            metadata.update("")
+            await body.update("")
+            return
+        source, name = key.split(":")
+        skill = next(skill for skill in self.catalog[source] if skill.name == name)
+        lines = [skill.name, key, "Selected" if key in self.selected else "Not selected"]
+        if skill.manual_only:
+            lines.append("Manual only: description not loaded into context")
+        others = [f"{other}:{name}" for other, skills in self.catalog.items()
+                  if other != source and any(skill.name == name for skill in skills)]
+        if others:
+            lines.append("Same name in other sources: " + ", ".join(others))
+        lines.extend([
+            "description unreadable" if skill.unreadable else skill.description,
+            str(skill.path),
+            f"{skill.file_count} tracked {'file' if skill.file_count == 1 else 'files'}",
+        ])
+        metadata.update(Text("\n".join(lines)))
+        await body.update(skill.body)
 
     @on(CatalogList.Highlighted, "#sources")
-    def source_highlighted(self, event: CatalogList.Highlighted) -> None:
+    async def source_highlighted(self, event: CatalogList.Highlighted) -> None:
         if event.control.current != self.source:
             self.source = event.control.current
-            self.fill_skills()
+            await self.fill_skills()
+
+    @on(CatalogList.Highlighted, "#skills")
+    async def skill_highlighted(self) -> None:
+        await self.refresh_details()
 
     def action_column(self, column: str) -> None:
         self.query_one(f"#{column}", CatalogList).focus()
 
     def on_descendant_focus(self) -> None:
-        hint = "↑↓ move · ← sources · esc quit" if self.focused is self.query_one("#skills") else "↑↓ move · → or enter skills · esc quit"
+        if self.focused is self.query_one("#details"):
+            hint = "↑↓ scroll · ← sources · → skills · esc quit"
+        elif self.focused is self.query_one("#skills"):
+            hint = "↑↓ move · ← sources · tab details · esc quit"
+        else:
+            hint = "↑↓ move · → or enter skills · esc quit"
         self.query_one("#hints", Static).update(hint)
 
 
