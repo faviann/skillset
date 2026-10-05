@@ -194,7 +194,8 @@ class ChoiceDialog(ModalScreen[int | None]):
     ChoiceDialog { align: center bottom; background: transparent; }
     #dialog { height: auto; max-height: 85%; margin: 0 2 2 2; padding: 1 2; border: round #D77757; }
     #dialog-title { height: auto; color: #D77757; margin-bottom: 1; }
-    #dialog-details { height: 1fr; max-height: 12; overflow-y: auto; margin-bottom: 1; }
+    #dialog-review { height: 1fr; max-height: 12; margin-bottom: 1; }
+    #dialog-details { height: auto; }
     #choices { height: auto; max-height: 6; }
     #dialog-hint { height: 1; margin-top: 1; color: #999999; }
     """
@@ -215,7 +216,8 @@ class ChoiceDialog(ModalScreen[int | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Static(Text(self.heading), id="dialog-title")
-            yield Static(Text(self.details), id="dialog-details")
+            with VerticalScroll(id="dialog-review"):
+                yield Static(Text(self.details), id="dialog-details")
             yield CatalogList(activate_on_click=True, id="choices")
             yield Static("Enter to confirm · Esc to cancel", id="dialog-hint")
 

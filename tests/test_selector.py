@@ -431,6 +431,22 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.is_running)
         self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
 
+    async def test_long_save_review_can_scroll_to_final_change_and_save(self) -> None:
+        names = [f"skill-{number:02}" for number in range(20)]
+        fixture = self.fixture({"acme/skills": {name: name for name in names}}, [])
+        values = [f"acme/skills:{name}" for name in names]
+        write_selection(fixture.repo, values)
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+s")
+            self.assertNotIn(values[-1], self.screen_text(app))
+            await pilot.press("tab", "end")
+            await pilot.pause()
+            self.assertIn(values[-1], self.screen_text(app))
+            self.assertTrue(await pilot.click("#choices RowsView", offset=(6, 0)))
+            self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
+            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], values)
+
     async def test_restoring_head_selection_still_saves_changes_to_loaded_file(self) -> None:
         fixture = self.fixture()
         write_selection(fixture.repo, ["acme/skills:alpha"])
