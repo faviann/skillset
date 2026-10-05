@@ -61,8 +61,10 @@ Keep `sources.toml` tracked, even if it is empty. Declare each source's harness
 variant directories under `["owner/repo".variants]` using normalized paths
 relative to that source. The supported keys are `claude-code`, `codex`, `pi`, and
 `opencode`; each path must identify an existing tracked directory without
-traversing symlinks. These declarations exclude alternate copies from canonical
-discovery. They do not select skills or install variants.
+traversing symlinks. These declarations exclude variant copies from canonical
+discovery and choose which copies each install directory receives through the
+[fixed harness precedence](architecture.md#authority-and-committed-inputs).
+Skill selection still comes from `skills.txt`.
 
 ## Deliberately update a source
 
