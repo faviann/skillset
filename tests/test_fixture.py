@@ -25,7 +25,7 @@ class FixtureTests(unittest.TestCase):
             ["ls-files", "-z", "--", "scripts", "setup.sh", ".gitignore"], CHECKOUT,
         ).split("\0")) - {""}
         self.assertEqual(set(git(["ls-files", "-z"], repo).split("\0")) - {""}, shipped | {
-            ".gitmodules", "skills.txt", "sources/acme/skills", "sources/other/beta",
+            ".gitmodules", "skills.txt", "sources.toml", "sources/acme/skills", "sources/other/beta",
         })
         for name in shipped:
             with self.subTest(file=name):
@@ -33,6 +33,7 @@ class FixtureTests(unittest.TestCase):
                 self.assertEqual((repo / name).stat().st_mode, (CHECKOUT / name).stat().st_mode)
         self.assertEqual((repo / "skills.txt").read_text(),
                          "# fixture selection\n" + "\n".join(self.selection) + "\n")
+        self.assertEqual((repo / "sources.toml").read_text(), "")
         for path, name in zip(self.selection, ("alpha", "beta")):
             with self.subTest(skill=path):
                 self.assertIn(f"name: {name}\n", (repo / path / "SKILL.md").read_text())

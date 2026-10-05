@@ -24,24 +24,37 @@ In a non-live authoring clone of skillset, add a source and discover its candida
 
 ```bash
 git submodule add https://github.com/owner/repo.git sources/owner/repo
-find sources/owner/repo -type f -name SKILL.md
-# Add only the desired skill-directory paths to skills.txt.
-git add .gitmodules sources/owner/repo skills.txt
+git -C sources/owner/repo ls-files '**/SKILL.md' SKILL.md
+# Declare any harness variant trees in sources.toml.
+# Add only the desired canonical skill-directory paths to skills.txt.
+git add .gitmodules sources/owner/repo sources.toml skills.txt
 git commit -m "Select skills from owner/repo"
 ```
 
 Each non-comment line in `skills.txt` is a normalized checkout-relative path
-to a selected skill directory containing `SKILL.md`. Commit `.gitmodules`,
-the new gitlink, and the selection together. To remove a skill, delete its
-line and commit. To remove a whole source, first remove its selected lines,
-then remove the submodule and commit both changes. A later reconciliation
-cleans only links recorded as owned, including dangling links to removed
-sources.
+to a selected canonical skill directory containing `SKILL.md`. Commit
+`.gitmodules`, the new gitlink, any `sources.toml` declarations, and the selection
+together. To remove a skill, delete its line and commit. To remove a whole source,
+remove its selected lines and `sources.toml` entry, then remove the submodule and
+commit the changes together. A later reconciliation cleans only links recorded
+as owned, including dangling links to removed sources.
 
-Names come from frontmatter and must match their parent directories. If two
-selected skills have the same name, deployment stops before making changes.
+The catalog includes valid tracked skills in every source layout, including
+hidden folders, except beneath declared variant trees. Plugin manifests do not
+control discovery. Names come from frontmatter and must match their parent
+directories. Invalid skills are excluded from the canonical catalog and retain
+a validation reason. A repeated valid canonical name within one source stops
+every install and `--check`, even when neither copy is selected. Selecting the
+same name from different sources also stops deployment before making changes.
 Aliases are unsupported because a link name cannot safely change a skill's
 frontmatter or harness identity.
+
+Keep `sources.toml` tracked, even if it is empty. Declare each source's harness
+variant directories under `["owner/repo".variants]` using normalized paths
+relative to that source. The supported keys are `claude-code`, `codex`, `pi`, and
+`opencode`; each path must identify an existing tracked directory without
+traversing symlinks. These declarations exclude alternate copies from canonical
+discovery. They do not select skills or install variants.
 
 ## Deliberately update a source
 
@@ -56,10 +69,12 @@ git add sources/owner/repo
 git commit -m "Update owner/repo source pin"
 ```
 
-If the new source commit adds, removes, or renames skills, update `skills.txt`
-in the same skillset commit. A source-only commit does not change the effective
-selection. Publish the new source commit before publishing the skillset pin,
-so a fresh clone can obtain it.
+If the new source commit adds, removes, or renames selected skills, update
+`skills.txt` in the same skillset commit. If it introduces a harness port tree,
+declare it in `sources.toml`; undeclared repeated canonical names fail `--check`
+in the update clone. Invalid copies do not count as repeats. A source-only
+commit does not change the effective selection. Publish the new source commit
+before publishing the skillset pin, so a fresh clone can obtain it.
 
 ## Deployment and provenance
 
@@ -153,7 +168,7 @@ rebase.
 ## Runtime and source editing
 
 Validated runtime: Linux, Python 3.13.5 and Git 2.47.3, with no third-party
-Python packages. The code requires Python 3.10 or newer and Git with
+Python packages. The code requires Python 3.11 or newer and Git with
 `GIT_NO_LAZY_FETCH` support. Publication uses
 hard links to symlink objects and directory `fsync`, so receipt and skill
 directories must support these operations. Backups must preserve receipt-to-

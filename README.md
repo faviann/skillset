@@ -81,5 +81,5 @@ tests/run.sh
 
 Tests use temporary homes and real local Git repositories. CI also initializes
 the committed source configuration and reconciles it twice in a temporary home.
-The validated platform is Linux with Python 3.13 and Git 2.47; there are no
-third-party Python dependencies.
+The code requires Python 3.11 or newer. The validated platform is Linux with
+Python 3.13 and Git 2.47; there are no third-party Python dependencies.

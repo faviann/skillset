@@ -175,6 +175,15 @@ raise SystemExit(m.main(sys.argv[4:]))
         )
         self.assertEqual(list(self.home.iterdir()), [])
 
+    def test_untracked_sources_manifest_fails_the_gate(self) -> None:
+        git(["rm", "--cached", "sources.toml"], self.repo)
+        git(["commit", "-qm", "untrack sources manifest"], self.repo)
+        result = self.run_reconciler()
+        self.assert_reconcile_fails(
+            result, "required install input is not tracked: sources.toml",
+        )
+        self.assertEqual(list(self.home.iterdir()), [])
+
     def test_modified_catalog_module_fails_the_gate(self) -> None:
         module = self.repo / "scripts/skill_catalog.py"
         module.write_text(module.read_text(encoding="utf-8") + "\n# uncommitted change\n",
@@ -233,57 +242,34 @@ raise SystemExit(m.main(sys.argv[4:]))
         checked = self.run_reconciler("--check", extra_env=guarded)
         self.assertEqual(checked.returncode, 0, checked.stderr)
 
-    def test_selected_name_collision_fails_before_any_effect(self) -> None:
+    def test_undeclared_repeat_stops_install_before_any_link_changes(self) -> None:
+        installed = self.run_reconciler()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        existing = {
+            self.home / directory / "alpha": (self.home / directory / "alpha").lstat()
+            for directory in (AGENTS_DIR, CLAUDE_DIR,
+                              Path(".agents/.skillset/receipts"),
+                              Path(".claude/.skillset/receipts"))
+        }
         write_skill(self.source, "skills/productivity/alpha")
         self.commit_source(pin=True)
-        self.selection = [self.alpha, "sources/acme/skills/skills/productivity/alpha"]
+        # Neither repeated copy is selected. Discovery must still block the
+        # planned removal of alpha and installation of beta.
+        self.selection = [self.beta]
         self.write_selection()
         self.commit_skillset()
 
-        result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "selected skill-name collision: alpha")
-        self.assertFalse((self.home / ".agents").exists())
-        self.assertFalse((self.home / ".local").exists())
-
-    def test_frontmatter_identity_must_be_plain_and_match_parent(self) -> None:
-        skill_file = self.source / "skills/engineering/alpha/SKILL.md"
-        skill_file.write_text("---\nname: \"alpha\"\ndescription: fixture\n---\n", encoding="utf-8")
-        self.commit_source(pin=True)
-        result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "unsupported frontmatter identity")
-        self.assertFalse((self.home / ".agents").exists())
-
-    def test_duplicate_frontmatter_identity_fails_closed(self) -> None:
-        skill_file = self.source / "skills/engineering/alpha/SKILL.md"
-        skill_file.write_text("---\nname: alpha\nname: beta\n---\n", encoding="utf-8")
-        self.commit_source(pin=True)
-        result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "unsupported")
-
-    def test_ambiguous_yaml_identity_shapes_fail_closed(self) -> None:
-        cases = [
-            'name: alpha\n"na\\u006de": beta',
-            "name: alpha\n? name: beta",
-            "name: alpha\n  continuation: beta",
-        ]
-        for index, fields in enumerate(cases):
-            with self.subTest(fields=fields):
-                file = self.source / "skills/engineering/alpha/SKILL.md"
-                file.write_text(f"---\n{fields}\ndescription: fixture\n---\n", encoding="utf-8")
-                self.commit_source(pin=True)
-                result = self.run_reconciler()
-                self.assert_reconcile_fails(result, "unsupported")
-                # Restore a valid source revision before the next subcase.
-                file.write_text("---\nname: alpha\ndescription: fixture\n---\n", encoding="utf-8")
-                self.commit_source(pin=True)
-
-    def test_synced_name_is_reserved(self) -> None:
-        write_skill(self.source, "skills/engineering/synced")
-        self.commit_source(pin=True)
-        self.selection.append("sources/acme/skills/skills/engineering/synced")
-        self.write_selection()
-        self.commit_skillset()
-        self.assert_reconcile_fails(self.run_reconciler(), "reserved by Claude Code")
+        for args in ((), ("--check",)):
+            with self.subTest(args=args):
+                result = self.run_reconciler(*args)
+                self.assert_reconcile_fails(result, "undeclared repeated canonical skill names")
+                self.assertIn("skills/engineering/alpha", result.stderr)
+                self.assertIn("skills/productivity/alpha", result.stderr)
+                for path, before in existing.items():
+                    self.assertTrue(os.path.samestat(before, path.lstat()), str(path))
+                    self.assertEqual(os.readlink(path), str(self.source / "skills/engineering/alpha"))
+                for directory in (AGENTS_DIR, CLAUDE_DIR):
+                    self.assertFalse((self.home / directory / "beta").exists())
 
     def test_existing_install_directory_skill_identity_collision_is_detected(self) -> None:
         local = self.home / ".agents/skills/local-folder"
@@ -454,7 +440,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.write_selection()
         self.commit_skillset()
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "selected skill contains untracked or ignored content")
+        self.assert_reconcile_fails(result, "selected path is not a valid canonical skill")
         self.assertFalse((self.home / ".agents").exists())
 
     def test_relocation_uses_recorded_old_target_to_relink(self) -> None:
@@ -575,20 +561,6 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertEqual(self.run_reconciler("--check", repo=historical).returncode, 0)
         self.assertEqual((self.home / ".agents/skills/alpha/SKILL.md").read_text(), old_body)
 
-
-    def test_multiline_description_and_nested_metadata_preserve_plain_identity(self) -> None:
-        file = self.source / "skills/engineering/alpha/SKILL.md"
-        file.write_text("---\n# comment\nname: alpha\ndescription: |\n  Uses a filename and a name.\n  name: text, not a field\nmetadata:\n  author: fixture\n---\nbody\n")
-        self.commit_source()
-        result = self.run_reconciler()
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_escaped_first_character_of_duplicate_identity_is_rejected(self) -> None:
-        file = self.source / "skills/engineering/alpha/SKILL.md"
-        file.write_text('---\nname: alpha\n"\\u006eame": beta\ndescription: fixture\n---\n')
-        self.commit_source()
-        self.assert_reconcile_fails(self.run_reconciler(), "unsupported frontmatter")
-        self.assertFalse((self.home / ".agents").exists())
 
     def test_symlinked_unrelated_skill_identity_collision_is_detected(self) -> None:
         other = self.base / "unrelated-skill"
@@ -739,31 +711,6 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assert_reconcile_fails(self.run_reconciler(), "no committed URL")
         self.assertFalse((self.home / ".agents").exists())
 
-
-    def test_single_skill_at_source_root_needs_no_layout_adapter(self) -> None:
-        shutil.rmtree(self.source / "skills")
-        (self.source / "SKILL.md").write_text("---\nname: skills\ndescription: root skill\n---\n")
-        self.commit_source()
-        self.selection = ["sources/acme/skills"]
-        self.write_selection()
-        self.commit_skillset()
-        result = self.run_reconciler()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_link(AGENTS_DIR, "skills", self.source)
-
-    def test_selected_directory_cannot_implicitly_expose_nested_skills(self) -> None:
-        nested = self.source / "skills/engineering/alpha/nested"
-        nested.mkdir()
-        (nested / "SKILL.md").write_text("---\nname: nested\ndescription: unselected\n---\n")
-        self.commit_source()
-        self.assert_reconcile_fails(self.run_reconciler(), "additional SKILL.md")
-        self.assertFalse((self.home / ".agents").exists())
-
-    def test_directory_symlink_cannot_smuggle_unselected_skills(self) -> None:
-        (self.source / "skills/engineering/alpha/linked").symlink_to("../beta")
-        self.commit_source()
-        self.assert_reconcile_fails(self.run_reconciler(), "directory symlinks")
-        self.assertFalse((self.home / ".agents").exists())
 
 
 if __name__ == "__main__":

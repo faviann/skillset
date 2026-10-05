@@ -1,0 +1,3 @@
+["rampstackco/claude-skills".variants]
+codex = "dist/codex/.agents/skills"
+pi = "dist/pi/.agents/skills"

@@ -64,6 +64,7 @@ class SkillsetFixture:
 
     def __init__(
         self, base: Path, sources: dict[str, dict[str, str]], selection: list[str],
+        *, sources_toml: str = "",
     ) -> None:
         self.base = base
         self.home = base / "home"
@@ -85,6 +86,7 @@ class SkillsetFixture:
         for name, skills in sources.items():
             self.add_source(name, skills)
         write_selection(self.repo, selection)
+        (self.repo / "sources.toml").write_text(sources_toml, encoding="utf-8")
         git(["add", "-A"], self.repo)
         git(["commit", "-qm", "initial skillset"], self.repo)
 
