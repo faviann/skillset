@@ -15,13 +15,13 @@ cd ~/repos/skillset
 ```
 
 Setup checks for git, Python 3.11+ and uv. If uv is missing, it asks before using
-the official installer; Enter or EOF declines. It initializes sources at their
+the official installer; Enter or EOF declines and stops setup. It initializes sources at their
 pins, prepares locked selector dependencies, and links `select-skills` and its
 lockfile in `~/.local/bin`. It warns if that directory is missing from PATH.
 With terminal input and output it opens the selector; otherwise it prints
 `Ready. Run: select-skills`. Setup installs no skills.
 
-Rerun `./setup.sh` whenever a source is missing or at the wrong commit, for
+In the live checkout, rerun `./setup.sh` whenever a source is missing or at the wrong commit, for
 example after a pull that moved a pin. An install never fetches, pulls,
 initializes, or advances sources. It requires the skillset's tracked files to
 be committed and each initialized source to be clean and at the gitlink commit.
@@ -41,10 +41,11 @@ upstream, it reminds you to run `git push`; the selector never pushes. Install
 failures keep the commit, and commit failures keep the saved file without
 installing. This choice is disabled with a reason in linked worktrees, on a
 detached HEAD, during a merge or rebase, when other tracked changes are uncommitted,
-or while selected entries remain under **Not in catalog**.
+when untracked files exist under `scripts/`, or while selected entries remain
+under **Not in catalog**.
 
 The title shows **not installed** when `skills.txt` differs from HEAD or a read-only
-installation check finds links to update. Ctrl+S then offers **Install** even with
+installation check finds links to update or fails. Ctrl+S then offers **Install** even with
 no unsaved changes; it preserves the saved file and commits only if needed. A
 failed check appears on the message line and disables Install with its reason.
 After an install failure, run the skill selector again and choose Install.
@@ -65,8 +66,7 @@ and `name` is the skill's frontmatter name. Neither part may contain `:`.
 For example, `faviann/agent-skills:publish-artifact` selects that named skill
 from `sources/faviann/agent-skills`. Blank lines and lines beginning with `#`
 are ignored. Directory-path selections are rejected; there is no conversion
-from the old format. This upgrade starts with an empty selection, so select
-the desired skills again.
+from the old format.
 
 The catalog includes valid tracked skills in every source layout, including
 hidden folders, except beneath declared variant trees. Plugin manifests do not
@@ -82,8 +82,17 @@ frontmatter or harness identity.
 
 Source pins change in a separate clone of skillset, never in the live checkout:
 installed links expose the live checkout's sources directly. Make, commit and
-publish skill edits in the source's own repository first. Then, in the
-separate clone, add, advance or remove the source:
+publish skill edits in the source's own repository first. Then make the
+separate clone:
+
+```bash
+git clone --recurse-submodules https://github.com/faviann/skillset.git ~/repos/skillset-update
+cd ~/repos/skillset-update
+```
+
+Don't run `./setup.sh` in this clone; it would point `select-skills` at it, and
+an install from there would link your skills into it. Add, advance or remove
+the source:
 
 ```bash
 # Add a source
@@ -101,24 +110,12 @@ variant directories under `["owner/repo".variants]` using normalized paths
 relative to that source. The supported keys are `claude-code`, `codex`, `pi`, and
 `opencode`; each path must identify an existing tracked directory without
 traversing symlinks. An agent can usually infer the entry from the upstream
-layout, such as a `dist/codex` port tree. These declarations exclude variant
+layout, such as a `dist/codex` variant tree. These declarations exclude variant
 copies from canonical discovery and choose which copies each install directory
 receives through the
 [fixed harness precedence](architecture.md#authority-and-committed-inputs).
 A source without variants needs no entry. Keep `sources.toml` tracked, even if
 it is empty.
-
-Then validate the pins with an install into a throwaway home:
-
-```bash
-HOME="$(mktemp -d)" scripts/reconcile-skills.sh
-```
-
-This runs every check that `--check` runs. It fails on a repeated canonical name
-that no declared variant tree explains, such as a new undeclared port tree, and
-on an invalid variant copy. Invalid copies do not count as repeats. A plain
-`--check` in this clone would also report every live link as stale, because
-those links point into the live checkout.
 
 If the new source commit removes or renames selected skills, update
 `skills.txt` in the same commit. Moving a skill within its source while keeping
@@ -131,6 +128,18 @@ git add .gitmodules sources/owner/repo sources.toml skills.txt
 git commit -m "Update owner/repo source pin"
 ```
 
+Then validate the commit with an install into a throwaway home:
+
+```bash
+HOME="$(mktemp -d)" scripts/reconcile-skills.sh
+```
+
+This runs the same validation as `--check`, including repeated names that no
+declared variant tree explains, invalid variant copies, and selections that no
+longer resolve. Plain `--check` here would compare against your real install
+directories, whose links point into the live checkout, and report them as
+stale. If validation fails, fix the cause and amend the commit.
+
 Publish the new source commit before publishing the skillset commit, so a fresh
 clone can obtain it.
 
@@ -142,10 +151,10 @@ git pull
 ./setup.sh
 ```
 
-Setup restores sources to the new pins and opens the selector. If the title
-shows **not installed**, press Ctrl+S and choose **Install**. If a selected name
-no longer exists, it appears under **Not in catalog**; deselect it and save to
-remove its links.
+Setup restores sources to the new pins and opens the selector. If anything
+appears under **Not in catalog**, deselect it first. Then, if the title shows
+**not installed**, press Ctrl+S and choose **Save and install**, or **Install**
+when nothing is unsaved.
 
 ## Install and provenance
 
