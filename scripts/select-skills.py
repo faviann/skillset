@@ -303,25 +303,33 @@ class SelectorApp(App):
         # Browsing needs source validation, not the reconciler's deployment gate.
         modules = reconcile_skills.parse_modules(self.root)
         reconcile_skills.validate_sources(self.root, modules)
-        catalog = skill_catalog.discover_catalog(self.root, modules)
-        self.catalog = display_catalog(self.root, catalog)
-        self.selected: dict[str | int, str] = {}
-        self.off_catalog: dict[int, skill_catalog.SelectionLine] = {}
-        for line in skill_catalog.read_selection_lines(self.root):
-            error = line.error or skill_catalog.selection_error(line.value, catalog)
-            if error:
-                self.off_catalog[line.number] = skill_catalog.SelectionLine(line.value, line.number, error, line.name)
-                self.selected[line.number] = line.value
-            else:
-                self.selected[line.value] = line.value
-        self.loaded = Counter(self.selected.values())
-        self.committed = Counter(line.value for line in skill_catalog.parse_selection(
-            skill_catalog.git(["show", "HEAD:skills.txt"], cwd=self.root),
-        ))
+        self.selection_catalog = skill_catalog.discover_catalog(self.root, modules)
+        self.catalog = display_catalog(self.root, self.selection_catalog)
+        self.load_selection()
         self.source: str | None = NOT_IN_CATALOG if self.off_catalog else next(iter(self.catalog), None)
         self.search_text = ""
         self.theme = "textual-dark"
         self.ansi_color = True
+
+    def load_selection(self) -> None:
+        content = skill_catalog.read_selection_text(self.root)
+        committed = Counter(line.value for line in skill_catalog.parse_selection(
+            skill_catalog.git(["show", "HEAD:skills.txt"], cwd=self.root),
+        ))
+        selected: dict[str | int, str] = {}
+        off_catalog: dict[int, skill_catalog.SelectionLine] = {}
+        for line in skill_catalog.parse_selection(content):
+            error = line.error or skill_catalog.selection_error(line.value, self.selection_catalog)
+            if error:
+                off_catalog[line.number] = skill_catalog.SelectionLine(line.value, line.number, error, line.name)
+                selected[line.number] = line.value
+            else:
+                selected[line.value] = line.value
+        self.selected = selected
+        self.off_catalog = off_catalog
+        self.loaded_content = content
+        self.loaded = Counter(self.selected.values())
+        self.committed = committed
 
     def compose(self) -> ComposeResult:
         yield Static(id="title")
@@ -549,16 +557,43 @@ class SelectorApp(App):
                          self.save_choice)
 
     def save_choice(self, choice: int | None) -> None:
-        if choice != 1:
-            return
+        if choice == 1:
+            self.save_selection()
+
+    def save_selection(self, expected_content: str | None = None) -> None:
+        """Every save action checks the disk content immediately before writing."""
         try:
-            skill_catalog.write_selection(self.root, self.selected.values())
-        except OSError as error:
+            content = skill_catalog.read_selection_text(self.root)
+            if content != (self.loaded_content if expected_content is None else expected_content):
+                async def conflict_choice(choice: int | None) -> None:
+                    if choice == 1:
+                        await self.reload_selection()
+                    elif choice == 2:
+                        self.save_selection(expected_content=content)
+
+                self.push_screen(ChoiceDialog("skills.txt changed on disk", ["Reload", "Overwrite"],
+                                              "Reload drops your unsaved changes. Overwrite replaces the file."),
+                                 conflict_choice)
+                return
+            self.loaded_content = skill_catalog.write_selection(self.root, self.selected.values())
+        except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not save: {error}"))
             return
         self.loaded = Counter(self.selected.values())
         self.refresh_title()
         self.query_one("#message", Static).update("⎿ Saved. Not installed yet.")
+
+    async def reload_selection(self) -> None:
+        try:
+            self.load_selection()
+        except (reconcile_skills.ReconcileError, OSError) as error:
+            self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
+            return
+        self.source = NOT_IN_CATALOG if self.off_catalog else next(iter(self.catalog), None)
+        self.refresh_title()
+        self.fill_sources()
+        await self.fill_skills()
+        self.query_one("#message", Static).update("⎿ Reloaded skills.txt. Unsaved changes discarded.")
 
     def action_quit(self) -> None:
         search = self.query_one("#search", Input)

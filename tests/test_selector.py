@@ -495,6 +495,69 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.is_running)
         self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
 
+    async def test_reload_replaces_unsaved_selection_and_refreshes_baselines(self) -> None:
+        fixture = self.fixture()
+        write_selection(fixture.repo, ["acme/skills:beta", "unknown/source:stale"])
+        selection = fixture.repo / "skills.txt"
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press(*"gamma", "enter", "space", "ctrl+s")
+            external = "# Changed in another window\nzebra/tools:gamma\nunknown/source:gamma-lost\nbroken gamma\n"
+            selection.write_text(external, encoding="utf-8")
+            git(["add", "skills.txt"], fixture.repo)
+            git(["commit", "-qm", "update selection in another window"], fixture.repo)
+            await pilot.press("1")
+            self.assertEqual(self.lines(app, "choices"), ["1. Reload", "2. Overwrite"])
+            self.assertEqual(selection.read_text(), external)
+            await pilot.press("1")
+            self.assertEqual(selection.read_text(), external)
+            self.assertIn("3 selected · 0 unsaved", self.text(app, "#title"))
+            self.assertEqual(app.query_one("#search", selector.Input).value, "gamma")
+            self.assertEqual(app.query_one("#sources", selector.CatalogList).current, "Not in catalog")
+            rows = self.text(app, "#skills RowsView")
+            self.assertIn("● unknown/source:gamma-lost", rows)
+            self.assertIn("unknown source", rows)
+            self.assertIn("● broken gamma", rows)
+            self.assertIn("bad syntax", rows)
+            self.assertNotIn("stale", rows)
+            await pilot.press("ctrl+s")
+            self.assertIn("no changes", self.text(app, "#message").lower())
+            await pilot.press("space", "ctrl+s")
+            self.assertEqual(self.text(app, "#dialog-details"), "- unknown/source:gamma-lost")
+            await pilot.press("1")
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            self.assertEqual(selection.read_text().splitlines()[1:], ["broken gamma", "zebra/tools:gamma"])
+
+    async def test_review_and_quit_saves_guard_external_changes_before_overwrite(self) -> None:
+        fixture = self.fixture()
+        selection = fixture.repo / "skills.txt"
+        before = selection.read_bytes()
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            await pilot.press("right", "space", "ctrl+s")
+            external = before + b"# Changed while reviewing\n"
+            selection.write_bytes(external)
+            await pilot.press("1")
+            self.assertEqual(self.lines(app, "choices"), ["1. Reload", "2. Overwrite"])
+            self.assertEqual(selection.read_bytes(), external)
+            await pilot.press("escape")
+            self.assertIn("1 unsaved", self.text(app, "#title"))
+            self.assertEqual(self.lines(app, "skills"), ["● alpha", "● beta"])
+            await pilot.press("escape", "2", "1")
+            self.assertEqual(self.lines(app, "choices"), ["1. Reload", "2. Overwrite"])
+            external += b"# Changed again while deciding\n"
+            selection.write_bytes(external)
+            await pilot.press("2")
+            self.assertEqual(self.lines(app, "choices"), ["1. Reload", "2. Overwrite"])
+            self.assertEqual(selection.read_bytes(), external)
+            await pilot.press("2")
+            self.assertTrue(app.is_running)
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            self.assertEqual(selection.read_text().splitlines()[1:], ["acme/skills:alpha", "acme/skills:beta"])
+            await pilot.press("space", "ctrl+s", "1")
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            self.assertEqual(selection.read_text().splitlines()[1:], ["acme/skills:beta"])
+
     async def test_long_save_review_can_scroll_to_final_change_and_save(self) -> None:
         names = [f"skill-{number:02}" for number in range(20)]
         fixture = self.fixture({"acme/skills": {name: name for name in names}}, [])

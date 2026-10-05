@@ -40,7 +40,9 @@ before replacing its current selection.
 Ctrl+S reviews additions and removals against the last commit. **Save only**
 rewrites `skills.txt` in sorted order with its standard header and stays open;
 commit and install remain separate steps. The title counts unsaved changes
-relative to the last loaded or saved file. Esc asks before discarding unsaved
+relative to the last loaded or saved file. If the file changed on disk, saving
+asks whether to **Reload** it and discard unsaved changes or **Overwrite** it
+with the current selection. Esc asks before discarding unsaved
 changes. Entries that no longer resolve appear first under **Not in catalog**
 with their reasons; deselect them to remove them, or leave them to preserve them
 on save. Duplicate selected names must be resolved before saving.

@@ -310,16 +310,20 @@ def discover_catalog(root: Path, modules: dict[str, str]) -> dict[str, SourceCat
     return catalog
 
 
-def read_selection_lines(root: Path) -> list[SelectionLine]:
-    """Retain every selection entry so the selector can repair invalid lines."""
+def read_selection_text(root: Path) -> str:
+    """Read the exact file content, including comments and line endings."""
     selection = root / SELECTION_PATH
     if selection.is_symlink() or not selection.is_file():
         raise ReconcileError(f"{SELECTION_PATH} is missing or is not a regular file")
     try:
-        content = selection.read_text(encoding="utf-8")
+        return selection.read_bytes().decode("utf-8")
     except (OSError, UnicodeError) as error:
         raise ReconcileError(f"could not read {SELECTION_PATH} as UTF-8") from error
-    return parse_selection(content)
+
+
+def read_selection_lines(root: Path) -> list[SelectionLine]:
+    """Retain every selection entry so the selector can repair invalid lines."""
+    return parse_selection(read_selection_text(root))
 
 
 def parse_selection(content: str) -> list[SelectionLine]:
@@ -366,11 +370,11 @@ def selection_error(value: str, catalog: dict[str, SourceCatalog]) -> str:
     return ""
 
 
-def write_selection(root: Path, selection: Iterable[str]) -> None:
-    """Write selection lines in the selector's stable format."""
-    (root / SELECTION_PATH).write_text(
-        "\n".join([SELECTION_HEADER, *sorted(selection)]) + "\n", encoding="utf-8",
-    )
+def write_selection(root: Path, selection: Iterable[str]) -> str:
+    """Write selection lines in the selector's stable format and return that text."""
+    content = "\n".join([SELECTION_HEADER, *sorted(selection)]) + "\n"
+    (root / SELECTION_PATH).write_text(content, encoding="utf-8")
+    return content
 
 
 def selected_skills(root: Path, catalog: dict[str, SourceCatalog]) -> dict[tuple[Path, str], str]:
