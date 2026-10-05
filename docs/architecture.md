@@ -135,7 +135,8 @@ the reconciler never recreates ownership from a matching path or target.
 
 ## Identity and supported boundaries
 
-No YAML dependency is required. The first non-comment frontmatter field must
+The catalog and reconciler require no YAML dependency. Only the selector uses
+PyYAML, to read display frontmatter. The first non-comment frontmatter field must
 be a plain `name: skill-name` scalar. Later top-level keys must be plain and
 unique. Block descriptions and nested metadata are supported, but continuation
 of the name, quoted/escaped keys, explicit keys, merges and duplicate fields

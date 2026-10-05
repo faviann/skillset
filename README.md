@@ -76,9 +76,14 @@ identity, persistence, worktrees, and reproducibility decisions.
 
 ```bash
 tests/run.sh
+# Or run a single group:
+tests/run.sh stdlib
+tests/run.sh selector
 ```
 
 Tests use temporary homes and real local Git repositories. CI also initializes
 the committed source configuration and reconciles it twice in a temporary home.
 The code requires Python 3.11 or newer. The validated platform is Linux with
-Python 3.13 and Git 2.47; there are no third-party Python dependencies.
+Python 3.13 and Git 2.47. The selector group needs uv and uses the selector's
+locked dependencies; the stdlib group and reconciler need no third-party Python
+packages. With no argument, the test runner runs both groups.
