@@ -268,6 +268,64 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.home / ".agents/.skillset").exists())
         self.assertFalse((self.home / ".claude").exists())
 
+    @unittest.skipIf(os.geteuid() == 0, "root can traverse permission-denied directories")
+    async def test_unreadable_install_directory_reports_error_and_keeps_browsing(self) -> None:
+        directory = self.home / ".agents/skills"
+        directory.mkdir(parents=True)
+        directory.chmod(0)
+        try:
+            app = selector.SelectorApp(root=self.repo)
+            async with app.run_test() as pilot:
+                await app.workers.wait_for_complete()
+                message = self.text(app, "#message")
+                self.assertIn("Permission denied", message)
+                self.assertIn(str(directory), message)
+                await pilot.press("right", "down")
+                self.assertEqual(app.query_one("#skills", selector.CatalogList).current,
+                                 "mattpocock/skills:tdd")
+                await pilot.press("ctrl+s")
+                self.assertIn("Permission denied", self.text(app, "#dialog-details"))
+                self.assertEqual(app.screen.query_one("#choices", selector.CatalogList).current, 2)
+                await pilot.press("1")
+                self.assertTrue(app.screen.is_modal)
+                self.assertTrue(app.is_running)
+            self.assertFalse((self.home / ".agents/.skillset").exists())
+            self.assertFalse((self.home / ".claude").exists())
+        finally:
+            directory.chmod(0o700)
+
+    async def test_correcting_committed_invalid_selection_allows_save_and_install(self) -> None:
+        for save_only in (False, True):
+            with self.subTest(save_only=save_only):
+                write_selection(self.repo, ["mattpocock/skills:prototype", "unknown/source:missing"])
+                git(["add", "skills.txt"], self.repo)
+                git(["commit", "-qm", "commit invalid selection"], self.repo)
+                head = git(["rev-parse", "HEAD"], self.repo)
+                app = selector.SelectorApp(root=self.repo)
+                async with app.run_test() as pilot:
+                    await app.workers.wait_for_complete()
+                    self.assertIn("unknown source", self.text(app, "#message"))
+                    await pilot.press("right", "space", "ctrl+s")
+                    self.assertEqual(app.screen.choices[0], "Save and install")
+                    self.assertNotIn("unavailable", self.text(app, "#dialog-details"))
+                    self.assertEqual(app.screen.query_one("#choices", selector.CatalogList).current, 1)
+                    if save_only:
+                        await pilot.press("2")
+                        self.assertIn("0 unsaved · not installed", self.text(app, "#title"))
+                        await pilot.press("ctrl+s")
+                        self.assertEqual(app.screen.choices[0], "Install")
+                        self.assertNotIn("unavailable", self.text(app, "#dialog-details"))
+                        self.assertEqual(app.screen.query_one("#choices", selector.CatalogList).current, 1)
+                    await pilot.press("1")
+                    self.assertIs(app.return_value, True)
+                code, output = self.handoff()
+                self.assertEqual(code, 0, output)
+                self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), head)
+                self.assertEqual((self.repo / "skills.txt").read_text().splitlines()[1:],
+                                 ["mattpocock/skills:prototype"])
+                for directory in (".agents/skills", ".claude/skills"):
+                    self.assertTrue((self.home / directory / "prototype").is_symlink())
+
     async def test_rejected_commit_keeps_saved_selection_and_does_not_install(self) -> None:
         hook = self.repo / ".git/hooks/pre-commit"
         hook.write_text("#!/bin/sh\necho 'selection commit rejected' >&2\nexit 1\n", encoding="utf-8")

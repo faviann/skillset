@@ -375,7 +375,7 @@ class SelectorApp(App[bool]):
             plan = reconcile_skills.build_plan(self.root)
             not_installed = bool(plan.removals or plan.creations or plan.receipt_cleanup)
             error = None
-        except reconcile_skills.ReconcileError as failure:
+        except (reconcile_skills.ReconcileError, OSError) as failure:
             not_installed, error = True, str(failure)
         self.call_from_thread(self.show_install_status, not_installed, error)
 
@@ -600,7 +600,7 @@ class SelectorApp(App[bool]):
             require_install_checkout(self.root)
         except (reconcile_skills.ReconcileError, OSError) as error:
             return str(error)
-        return self.install_error
+        return self.install_error if Counter(self.selected.values()) == self.committed else None
 
     def save_choice(self, choice: int | None) -> None:
         if choice in (1, 2):
