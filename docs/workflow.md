@@ -37,9 +37,18 @@ skill; Enter does the same in the skills column. Clicking a circle toggles it,
 and clicking a name highlights it. Selecting a name from another source asks
 before replacing its current selection.
 
-Ctrl+S reviews additions and removals against the last commit. **Save only**
-rewrites `skills.txt` in sorted order with its standard header and stays open;
-commit and install remain separate steps. The title counts unsaved changes
+Ctrl+S reviews additions and removals against the last commit. **Save and install**
+is the default: it writes `skills.txt`, closes the selector, commits only that
+file, and runs the installer in your terminal. When the branch is ahead of its
+upstream, it reminds you to run `git push`; the selector never pushes. Install
+failures keep the commit, and commit failures keep the saved file without
+installing. This choice is disabled with a reason in linked worktrees, on a
+detached HEAD, during a merge or rebase, when other tracked changes are uncommitted,
+or while selected entries remain under **Not in catalog**.
+
+**Save only** rewrites `skills.txt` in sorted order with its standard header and
+stays open. It becomes the default when Save and install is unavailable.
+**Keep editing** returns to the selection. The title counts unsaved changes
 relative to the last loaded or saved file. If the file changed on disk, saving
 asks whether to **Reload** it and discard unsaved changes or **Overwrite** it
 with the current selection. Esc asks before discarding unsaved

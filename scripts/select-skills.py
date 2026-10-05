@@ -3,11 +3,12 @@
 # requires-python = ">=3.11,<3.15"
 # dependencies = ["textual==8.2.8", "pyyaml==6.0.3"]
 # ///
-"""Browse the pinned catalog and edit the selection without installing it."""
+"""Browse the pinned catalog, save a selection, and optionally install it."""
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -207,11 +208,15 @@ class ChoiceDialog(ModalScreen[int | None]):
         Binding("3", "choose(3)", show=False),
     ]
 
-    def __init__(self, title: str, choices: list[str], details: str = "") -> None:
+    def __init__(self, title: str, choices: list[str], details: str = "", *,
+                 disabled: dict[int, str] | None = None) -> None:
         super().__init__()
         self.heading = title
         self.choices = choices
-        self.details = details
+        self.disabled = disabled or {}
+        self.details = "\n\n".join([details, *(
+            f"{choices[number - 1]} unavailable: {reason}" for number, reason in self.disabled.items()
+        )])
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
@@ -223,12 +228,17 @@ class ChoiceDialog(ModalScreen[int | None]):
 
     def on_mount(self) -> None:
         choices = self.query_one("#choices", CatalogList)
-        choices.set_rows([Row(number, [Text(f"{number}. {label}")])
-                          for number, label in enumerate(self.choices, 1)])
+        rows = []
+        for number, label in enumerate(self.choices, 1):
+            reason = self.disabled.get(number)
+            rows.append(Row(None if reason else number, [
+                Text(f"{number}. {label}", style=SECONDARY if reason else ""),
+            ]))
+        choices.set_rows(rows)
         choices.focus()
 
     def action_choose(self, number: int) -> None:
-        if 1 <= number <= len(self.choices):
+        if 1 <= number <= len(self.choices) and number not in self.disabled:
             self.dismiss(number)
 
     @on(CatalogList.Activated, "#choices")
@@ -250,7 +260,7 @@ class SkillMarkdown(Markdown):
     BLOCKS = {**Markdown.BLOCKS, "fence": SkillCodeBlock, "code_block": SkillCodeBlock}
 
 
-class SelectorApp(App):
+class SelectorApp(App[bool]):
     TITLE = "Skill selector"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
@@ -552,16 +562,30 @@ class SelectorApp(App):
             return
         details = [f"+ {value}" for value in sorted((current - self.committed).elements())]
         details.extend(f"- {value}" for value in sorted((self.committed - current).elements()))
-        self.push_screen(ChoiceDialog("Save these changes?", ["Save only", "Keep editing"],
-                                      "\n".join(details) or "No changes from the last commit."),
+        reason = self.install_unavailable_reason()
+        self.push_screen(ChoiceDialog("Save these changes?", ["Save and install", "Save only", "Keep editing"],
+                                      "\n".join(details) or "No changes from the last commit.",
+                                      disabled={1: reason} if reason else None),
                          self.save_choice)
 
-    def save_choice(self, choice: int | None) -> None:
-        if choice == 1:
-            self.save_selection()
+    def install_unavailable_reason(self) -> str | None:
+        if any(key in self.selected for key in self.off_catalog):
+            return "deselect the skills under Not in catalog"
+        try:
+            require_install_checkout(self.root)
+        except (reconcile_skills.ReconcileError, OSError) as error:
+            return str(error)
+        return None
 
-    def save_selection(self, expected_content: str | None = None) -> None:
+    def save_choice(self, choice: int | None) -> None:
+        if choice in (1, 2):
+            self.save_selection(install=choice == 1)
+
+    def save_selection(self, expected_content: str | None = None, *, install: bool = False) -> None:
         """Every save action checks the disk content immediately before writing."""
+        if install and (reason := self.install_unavailable_reason()):
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot install: {reason}"))
+            return
         try:
             content = skill_catalog.read_selection_text(self.root)
             if content != (self.loaded_content if expected_content is None else expected_content):
@@ -569,7 +593,7 @@ class SelectorApp(App):
                     if choice == 1:
                         await self.reload_selection()
                     elif choice == 2:
-                        self.save_selection(expected_content=content)
+                        self.save_selection(expected_content=content, install=install)
 
                 self.push_screen(ChoiceDialog("skills.txt changed on disk", ["Reload", "Overwrite"],
                                               "Reload drops your unsaved changes. Overwrite replaces the file."),
@@ -580,6 +604,9 @@ class SelectorApp(App):
             self.query_one("#message", Static).update(Text(f"⎿ Could not save: {error}"))
             return
         self.loaded = Counter(self.selected.values())
+        if install:
+            self.exit(True)
+            return
         self.refresh_title()
         self.query_one("#message", Static).update("⎿ Saved. Not installed yet.")
 
@@ -631,14 +658,66 @@ class SelectorApp(App):
         self.query_one("#hints", Static).update(hint)
 
 
+def require_install_checkout(root: Path) -> None:
+    reconcile_skills.require_primary_checkout(root)
+    for marker, operation in (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase")):
+        path = skill_catalog.git(["rev-parse", "--git-path", marker], cwd=root)
+        if (root / path).exists():
+            raise reconcile_skills.ReconcileError(f"a {operation} is in progress; finish it before installing")
+    if not skill_catalog.git(["symbolic-ref", "--quiet", "HEAD"], cwd=root, check=False):
+        raise reconcile_skills.ReconcileError("checkout is on a detached HEAD; switch to a branch")
+    reconcile_skills.ensure_skillset_committed(root, exempt={"skills.txt"})
+
+
+def install_saved_selection(root: Path) -> int:
+    """Run only after the TUI closes, with hooks and signing in the terminal."""
+    try:
+        require_install_checkout(root)
+        committed = Counter(line.value for line in skill_catalog.parse_selection(
+            skill_catalog.git(["show", "HEAD:skills.txt"], cwd=root),
+        ))
+        selected = Counter(line.value for line in skill_catalog.parse_selection(
+            skill_catalog.read_selection_text(root),
+        ))
+        added, removed = selected - committed, committed - selected
+        changes = [f"+ {value}" for value in sorted(added.elements())]
+        changes.extend(f"- {value}" for value in sorted(removed.elements()))
+        message = f"Update skill selection (+{added.total()} -{removed.total()})"
+        # Match the checkout inspected by the catalog's Git reads, while
+        # retaining terminal streams for hooks and interactive signing.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        commit = subprocess.run(
+            ["git", "commit", "-m", message, "-m", "\n".join(changes), "--only", "--", "skills.txt"],
+            cwd=root, env=env, check=False,
+        )
+    except (reconcile_skills.ReconcileError, OSError) as error:
+        print(f"Could not commit: {error}. skills.txt stays saved; nothing was committed or installed.")
+        return 1
+    if commit.returncode:
+        print("Commit failed. skills.txt stays saved; nothing was committed or installed.")
+        return commit.returncode
+    # uv puts the selector's environment first in PATH. The shell entrypoint
+    # must resolve python3 from the system, just as the manual installer does.
+    env = dict(os.environ, PATH=os.defpath)
+    try:
+        result = subprocess.run([str(root / "scripts/reconcile-skills.sh")], cwd=root, env=env, check=False)
+        code = result.returncode
+    except OSError as error:
+        print(f"Could not install: {error}. The selection commit was kept.")
+        code = 1
+    if skill_catalog.git(["rev-parse", "--verify", "@{upstream}"], cwd=root, check=False):
+        if int(skill_catalog.git(["rev-list", "--count", "@{upstream}..HEAD"], cwd=root)):
+            print("Not pushed yet. To back it up: git push")
+    return code
+
+
 def main() -> int:
     try:
         app = SelectorApp()
     except (reconcile_skills.ReconcileError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    app.run()
-    return 0
+    return install_saved_selection(app.root) if app.run() else 0
 
 
 if __name__ == "__main__":
