@@ -54,10 +54,15 @@ select skills again using `owner/repo:name` lines as described in the
 ```bash
 git clone https://github.com/faviann/skillset.git ~/repos/skillset
 cd ~/repos/skillset
-git submodule update --init --recursive --checkout
-scripts/reconcile-skills.sh
-scripts/reconcile-skills.sh --check
+./setup.sh
 ```
+
+Setup requires git and Python 3.11+, and offers to install uv if it is missing
+(Enter or EOF declines). It initializes sources at their pins, prepares the
+selector's locked dependencies, and links `select-skills` in `~/.local/bin`.
+Add that directory to PATH if setup warns. In a terminal, setup opens the
+selector; otherwise, run `select-skills` when ready. Setup installs no skills.
+Rerun `./setup.sh` to restore missing or stale sources.
 
 Reconciliation is offline. It requires committed configuration and initialized,
 clean sources at their pinned commits. It exposes selected directories through
