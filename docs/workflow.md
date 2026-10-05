@@ -26,8 +26,8 @@ In a non-live authoring clone of skillset, add a source and discover its candida
 git submodule add https://github.com/owner/repo.git sources/owner/repo
 git -C sources/owner/repo ls-files '**/SKILL.md' SKILL.md
 # Declare any harness variant trees in sources.toml.
-# Choose skills and save skills.txt (requires uv).
-scripts/select-skills.py
+# Read each candidate's SKILL.md frontmatter name.
+# Add desired owner/repo:name lines to skills.txt by hand.
 git add .gitmodules sources/owner/repo sources.toml skills.txt
 git commit -m "Select skills from owner/repo"
 ```
