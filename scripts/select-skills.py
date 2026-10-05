@@ -683,9 +683,12 @@ def install_saved_selection(root: Path) -> int:
         changes = [f"+ {value}" for value in sorted(added.elements())]
         changes.extend(f"- {value}" for value in sorted(removed.elements()))
         message = f"Update skill selection (+{added.total()} -{removed.total()})"
+        # Match the checkout inspected by the catalog's Git reads, while
+        # retaining terminal streams for hooks and interactive signing.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         commit = subprocess.run(
             ["git", "commit", "-m", message, "-m", "\n".join(changes), "--only", "--", "skills.txt"],
-            cwd=root, check=False,
+            cwd=root, env=env, check=False,
         )
     except (reconcile_skills.ReconcileError, OSError) as error:
         print(f"Could not commit: {error}. skills.txt stays saved; nothing was committed or installed.")

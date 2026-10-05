@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import SkillsetFixture, git, write_selection
+from fixture import SkillsetFixture, configure_git, git, write_selection
 from test_selector import selector
 
 
@@ -106,13 +106,32 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
         git(["commit", "-qam", "edit readme locally"], self.repo)
 
     async def test_default_choice_commits_only_selection_then_installs_without_upstream_hint(self) -> None:
+        other = self.base / "other-checkout"
+        other.mkdir()
+        git(["init", "-q"], other)
+        configure_git(other)
+        write_selection(other, ["other/source:original"])
+        git(["add", "skills.txt"], other)
+        git(["commit", "-qm", "initial unrelated selection"], other)
+        other_head = git(["rev-parse", "HEAD"], other)
+        write_selection(other, ["other/source:edited"])
+        other_selection = (other / "skills.txt").read_bytes()
         previous = git(["rev-parse", "HEAD"], self.repo)
-        await self.choose_install()
-        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), previous)
-        self.assertEqual(list(self.home.iterdir()), [])
+        with patch.dict(os.environ, {
+            "GIT_DIR": str(other / ".git"),
+            "GIT_WORK_TREE": str(other),
+            "GIT_COMMON_DIR": str(other / ".git"),
+            "GIT_INDEX_FILE": str(other / ".git/index"),
+        }):
+            await self.choose_install()
+            self.assertEqual(git(["rev-parse", "HEAD"], self.repo), previous)
+            self.assertEqual(list(self.home.iterdir()), [])
 
-        code, output = self.handoff()
+            code, output = self.handoff()
 
+        self.assertEqual(git(["rev-parse", "HEAD"], other), other_head, output)
+        self.assertEqual((other / "skills.txt").read_bytes(), other_selection)
+        self.assertEqual(git(["status", "--porcelain"], other), "M skills.txt")
         self.assertEqual(code, 0, output)
         self.assertEqual(git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], self.repo),
                          "skills.txt")
