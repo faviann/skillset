@@ -1,18 +1,34 @@
-"""Read and validate sources and selected skills in an explicit checkout."""
+"""Discover canonical skills and validate selections in an explicit checkout."""
 
 from __future__ import annotations
 
 import os
 import re
 import subprocess
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z", re.ASCII)
 PLAIN_NAME = re.compile(r"name: ([a-z0-9]+(?:-[a-z0-9]+)*)\Z", re.ASCII)
+HARNESSES = {"claude-code", "codex", "pi", "opencode"}
 
 
 class ReconcileError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class InvalidSkill:
+    path: str
+    error: str
+
+
+@dataclass
+class SourceCatalog:
+    skills: dict[str, str]
+    invalid: dict[str, list[InvalidSkill]]
+    variants: dict[str, str]
 
 
 def git(args: list[str], cwd: Path, *, check: bool = True) -> str:
@@ -88,9 +104,46 @@ def validate_sources(root: Path, modules: dict[str, str]) -> None:
             raise ReconcileError(f"source revision mismatch for {path}: expected {expected}, found {actual}; check out the committed gitlink explicitly")
         if git(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], cwd=source):
             raise ReconcileError(f"source checkout is dirty: {path}")
-        nested = git(["ls-tree", "-r", "HEAD"], cwd=source)
-        if any(line.startswith("160000 commit ") for line in nested.splitlines()):
-            raise ReconcileError(f"nested source submodules are unsupported: {path}")
+
+
+def read_variants(root: Path, modules: dict[str, str]) -> dict[str, dict[str, str]]:
+    """Read the required declaration of source-relative harness variant trees."""
+    file = root / "sources.toml"
+    if file.is_symlink() or not file.is_file():
+        raise ReconcileError("sources.toml is missing or is not a regular file")
+    if git(["ls-files", "-z", "--", "sources.toml"], cwd=root) != "sources.toml\0":
+        raise ReconcileError("required install input is not tracked: sources.toml")
+    try:
+        with file.open("rb") as stream:
+            config = tomllib.load(stream)
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise ReconcileError(f"invalid sources.toml: {error}") from error
+    result = {}
+    for name, entry in config.items():
+        module = f"sources/{name}"
+        if module not in modules:
+            raise ReconcileError(f"sources.toml names an unknown source: {name}")
+        if not isinstance(entry, dict):
+            raise ReconcileError(f"sources.toml source must be a table: {name}")
+        unknown = set(entry) - {"variants"}
+        if unknown:
+            raise ReconcileError(f"sources.toml source has unknown fields: {name}: {sorted(unknown)}")
+        variants = entry.get("variants", {})
+        if not isinstance(variants, dict):
+            raise ReconcileError(f"sources.toml variants must be a table: {name}")
+        for harness, value in variants.items():
+            if harness not in HARNESSES:
+                raise ReconcileError(f"sources.toml names an unknown harness: {name}: {harness}")
+            if (not isinstance(value, str) or not value or value == "." or "\\" in value
+                    or Path(value).is_absolute() or Path(value).as_posix() != value
+                    or any(p in {".", ".."} for p in Path(value).parts)
+                    or any(ord(c) < 32 for c in value)):
+                raise ReconcileError(f"sources.toml variant must be a normalized source-relative tree path: {name}: {harness}")
+            directory = root / module / value
+            if not directory.is_dir() or directory.resolve() != directory.absolute():
+                raise ReconcileError(f"sources.toml variant tree is missing or traverses a symlink: {name}: {value}")
+        result[module] = variants
+    return result
 
 
 def identity(file: Path) -> str:
@@ -149,7 +202,9 @@ def skill_name(skill_dir: Path) -> str:
     return name
 
 
-def validate_skill(root: Path, module: str, value: str) -> tuple[str, str]:
+def validate_skill(
+    root: Path, module: str, value: str, tracked: set[str], extras: set[str],
+) -> tuple[str, str]:
     """Validate one skill directory under its configured source."""
     skill_dir = root / value
     rel = skill_dir.relative_to(root / module)
@@ -161,14 +216,13 @@ def validate_skill(root: Path, module: str, value: str) -> tuple[str, str]:
     if not skill_dir.is_dir():
         raise ReconcileError(f"selected skill directory is missing: {value}")
     # Reject any selected subtree content Git does not track, including ignored files.
-    extras = git(["ls-files", "--others", "--exclude-standard", "--ignored", "-z", "--", str(rel)], cwd=root / module)
-    if extras:
+    if any(Path(path).is_relative_to(rel) for path in extras):
         raise ReconcileError(f"selected skill contains untracked or ignored content: {value}")
     descriptor = str(rel / "SKILL.md")
-    tracked = git(["ls-files", "-z", "--", str(rel)], cwd=root / module).split("\0")
     if descriptor not in tracked:
         raise ReconcileError(f"selected SKILL.md is not tracked: {value}")
-    if sum(Path(path).name == "SKILL.md" for path in tracked) != 1:
+    if sum(Path(path).is_relative_to(rel) and Path(path).name == "SKILL.md"
+           for path in tracked) != 1:
         raise ReconcileError(f"selected directory contains additional SKILL.md files: {value}")
     for directory, children, _ in os.walk(skill_dir, followlinks=False):
         children.sort()
@@ -180,7 +234,50 @@ def validate_skill(root: Path, module: str, value: str) -> tuple[str, str]:
     return name, str(skill_dir.absolute())
 
 
-def selected_skills(root: Path, modules: dict[str, str]) -> list[tuple[str, str]]:
+def discover_catalog(root: Path, modules: dict[str, str]) -> dict[str, SourceCatalog]:
+    variants = read_variants(root, modules)
+    catalog = {}
+    for module in sorted(modules):
+        source = root / module
+        tracked = {}
+        for row in git(["ls-files", "--stage", "-z"], cwd=source).split("\0"):
+            if row:
+                metadata, path = row.split("\t", 1)
+                tracked[path] = metadata.split()[0]
+        # Without exclude rules, --others includes ignored files as well.
+        extras = set(filter(None, git(["ls-files", "--others", "-z"], cwd=source).split("\0")))
+        if "160000" in tracked.values():
+            raise ReconcileError(f"nested source submodules are unsupported: {module}")
+        trees = variants.get(module, {})
+        for tree in trees.values():
+            if not any(path.startswith(tree + "/") for path in tracked):
+                raise ReconcileError(f"sources.toml variant tree is not tracked: {module}: {tree}")
+        candidates: dict[str, list[str]] = {}
+        invalid: dict[str, list[InvalidSkill]] = {}
+        tracked_paths = set(tracked)
+        for path in sorted(tracked):
+            if Path(path).name != "SKILL.md" or any(Path(path).is_relative_to(tree) for tree in trees.values()):
+                continue
+            directory = (source / path).parent
+            value = directory.relative_to(root).as_posix()
+            try:
+                name, target = validate_skill(root, module, value, tracked_paths, extras)
+            except ReconcileError as error:
+                invalid.setdefault(directory.name, []).append(InvalidSkill(str(directory.absolute()), str(error)))
+            else:
+                candidates.setdefault(name, []).append(target)
+        repeats = {name: paths for name, paths in candidates.items() if len(paths) > 1}
+        if repeats:
+            copies = "\n".join(f"  {name}:\n    " + "\n    ".join(paths)
+                               for name, paths in repeats.items())
+            raise ReconcileError(f"undeclared repeated canonical skill names in {module}:\n{copies}")
+        catalog[module] = SourceCatalog(
+            {name: paths[0] for name, paths in candidates.items()}, invalid, trees,
+        )
+    return catalog
+
+
+def selected_skills(root: Path, catalog: dict[str, SourceCatalog]) -> list[tuple[str, str]]:
     selection = root / "skills.txt"
     if selection.is_symlink() or not selection.is_file():
         raise ReconcileError("skills.txt is missing or is not a regular file")
@@ -200,10 +297,17 @@ def selected_skills(root: Path, modules: dict[str, str]) -> list[tuple[str, str]
         if value in paths:
             raise ReconcileError(f"duplicate selected path on skills.txt:{number}: {value}")
         paths.add(value)
-        module = next((m for m in sorted(modules, key=len, reverse=True) if value == m or value.startswith(m + "/")), None)
+        module = next((m for m in sorted(catalog, key=len, reverse=True) if value == m or value.startswith(m + "/")), None)
         if module is None:
             raise ReconcileError(f"selection is not under a configured submodule on skills.txt:{number}: {value}")
-        name, skill_path = validate_skill(root, module, value)
+        source = catalog[module]
+        skill_path = str((root / value).absolute())
+        for invalid in source.invalid.get(Path(value).name, []):
+            if invalid.path == skill_path:
+                raise ReconcileError(invalid.error)
+        name = next((name for name, path in source.skills.items() if path == skill_path), None)
+        if name is None:
+            raise ReconcileError(f"selected path is not a valid canonical skill: {value}")
         if name in names:
             raise ReconcileError(f"selected skill-name collision: {name}\n  {names[name]}\n  {value}")
         names[name] = value

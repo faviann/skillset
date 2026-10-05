@@ -22,12 +22,33 @@ by faviann live in the first-party source `faviann/agent-skills`, at
 
 `.gitmodules` records the fetch URL and canonical source path; the superproject
 gitlink is the only source-commit lock. `skills.txt` lists selected skill
-directories, not an inventory of every available skill. Paths handle different
-source layouts without adapters or a second source manifest. Discover
-candidates from `SKILL.md` and select their paths; the reconciler derives names
-from frontmatter and checks the directory name. A single skill at a source root
-is supported when its identity matches that root directory. No content is
-copied and aliases are unsupported.
+directories, not an inventory of every available skill. The catalog discovers
+every tracked `SKILL.md` outside declared variant trees and validates its skill
+directory. Hidden directories are included, and plugin manifests do not affect
+discovery. Names come from frontmatter and must match the directory name. A
+single skill at a source root is supported when its identity matches that root
+directory. Invalid skills are retained by folder name with their validation
+errors; they are not canonical candidates.
+
+The required, tracked `sources.toml` declares harness variant trees by canonical
+source identity and source-relative directory. An empty file is valid. For
+example, rampstack's Codex and Pi copies are declared as:
+
+```toml
+["rampstackco/claude-skills".variants]
+codex = "dist/codex/.agents/skills"
+pi = "dist/pi/.agents/skills"
+```
+
+Supported harness keys are `claude-code`, `codex`, `pi`, and `opencode`. Unknown
+sources or harnesses and missing, untracked, or symlinked trees fail validation.
+Variant trees are excluded from canonical discovery; their contents are not
+validated or linked as variants yet. A name present only in a variant tree is
+not in the catalog. Every install and `--check` rejects repeated valid canonical
+names within a source, even if the copies are unselected, and identifies the
+copies. Invalid copies do not count as repeats. Each source's tracked and
+untracked or ignored files are listed once for catalog discovery, with no
+per-skill Git calls. No content is copied and aliases are unsupported.
 
 Selections are explicit decisions, not inherited rules. New source skills
 remain unselected.
@@ -64,8 +85,9 @@ promoting planned installations to ownership. An orphan receipt can be retired
 or republished only while its consumer entry is absent. Changed consumers,
 missing receipts and corrupt receipts fail closed.
 
-Mutating runs serialize through `~/.agents/.skillset/lock` and repeat preflight
-under the lock. This supports serialized reconciliation and detects ordinary
+Mutating runs serialize through `~/.agents/.skillset/lock` and repeat destination
+and ownership preflight under the lock. Source and catalog validation runs once
+before the lock. This supports serialized reconciliation and detects ordinary
 external replacement. It is not a cross-directory transaction and does not
 promise protection against malicious same-user filesystem races. Do not run
 other installers or mutate source checkouts concurrently. An I/O failure may

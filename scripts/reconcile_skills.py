@@ -14,6 +14,7 @@ from pathlib import Path
 from skill_catalog import (
     NAME_PATTERN,
     ReconcileError,
+    discover_catalog,
     git,
     identity,
     parse_modules,
@@ -84,7 +85,7 @@ def ensure_skillset_committed(root: Path) -> None:
                 "tracked skillset changes are not committed; commit selection, "
                 "source pins, and install code before installing"
             )
-    for item in (".gitmodules", "skills.txt", "scripts/reconcile-skills.sh",
+    for item in (".gitmodules", "skills.txt", "sources.toml", "scripts/reconcile-skills.sh",
                  "scripts/reconcile_skills.py", "scripts/skill_catalog.py"):
         if git(["ls-files", "-z", "--", item], cwd=root) != item + "\0":
             raise ReconcileError(f"required install input is not tracked: {item}")
@@ -147,12 +148,19 @@ def local_collision(desired: set[str], retiring: set[Path]) -> None:
 
 
 
-def build_plan(root: Path) -> Plan:
+def read_selection(root: Path) -> tuple[str, list[tuple[str, str]]]:
     head = require_primary_checkout(root)
     modules = parse_modules(root)
     validate_sources(root, modules)
     ensure_skillset_committed(root)
-    selected = selected_skills(root, modules)
+    return head, selected_skills(root, discover_catalog(root, modules))
+
+
+def build_plan(root: Path) -> Plan:
+    return plan_links(*read_selection(root))
+
+
+def plan_links(head: str, selected: list[tuple[str, str]]) -> Plan:
     desired = {(directory, name): target for name, target in selected for directory in INSTALL_DIRS}
     for install_dir in INSTALL_DIRS:
         safe_components(home_path() / install_dir, directory=True)
@@ -275,7 +283,8 @@ def apply_plan(plan: Plan) -> str:
     return " and ".join(messages) or "skills are reconciled"
 
 def run(root: Path, check_only: bool) -> int:
-    plan = build_plan(root)
+    head, selected = read_selection(root)
+    plan = plan_links(head, selected)
     if check_only:
         discrepancies = [f"missing: {r.path}" for r in plan.creations]
         discrepancies += [f"stale owned link: {r.path}" for r in plan.removals]
@@ -293,7 +302,7 @@ def run(root: Path, check_only: bool) -> int:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ReconcileError(f"lock is not a regular file: {lock}")
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        print(apply_plan(build_plan(root)))
+        print(apply_plan(plan_links(head, selected)))
     return 0
 
 def main(argv: list[str]) -> int:
