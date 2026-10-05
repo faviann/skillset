@@ -16,7 +16,13 @@ from unittest.mock import patch
 from fixture import CHECKOUT, SkillsetFixture, git, write_selection, write_skill
 
 sys.path.insert(0, str(CHECKOUT / "scripts"))
-from reconcile_skills import AGENTS_DIR, CLAUDE_DIR, build_plan
+from reconcile_skills import (
+    AGENTS_DIR,
+    CLAUDE_DIR,
+    ReconcileError,
+    build_plan,
+    ensure_skillset_committed,
+)
 
 
 class ReconcileIntegrationTests(unittest.TestCase):
@@ -442,9 +448,41 @@ raise SystemExit(m.main(sys.argv[4:]))
 
     def test_uncommitted_aggregate_configuration_is_rejected(self) -> None:
         (self.repo / "skills.txt").write_text("# uncommitted change\n", encoding="utf-8")
-        result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "tracked skillset changes are not committed")
-        self.assertFalse((self.home / ".agents").exists())
+        for args in ((), ("--check",)):
+            with self.subTest(args=args):
+                result = self.run_reconciler(*args)
+                self.assert_reconcile_fails(result, "tracked skillset changes are not committed")
+                self.assertIn("skills.txt", result.stderr)
+                self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_committed_gate_allows_only_exempt_paths(self) -> None:
+        readme = self.repo / "README.md"
+        readme.write_text("# Fixture\n", encoding="utf-8")
+        self.commit_skillset()
+        (self.repo / "skills.txt").write_text("# edited selection\n", encoding="utf-8")
+        ensure_skillset_committed(self.repo, exempt={"skills.txt"})
+        git(["add", "skills.txt"], self.repo)
+        ensure_skillset_committed(self.repo, exempt={"skills.txt"})
+
+        readme.write_text("# Edited fixture\n", encoding="utf-8")
+        with self.assertRaises(ReconcileError) as caught:
+            ensure_skillset_committed(self.repo, exempt={"skills.txt"})
+        self.assertIn("README.md", str(caught.exception))
+        self.assertNotIn("skills.txt", str(caught.exception))
+
+    def test_committed_gate_lists_staged_and_unstaged_paths(self) -> None:
+        staged_path = "README caf\u00e9.md"
+        readme = self.repo / staged_path
+        readme.write_text("# Fixture\n", encoding="utf-8")
+        self.commit_skillset()
+        readme.write_text("# Edited fixture\n", encoding="utf-8")
+        git(["add", staged_path], self.repo)
+        (self.repo / "skills.txt").write_text("# edited selection\n", encoding="utf-8")
+
+        with self.assertRaises(ReconcileError) as caught:
+            ensure_skillset_committed(self.repo)
+        self.assertIn(staged_path, str(caught.exception))
+        self.assertIn("skills.txt", str(caught.exception))
 
     def test_staged_gitlink_difference_is_rejected_even_when_worktree_is_at_head_pin(self) -> None:
         write_skill(self.source, "skills/misc/newer")

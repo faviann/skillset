@@ -76,16 +76,24 @@ def require_primary_checkout(root: Path) -> str:
     return git(["rev-parse", "HEAD"], cwd=root)
 
 
-def ensure_skillset_committed(root: Path) -> None:
+def ensure_skillset_committed(
+    root: Path, exempt: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    """Reject tracked changes except for explicitly exempt repository-relative paths."""
+    changed: set[str] = set()
     # Check both comparisons: a staged gitlink can differ even when its worktree
     # has been returned to HEAD. Override local submodule.ignore configuration.
     for staged in ([], ["--cached"]):
-        if git(["diff", *staged, "--name-only", "--no-ext-diff",
-                "--ignore-submodules=none", "HEAD", "--"], cwd=root):
-            raise ReconcileError(
-                "tracked skillset changes are not committed; commit selection, "
-                "source pins, and install code before installing"
-            )
+        paths = git(["diff", *staged, "--name-only", "-z", "--no-ext-diff",
+                     "--no-renames", "--ignore-submodules=none", "HEAD", "--"], cwd=root)
+        changed.update(filter(None, paths.split("\0")))
+    changed.difference_update(exempt)
+    if changed:
+        raise ReconcileError(
+            "tracked skillset changes are not committed; commit selection, "
+            "source pins, and install code before installing:\n"
+            + "\n".join(f"  {path}" for path in sorted(changed))
+        )
     for item in (".gitmodules", SELECTION_PATH, "sources.toml", "scripts/reconcile-skills.sh",
                  "scripts/reconcile_skills.py", "scripts/skill_catalog.py"):
         if git(["ls-files", "-z", "--", item], cwd=root) != item + "\0":
