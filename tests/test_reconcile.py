@@ -10,9 +10,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
-from fixture import SkillsetFixture, git, write_selection, write_skill
+from fixture import CHECKOUT, SkillsetFixture, git, write_selection, write_skill
+
+sys.path.insert(0, str(CHECKOUT / "scripts"))
+from reconcile_skills import AGENTS_DIR, CLAUDE_DIR, build_plan
 
 
 class ReconcileIntegrationTests(unittest.TestCase):
@@ -72,6 +76,7 @@ class ReconcileIntegrationTests(unittest.TestCase):
             driver = r"""
 import importlib.util, os, sys
 from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
 spec = importlib.util.spec_from_file_location('reconciler_under_test', sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
@@ -92,9 +97,9 @@ def sync(path):
     original_sync(path)
     if failure == 'after-receipt-create' and Path(path) == receipt.parent and receipt.is_symlink() and not entry.is_symlink():
         os._exit(73)
-    if failure == 'after-consumer-remove' and Path(path) == entry.parent and receipt.is_symlink() and not entry.is_symlink():
+    if failure == 'after-install-entry-remove' and Path(path) == entry.parent and receipt.is_symlink() and not entry.is_symlink():
         os._exit(73)
-    if failure == 'after-consumer-publish' and published:
+    if failure == 'after-install-entry-publish' and published:
         os._exit(73)
 m.fsync_dir = sync
 original_apply = m.apply_plan
@@ -117,8 +122,8 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(text, result.stdout + result.stderr)
 
-    def assert_link(self, harness: str, name: str, target: Path) -> None:
-        link = self.home / f".{harness}/skills/{name}"
+    def assert_link(self, install_dir: Path, name: str, target: Path) -> None:
+        link = self.home / install_dir / name
         self.assertTrue(link.is_symlink(), str(link))
         self.assertEqual(os.readlink(link), str(target))
 
@@ -126,10 +131,10 @@ raise SystemExit(m.main(sys.argv[4:]))
         first = self.run_reconciler()
         self.assertEqual(first.returncode, 0, first.stderr)
         expected = self.source / "skills/engineering/alpha"
-        self.assert_link("agents", "alpha", expected)
-        self.assert_link("claude", "alpha", expected)
-        for harness in ("agents", "claude"):
-            self.assertFalse((self.home / f".{harness}/skills/unselected").exists())
+        self.assert_link(AGENTS_DIR, "alpha", expected)
+        self.assert_link(CLAUDE_DIR, "alpha", expected)
+        for install_dir in (AGENTS_DIR, CLAUDE_DIR):
+            self.assertFalse((self.home / install_dir / "unselected").exists())
         self.assertIn("created 2 skill links", first.stdout)
 
         second = self.run_reconciler()
@@ -138,6 +143,45 @@ raise SystemExit(m.main(sys.argv[4:]))
         check = self.run_reconciler("--check")
         self.assertEqual(check.returncode, 0, check.stderr)
         self.assertIn(git(["rev-parse", "HEAD"], self.repo), check.stdout)
+
+    def test_plan_reads_the_explicit_checkout_root(self) -> None:
+        with patch.dict(os.environ, {"HOME": str(self.home)}):
+            plan = build_plan(self.repo)
+            self.assertEqual(plan.head, git(["rev-parse", "HEAD"], self.repo))
+            self.assertEqual(
+                {(record.path, record.target) for record in plan.creations},
+                {(self.home / directory / "alpha", str(self.repo / self.alpha))
+                 for directory in (AGENTS_DIR, CLAUDE_DIR)},
+            )
+        self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_python_entrypoint_works_from_another_directory(self) -> None:
+        command = [sys.executable, str(self.repo / "scripts/reconcile_skills.py")]
+        for args in ([], ["--check"]):
+            result = subprocess.run(
+                [*command, *args], cwd=self.base, env=self.fixture.env,
+                capture_output=True, text=True, check=False, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_link(AGENTS_DIR, "alpha", self.repo / self.alpha)
+        self.assert_link(CLAUDE_DIR, "alpha", self.repo / self.alpha)
+
+    def test_untracked_catalog_module_fails_the_gate(self) -> None:
+        git(["rm", "--cached", "scripts/skill_catalog.py"], self.repo)
+        git(["commit", "-qm", "untrack catalog module"], self.repo)
+        result = self.run_reconciler()
+        self.assert_reconcile_fails(
+            result, "required install input is not tracked: scripts/skill_catalog.py",
+        )
+        self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_modified_catalog_module_fails_the_gate(self) -> None:
+        module = self.repo / "scripts/skill_catalog.py"
+        module.write_text(module.read_text(encoding="utf-8") + "\n# uncommitted change\n",
+                          encoding="utf-8")
+        result = self.run_reconciler()
+        self.assert_reconcile_fails(result, "tracked skillset changes are not committed")
+        self.assertEqual(list(self.home.iterdir()), [])
 
     def test_additional_submodule_requires_an_explicit_skill_selection(self) -> None:
         self.fixture.add_source("other/tool", {
@@ -151,10 +195,10 @@ raise SystemExit(m.main(sys.argv[4:]))
         result = self.run_reconciler()
         self.assertEqual(result.returncode, 0, result.stderr)
         expected = self.repo / "sources/other/tool/skills/engineering/gamma"
-        self.assert_link("agents", "gamma", expected)
-        self.assert_link("claude", "gamma", expected)
-        for harness in ("agents", "claude"):
-            self.assertFalse((self.home / f".{harness}/skills/not-selected").exists())
+        self.assert_link(AGENTS_DIR, "gamma", expected)
+        self.assert_link(CLAUDE_DIR, "gamma", expected)
+        for install_dir in (AGENTS_DIR, CLAUDE_DIR):
+            self.assertFalse((self.home / install_dir / "not-selected").exists())
 
     def test_check_is_read_only_when_links_are_missing(self) -> None:
         before = set(self.home.iterdir())
@@ -241,11 +285,11 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.commit_skillset()
         self.assert_reconcile_fails(self.run_reconciler(), "reserved by Claude Code")
 
-    def test_existing_consumer_skill_identity_collision_is_detected(self) -> None:
+    def test_existing_install_directory_skill_identity_collision_is_detected(self) -> None:
         local = self.home / ".agents/skills/local-folder"
         local.mkdir(parents=True)
         (local / "SKILL.md").write_text("---\nname: alpha\ndescription: local\n---\n", encoding="utf-8")
-        self.assert_reconcile_fails(self.run_reconciler(), "existing consumer skill identity collision")
+        self.assert_reconcile_fails(self.run_reconciler(), "existing install directory skill identity collision")
         self.assertFalse((self.home / ".claude").exists())
 
     def test_unowned_same_target_symlink_is_not_adopted(self) -> None:
@@ -255,7 +299,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         link.symlink_to(expected)
 
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "unowned or changed consumer entry collision")
+        self.assert_reconcile_fails(result, "unowned or changed install directory entry collision")
         self.assertEqual(os.readlink(link), str(expected))
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".local").exists())
@@ -294,13 +338,13 @@ raise SystemExit(m.main(sys.argv[4:]))
         (collision / "marker").write_text("keep", encoding="utf-8")
 
         result = self.run_reconciler()
-        self.assert_reconcile_fails(result, "unowned or changed consumer entry collision")
+        self.assert_reconcile_fails(result, "unowned or changed install directory entry collision")
         self.assertEqual((collision / "marker").read_text(encoding="utf-8"), "keep")
         self.assertFalse((self.home / ".agents/skills/beta").exists())
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".local").exists())
 
-    def test_destination_and_parent_symlinks_are_rejected(self) -> None:
+    def test_install_directory_and_parent_symlinks_are_rejected(self) -> None:
         outside = self.base / "outside"
         outside.mkdir()
         agents = self.home / ".agents"
@@ -310,14 +354,14 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertEqual(list(outside.iterdir()), [])
 
         agents.unlink()
-        destination = self.home / ".agents/skills"
-        destination.parent.mkdir()
-        destination.symlink_to(outside)
+        install_dir = self.home / ".agents/skills"
+        install_dir.parent.mkdir()
+        install_dir.symlink_to(outside)
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "managed directory is a symlink")
         self.assertEqual(list(outside.iterdir()), [])
 
-    def test_blocking_harness_parent_is_rejected_before_other_destination_changes(self) -> None:
+    def test_blocking_install_directory_parent_is_rejected_before_other_changes(self) -> None:
         (self.home / ".claude").write_text("preserve", encoding="utf-8")
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "managed parent is not a directory")
@@ -328,8 +372,8 @@ raise SystemExit(m.main(sys.argv[4:]))
         installed = self.run_reconciler()
         self.assertEqual(installed.returncode, 0, installed.stderr)
         stale_target = self.source / "skills/engineering/alpha"
-        for harness in ("agents", "claude"):
-            self.assertTrue((self.home / f".{harness}/skills/alpha").is_symlink())
+        for install_dir in (AGENTS_DIR, CLAUDE_DIR):
+            self.assertTrue((self.home / install_dir / "alpha").is_symlink())
 
         git(["rm", "-r", "skills/engineering/alpha"], self.source)
         self.commit_source(pin=True)
@@ -341,8 +385,8 @@ raise SystemExit(m.main(sys.argv[4:]))
         result = self.run_reconciler()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("removed 2 owned skill links", result.stdout)
-        for harness in ("agents", "claude"):
-            link = self.home / f".{harness}/skills/alpha"
+        for install_dir in (AGENTS_DIR, CLAUDE_DIR):
+            link = self.home / install_dir / "alpha"
             self.assertFalse(link.is_symlink())
             self.assertFalse(link.exists())
 
@@ -355,8 +399,8 @@ raise SystemExit(m.main(sys.argv[4:]))
 
         result = self.run_reconciler()
         self.assertEqual(result.returncode, 0, result.stderr)
-        for harness in ("agents", "claude"):
-            self.assertFalse((self.home / f".{harness}/skills/alpha").is_symlink())
+        for install_dir in (AGENTS_DIR, CLAUDE_DIR):
+            self.assertFalse((self.home / install_dir / "alpha").is_symlink())
 
     def test_missing_uninitialized_source_fails_without_initializing(self) -> None:
         clone = self.base / "uninitialized"
@@ -366,13 +410,13 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertFalse((clone / "sources/acme/skills/.git").exists())
         self.assertFalse((self.home / ".agents").exists())
 
-    def test_dirty_source_fails_before_consumer_changes(self) -> None:
+    def test_dirty_source_fails_before_install_directory_changes(self) -> None:
         (self.source / "skills/engineering/alpha/SKILL.md").write_text("changed", encoding="utf-8")
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "source checkout is dirty")
         self.assertFalse((self.home / ".agents").exists())
 
-    def test_wrong_source_revision_fails_before_consumer_changes(self) -> None:
+    def test_wrong_source_revision_fails_before_install_directory_changes(self) -> None:
         write_skill(self.source, "skills/misc/new-commit")
         git(["add", "skills/misc/new-commit"], self.source)
         git(["commit", "-qm", "unrecorded source update"], self.source)
@@ -422,8 +466,8 @@ raise SystemExit(m.main(sys.argv[4:]))
         result = self.run_reconciler(repo=moved)
         self.assertEqual(result.returncode, 0, result.stderr)
         expected = moved / "sources/acme/skills/skills/engineering/alpha"
-        self.assert_link("agents", "alpha", expected)
-        self.assert_link("claude", "alpha", expected)
+        self.assert_link(AGENTS_DIR, "alpha", expected)
+        self.assert_link(CLAUDE_DIR, "alpha", expected)
         self.assertIn("removed 2 owned skill links and created 2 skill links", result.stdout)
 
     def test_receipt_before_publication_recovers_without_adopting(self) -> None:
@@ -441,7 +485,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.selection = []
         self.write_selection()
         self.commit_skillset("remove selection")
-        failed = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-consumer-remove"})
+        failed = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-install-entry-remove"})
         self.assertEqual(failed.returncode, 73)
         entry = self.home / ".agents/skills/alpha"
         receipt = self.home / ".agents/.skillset/receipts/alpha"
@@ -506,7 +550,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.write_selection()
         self.commit_skillset("select beta")
         self.assertEqual(self.run_reconciler().returncode, 0)
-        self.assert_link("agents", "beta", self.source / "skills/engineering/beta")
+        self.assert_link(AGENTS_DIR, "beta", self.source / "skills/engineering/beta")
         self.assertFalse((self.home / ".agents/skills/alpha").exists())
 
         historical = self.base / "historical"
@@ -525,8 +569,8 @@ raise SystemExit(m.main(sys.argv[4:]))
         )
         restored = self.run_reconciler(repo=historical)
         self.assertEqual(restored.returncode, 0, restored.stderr)
-        self.assert_link("agents", "alpha", historical / "sources/acme/skills/skills/engineering/alpha")
-        self.assert_link("claude", "alpha", historical / "sources/acme/skills/skills/engineering/alpha")
+        self.assert_link(AGENTS_DIR, "alpha", historical / "sources/acme/skills/skills/engineering/alpha")
+        self.assert_link(CLAUDE_DIR, "alpha", historical / "sources/acme/skills/skills/engineering/alpha")
         self.assertFalse((self.home / ".agents/skills/beta").exists())
         self.assertEqual(self.run_reconciler("--check", repo=historical).returncode, 0)
         self.assertEqual((self.home / ".agents/skills/alpha/SKILL.md").read_text(), old_body)
@@ -553,7 +597,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         alias = self.home / ".agents/skills/local-folder"
         alias.parent.mkdir(parents=True)
         alias.symlink_to(other)
-        self.assert_reconcile_fails(self.run_reconciler(), "existing consumer skill identity collision")
+        self.assert_reconcile_fails(self.run_reconciler(), "existing install directory skill identity collision")
         self.assertTrue(alias.is_symlink())
         self.assertFalse((self.home / ".claude").exists())
 
@@ -603,15 +647,15 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assert_reconcile_fails(self.run_reconciler(), "nested source submodules are unsupported")
         self.assertFalse((self.home / ".agents").exists())
 
-    def test_missing_receipt_never_reclaims_same_target_consumer(self) -> None:
+    def test_missing_receipt_never_reclaims_same_target_install_directory(self) -> None:
         self.assertEqual(self.run_reconciler().returncode, 0)
         entry = self.home / ".agents/skills/alpha"
         before = entry.lstat()
         (self.home / ".agents/.skillset/receipts/alpha").unlink()
-        self.assert_reconcile_fails(self.run_reconciler(), "unowned or changed consumer entry collision")
+        self.assert_reconcile_fails(self.run_reconciler(), "unowned or changed install directory entry collision")
         self.assertTrue(os.path.samestat(before, entry.lstat()))
 
-    def test_corrupt_receipt_is_rejected_without_removing_consumer(self) -> None:
+    def test_corrupt_receipt_is_rejected_without_removing_install_directory(self) -> None:
         self.assertEqual(self.run_reconciler().returncode, 0)
         receipt = self.home / ".agents/.skillset/receipts/alpha"
         entry = self.home / ".agents/skills/alpha"
@@ -638,11 +682,11 @@ raise SystemExit(m.main(sys.argv[4:]))
         entry = self.home / ".agents/skills/alpha"
         entry.symlink_to(self.source / "skills/engineering/alpha")
         before = entry.lstat()
-        self.assert_reconcile_fails(self.run_reconciler(), "unowned or changed consumer entry collision")
+        self.assert_reconcile_fails(self.run_reconciler(), "unowned or changed install directory entry collision")
         self.selection = []
         self.write_selection()
         self.commit_skillset()
-        self.assert_reconcile_fails(self.run_reconciler(), "owned consumer entry changed")
+        self.assert_reconcile_fails(self.run_reconciler(), "owned install directory entry changed")
         self.assertTrue(os.path.samestat(before, entry.lstat()))
 
     def test_interrupted_receipt_can_switch_to_a_new_target_in_one_run(self) -> None:
@@ -657,11 +701,11 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.commit_skillset()
         result = self.run_reconciler()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_link("agents", "alpha", moved)
+        self.assert_link(AGENTS_DIR, "alpha", moved)
         self.assertEqual(self.run_reconciler("--check").returncode, 0)
 
     def test_interruption_after_publication_keeps_exact_ownership(self) -> None:
-        result = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-consumer-publish"})
+        result = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-install-entry-publish"})
         self.assertEqual(result.returncode, 73, result.stderr)
         entry = self.home / ".agents/skills/alpha"
         receipt = self.home / ".agents/.skillset/receipts/alpha"
@@ -705,7 +749,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.commit_skillset()
         result = self.run_reconciler()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_link("agents", "skills", self.source)
+        self.assert_link(AGENTS_DIR, "skills", self.source)
 
     def test_selected_directory_cannot_implicitly_expose_nested_skills(self) -> None:
         nested = self.source / "skills/engineering/alpha/nested"
