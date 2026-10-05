@@ -53,19 +53,19 @@ cd ~/repos/skillset
 ./setup.sh
 ```
 
-This clone becomes the live checkout: installed skill links point into it.
-Setup requires git and Python 3.11+, and offers to install uv if it is missing
-(Enter or EOF declines and stops setup). It initializes sources at their pins, prepares the
-selector's locked dependencies, and links `select-skills` in `~/.local/bin`.
+This clone becomes the live checkout: installed skill links point into it. Setup
+requires git and Python 3.11+, and offers to install uv if it is missing (Enter
+or EOF declines and stops setup). It initializes sources at their pins, prepares
+the selector's locked dependencies, and links `select-skills` in `~/.local/bin`.
 Add that directory to PATH if setup warns. In a terminal, setup opens the
 selector; otherwise, run `select-skills` when ready. Setup installs no skills.
 Rerun `./setup.sh` to restore missing or stale sources.
 
-In the selector, press Ctrl+S and choose
-**Save and install**. That commits `skills.txt` in the live checkout and links
-the selected skills into the install directories `~/.agents/skills` and
-`~/.claude/skills`. Source pin updates happen in a separate clone; see the
-[workflow guide](docs/workflow.md).
+In the selector, choose skills, then press Ctrl+S and choose **Save and
+install**. That commits `skills.txt` in the live checkout and links the selected
+skills into the install directories `~/.agents/skills` and `~/.claude/skills`.
+Source pin updates happen in a separate clone; see the [workflow
+guide](docs/workflow.md).
 
 Installing is offline. It requires committed configuration and initialized,
 clean sources at their pinned commits, and keeps an ownership receipt for each
@@ -76,12 +76,14 @@ link beside its install directory. It never adopts existing entries.
 except `faviann/agent-skills` ships plugin manifests, so this affects their
 skills. Selecting a variant does not avoid it.
 
-**Existing workstation:** migrate the legacy links from `~/repos/skills` and
-switch the dotfiles invocation before using this as the live installer. This
-upgrade empties `skills.txt`; old path selections are not converted, and their
-links are removed on the next install until you select skills again. This repository
-has not changed the workstation's existing links or its dotfiles hook. See the
-[workflow and migration guide](docs/workflow.md#switch-the-workstation-hook).
+**Existing workstation:** migrate the legacy links from `~/repos/skills` by hand
+and switch the dotfiles invocation before using this as the live installer;
+skillset never removes links it did not create. If you installed with an earlier
+skillset version, `skills.txt` is now empty: path selections are not converted,
+and the next install removes the links skillset made for them. Select skills
+again with `select-skills`. This repository has not changed the workstation's
+existing links or its dotfiles hook. See the [workflow and migration
+guide](docs/workflow.md#switch-the-workstation-hook).
 
 See [architecture and safety boundaries](docs/architecture.md) for ownership,
 identity, persistence, worktrees, and reproducibility decisions.

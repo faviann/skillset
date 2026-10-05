@@ -14,17 +14,19 @@ cd ~/repos/skillset
 ./setup.sh
 ```
 
-Setup checks for git, Python 3.11+ and uv. If uv is missing, it asks before using
-the official installer; Enter or EOF declines and stops setup. It initializes sources at their
-pins, prepares locked selector dependencies, and links `select-skills` and its
-lockfile in `~/.local/bin`. It warns if that directory is missing from PATH.
-With terminal input and output it opens the selector; otherwise it prints
-`Ready. Run: select-skills`. Setup installs no skills.
+Setup checks for git, Python 3.11+ and uv. If uv is missing, it asks before
+using the official installer; Enter or EOF declines and stops setup. It
+initializes sources at their pins, prepares locked selector dependencies, and
+links `select-skills` and its lockfile in `~/.local/bin`. It warns if that
+directory is missing from PATH. With terminal input and output it opens the
+selector; otherwise it prints `Ready. Run: select-skills`. Setup installs no
+skills.
 
-In the live checkout, rerun `./setup.sh` whenever a source is missing or at the wrong commit, for
-example after a pull that moved a pin. An install never fetches, pulls,
-initializes, or advances sources. It requires the skillset's tracked files to
-be committed and each initialized source to be clean and at the gitlink commit.
+In the live checkout, rerun `./setup.sh` whenever a source is missing or at the
+wrong commit, for example after a pull that moved a pin. An install never
+fetches, pulls, initializes, or advances sources. It requires the skillset's
+tracked files to be committed and each initialized source to be clean and at the
+gitlink commit.
 
 ## Select skills
 
@@ -44,11 +46,12 @@ detached HEAD, during a merge or rebase, when other tracked changes are uncommit
 when untracked files exist under `scripts/`, or while selected entries remain
 under **Not in catalog**.
 
-The title shows **not installed** when `skills.txt` differs from HEAD or a read-only
-installation check finds links to update or fails. Ctrl+S then offers **Install** even with
-no unsaved changes; it preserves the saved file and commits only if needed. A
-failed check appears on the message line and disables Install with its reason.
-After an install failure, run the skill selector again and choose Install.
+The title shows **not installed** when `skills.txt` differs from HEAD or a
+read-only installation check finds links to update or fails. Ctrl+S then offers
+**Install** even with no unsaved changes; it preserves the saved file and
+commits only if needed. A failed check appears on the message line and disables
+Install with its reason. After an install failure, run the skill selector again
+and choose Install.
 
 **Save only** rewrites `skills.txt` in sorted order with its standard header and
 stays open. It becomes the default when Save and install is unavailable.
@@ -90,9 +93,10 @@ git clone --recurse-submodules https://github.com/faviann/skillset.git ~/repos/s
 cd ~/repos/skillset-update
 ```
 
-Don't run `./setup.sh` in this clone; it would point `select-skills` at it, and
-an install from there would link your skills into it. Add, advance or remove
-the source:
+If it already exists, run `git pull` and `git submodule update --init
+--recursive --checkout` there instead. Don't run `./setup.sh` in this clone; it
+would point `select-skills` at it, and an install from there would link your
+skills into it. Add, advance or remove the source:
 
 ```bash
 # Add a source
