@@ -26,14 +26,27 @@ In a non-live authoring clone of skillset, add a source and discover its candida
 git submodule add https://github.com/owner/repo.git sources/owner/repo
 git -C sources/owner/repo ls-files '**/SKILL.md' SKILL.md
 # Declare any harness variant trees in sources.toml.
-# Read each candidate's SKILL.md frontmatter name.
-# Add desired owner/repo:name lines to skills.txt by hand.
+# Choose skills and save skills.txt (requires uv).
+scripts/select-skills.py
 git add .gitmodules sources/owner/repo sources.toml skills.txt
 git commit -m "Select skills from owner/repo"
 ```
 
-Until the interactive selector exists, edit `skills.txt` by hand. Each selection
-line is `owner/repo:name`: `owner/repo` is the source's folder under `sources/`,
+Run `scripts/select-skills.py` to edit the selection. Space toggles the highlighted
+skill; Enter does the same in the skills column. Clicking a circle toggles it,
+and clicking a name highlights it. Selecting a name from another source asks
+before replacing its current selection.
+
+Ctrl+S reviews additions and removals against the last commit. **Save only**
+rewrites `skills.txt` in sorted order with its standard header and stays open;
+commit and install remain separate steps. The title counts unsaved changes
+relative to the last loaded or saved file. Esc asks before discarding unsaved
+changes. Entries that no longer resolve appear first under **Not in catalog**
+with their reasons; deselect them to remove them, or leave them to preserve them
+on save. Duplicate selected names must be resolved before saving.
+
+You can also edit `skills.txt` by hand. Each selection line is
+`owner/repo:name`: `owner/repo` is the source's folder under `sources/`,
 and `name` is the skill's frontmatter name. Neither part may contain `:`.
 For example, `faviann/agent-skills:publish-artifact` selects that named skill
 from `sources/faviann/agent-skills`. Blank lines and lines beginning with `#`
