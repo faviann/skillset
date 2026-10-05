@@ -45,11 +45,11 @@ by faviann. It includes `publish-artifact`, which moved there with its history
 from the `mattpocock/skills` fork. Author new first-party skills in that
 repository, not in skillset.
 
-This upgrade empties `skills.txt`. Existing path selections are not converted;
-select skills again using `owner/repo:name` lines as described in the
-[workflow guide](docs/workflow.md#select-skills).
+This upgrade empties `skills.txt`. Existing path selections are not converted,
+and their links are removed on the next install; select skills again with
+`select-skills`.
 
-## Bootstrap a new installation
+## Get started
 
 ```bash
 git clone https://github.com/faviann/skillset.git ~/repos/skillset
@@ -57,6 +57,7 @@ cd ~/repos/skillset
 ./setup.sh
 ```
 
+This clone becomes the live checkout: installed skill links point into it.
 Setup requires git and Python 3.11+, and offers to install uv if it is missing
 (Enter or EOF declines). It initializes sources at their pins, prepares the
 selector's locked dependencies, and links `select-skills` in `~/.local/bin`.
@@ -64,15 +65,25 @@ Add that directory to PATH if setup warns. In a terminal, setup opens the
 selector; otherwise, run `select-skills` when ready. Setup installs no skills.
 Rerun `./setup.sh` to restore missing or stale sources.
 
-Reconciliation is offline. It requires committed configuration and initialized,
-clean sources at their pinned commits. It exposes selected directories through
-symlinks in `~/.agents/skills` and `~/.claude/skills`, retaining exact ownership
-receipts beside each consumer directory. It never adopts existing entries.
+Choose skills with `select-skills`, then press Ctrl+S and choose
+**Save and install**. That commits `skills.txt` in the live checkout and links
+the selected skills into the install directories `~/.agents/skills` and
+`~/.claude/skills`. Source pin updates happen in a separate clone; see the
+[workflow guide](docs/workflow.md).
+
+Installing is offline. It requires committed configuration and initialized,
+clean sources at their pinned commits, and keeps an ownership receipt for each
+link beside its install directory. It never adopts existing entries.
+
+**Codex names:** Codex lists a linked skill that sits under a plugin manifest as
+`<plugin>:<name>`, such as `pstack:tdd`, typed as `$pstack:tdd`. Every source
+except `faviann/agent-skills` ships plugin manifests, so this affects their
+skills. Selecting a variant does not avoid it.
 
 **Existing workstation:** migrate the legacy author-repository links and switch
 the dotfiles invocation before using this as the live installer. This repository
 has not changed the workstation's existing links or its dotfiles hook. See the
-[workflow and migration guide](docs/workflow.md).
+[workflow and migration guide](docs/workflow.md#switch-the-workstation-hook).
 
 See [architecture and safety boundaries](docs/architecture.md) for ownership,
 identity, persistence, worktrees, and reproducibility decisions.
@@ -87,8 +98,8 @@ tests/run.sh selector
 ```
 
 Tests use temporary homes and real local Git repositories. CI also initializes
-the committed source configuration and reconciles it twice in a temporary home.
+the committed source configuration and installs it twice in a temporary home.
 The code requires Python 3.11 or newer. The validated platform is Linux with
 Python 3.13 and Git 2.47. The selector group needs uv and uses the selector's
-locked dependencies; the stdlib group and reconciler need no third-party Python
+locked dependencies; the stdlib group and installer need no third-party Python
 packages. With no argument, the test runner runs both groups.
