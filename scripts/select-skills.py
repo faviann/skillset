@@ -23,11 +23,11 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
-from textual.events import Click
+from textual.events import Click, Key
 from textual.geometry import Region
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Markdown, Static
+from textual.widgets import Input, Markdown, Static
 from textual.widgets.markdown import MarkdownFence
 
 import reconcile_skills
@@ -256,6 +256,10 @@ class SelectorApp(App):
     CSS = """
     Screen { background: ansi_default; color: ansi_default; }
     #title { height: 1; margin: 1 2; }
+    #search-box { height: 3; margin: 0 2 1 2; border: round #999999; }
+    #search-prompt { width: 2; }
+    #search { height: 1; padding: 0; border: none; background: transparent; }
+    #search:focus { border: none; }
     #columns { margin: 0 1 1 1; }
     .column { padding: 0 1; }
     #source-column { width: 30; }
@@ -315,11 +319,15 @@ class SelectorApp(App):
             skill_catalog.git(["show", "HEAD:skills.txt"], cwd=self.root),
         ))
         self.source: str | None = NOT_IN_CATALOG if self.off_catalog else next(iter(self.catalog), None)
+        self.search_text = ""
         self.theme = "textual-dark"
         self.ansi_color = True
 
     def compose(self) -> ComposeResult:
         yield Static(id="title")
+        with Horizontal(id="search-box"):
+            yield Static(">", id="search-prompt")
+            yield Input(placeholder="Search skills", select_on_focus=False, id="search")
         with Horizontal(id="columns"):
             with Vertical(id="source-column", classes="column"):
                 yield Static("Sources", classes="heading")
@@ -352,26 +360,72 @@ class SelectorApp(App):
 
     def fill_sources(self, *, keep_cursor: bool = False) -> None:
         rows = []
+        matching_sources = []
         if self.off_catalog:
             selected = sum(key in self.selected for key in self.off_catalog)
-            rows.append(Row(NOT_IN_CATALOG, [Text(NOT_IN_CATALOG),
+            count = sum(self.search_text in line.value.casefold() for line in self.off_catalog.values())
+            matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
+            rows.append(Row(NOT_IN_CATALOG, [Text(matches + NOT_IN_CATALOG),
                                              Text(f"{selected}/{len(self.off_catalog)}", style=SECONDARY)]))
+            if count:
+                matching_sources.append(NOT_IN_CATALOG)
         for source, skills in self.catalog.items():
             owner, repo = source.split("/")
             selected = sum(f"{source}:{skill.name}" in self.selected for skill in skills)
-            rows.append(Row(source, [Text(repo), Text(f"{owner} · {selected}/{len(skills)}", style=SECONDARY)]))
+            count = len(self.matching_skills(source))
+            matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
+            rows.append(Row(source, [Text(matches + repo), Text(f"{owner} · {selected}/{len(skills)}", style=SECONDARY)]))
+            if count:
+                matching_sources.append(source)
         sources = self.query_one("#sources", CatalogList)
         sources.set_rows(rows, keep_cursor=keep_cursor)
+        if self.search_text and self.source not in matching_sources and matching_sources:
+            self.source = matching_sources[0]
+            sources.highlight(next(i for i, row in enumerate(rows) if row.key == self.source))
+
+    def matching_skills(self, source: str | None) -> list[Skill]:
+        return [skill for skill in self.catalog.get(source, [])
+                if any(self.search_text in field.casefold()
+                       for field in (skill.name, source, skill.group, skill.description))]
+
+    @on(Input.Changed, "#search")
+    async def search_changed(self, event: Input.Changed) -> None:
+        self.search_text = event.value.strip().casefold()
+        self.fill_sources(keep_cursor=True)
+        await self.fill_skills(keep_cursor=True)
+
+    @on(Input.Submitted, "#search")
+    def search_submitted(self) -> None:
+        self.action_column("skills")
+
+    def on_key(self, event: Key) -> None:
+        if self.screen.is_modal:
+            return
+        search = self.query_one("#search", Input)
+        if search.has_focus:
+            if event.key != "down":
+                return
+            self.action_column("skills")
+        elif event.is_printable and event.character != " ":
+            search.focus()
+            if event.character != "/":
+                search.insert_text_at_cursor(event.character)
+        else:
+            return
+        event.stop()
+        event.prevent_default()
 
     async def fill_skills(self, *, keep_cursor: bool = False) -> None:
         rows = []
         if self.source == NOT_IN_CATALOG:
             for key, line in self.off_catalog.items():
+                if self.search_text not in line.value.casefold():
+                    continue
                 text = Text("● " if key in self.selected else "○ ", style=ACCENT if key in self.selected else SECONDARY)
                 text.append(line.value, style="default")
                 rows.append(Row(key, [text, Text(line.error.replace("\n", " "), style=SECONDARY)]))
         group = ""
-        for skill in self.catalog.get(self.source, []):
+        for skill in self.matching_skills(self.source):
             if skill.group != group:
                 group = skill.group
                 rows.append(Row(None, [Text(group, style=SECONDARY)]))
@@ -383,7 +437,8 @@ class SelectorApp(App):
                 line.append("  manual", style=SECONDARY)
             rows.append(Row(key, [line]))
         if not rows:
-            rows.append(Row(None, [Text("No skills in this source.", style=SECONDARY)]))
+            empty = "No matching skills." if self.search_text else "No skills in this source."
+            rows.append(Row(None, [Text(empty, style=SECONDARY)]))
         self.query_one("#skills", CatalogList).set_rows(rows, keep_cursor=keep_cursor)
         self.query_one("#skill-heading", Static).update(self.source or "Skills")
         await self.refresh_details()
@@ -506,6 +561,13 @@ class SelectorApp(App):
         self.query_one("#message", Static).update("⎿ Saved. Not installed yet.")
 
     def action_quit(self) -> None:
+        search = self.query_one("#search", Input)
+        if search.has_focus:
+            if search.value:
+                search.value = ""
+            else:
+                self.action_column("skills")
+            return
         if not self.unsaved_count:
             self.exit()
             return
@@ -523,7 +585,9 @@ class SelectorApp(App):
         self.query_one(f"#{column}", CatalogList).focus()
 
     def on_descendant_focus(self) -> None:
-        if self.focused is self.query_one("#details"):
+        if self.focused is self.query_one("#search"):
+            hint = "↓ or enter skills · esc clear or leave search · ctrl+s save"
+        elif self.focused is self.query_one("#details"):
             hint = "↑↓ scroll · ← sources · → skills · ctrl+s save · esc quit"
         elif self.focused is self.query_one("#skills"):
             hint = "↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save · esc quit"
