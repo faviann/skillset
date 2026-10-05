@@ -201,7 +201,13 @@ class SelectorApp(App):
     #details { width: 1.3fr; }
     #skill-metadata { margin-bottom: 1; }
     #skill-body { padding: 0; }
-    #skill-body, #skill-body * { color: ansi_default; }
+    #skill-body, #skill-body * {
+        color: ansi_default;
+        link-color: ansi_default;
+        link-color-hover: ansi_default;
+        link-background-hover: transparent;
+    }
+    #skill-body MarkdownBlockQuote { background: transparent; }
     #skill-body MarkdownBlock > .code_inline { color: ansi_default; }
     .heading { height: 1; color: #999999; margin-bottom: 1; }
     CatalogList {
