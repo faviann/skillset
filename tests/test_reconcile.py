@@ -501,6 +501,78 @@ raise SystemExit(m.main(sys.argv[4:]))
             self.assert_link(install_dir, "alpha", moved)
         self.assertEqual(self.run_reconciler("--check").returncode, 0)
 
+    def test_declared_codex_variant_and_canonical_claude_keep_ownership_receipts(self) -> None:
+        variant = write_skill(self.source, "dist/codex/alpha")
+        (self.repo / "sources.toml").write_text(
+            '["acme/skills".variants]\ncodex = "dist/codex"\n', encoding="utf-8",
+        )
+        self.commit_source()
+        result = self.run_reconciler()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_link(AGENTS_DIR, "alpha", variant)
+        self.assert_link(CLAUDE_DIR, "alpha", self.source / "skills/engineering/alpha")
+        for directory in (AGENTS_DIR, CLAUDE_DIR):
+            entry = self.home / directory / "alpha"
+            receipt = self.home / directory.parent / ".skillset/receipts/alpha"
+            self.assertTrue(os.path.samestat(entry.lstat(), receipt.lstat()))
+            self.assertEqual(os.readlink(entry), os.readlink(receipt))
+        self.assertEqual(self.run_reconciler("--check").returncode, 0)
+        self.assertEqual(self.run_reconciler().stdout.strip(), "skills are reconciled")
+
+    def test_pin_updates_add_and_remove_variant_without_relinking_claude(self) -> None:
+        result = self.run_reconciler()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        canonical = self.source / "skills/engineering/alpha"
+        claude_entry = self.home / CLAUDE_DIR / "alpha"
+        claude_receipt = self.home / ".claude/.skillset/receipts/alpha"
+        before = claude_entry.lstat()
+        selection = (self.repo / "skills.txt").read_text(encoding="utf-8")
+        variant = write_skill(self.source, "dist/codex/alpha")
+        manifest = self.repo / "sources.toml"
+        manifest.write_text('["acme/skills".variants]\ncodex = "dist/codex"\n',
+                            encoding="utf-8")
+        self.commit_source()
+        for target in (variant, canonical):
+            with self.subTest(target=target):
+                if target == canonical:
+                    shutil.rmtree(self.source / "dist")
+                    manifest.write_text("", encoding="utf-8")
+                    self.commit_source()
+                self.assertNotEqual(self.run_reconciler("--check").returncode, 0)
+                result = self.run_reconciler()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("removed 1 owned skill links and created 1 skill links", result.stdout)
+                self.assert_link(AGENTS_DIR, "alpha", target)
+                self.assert_link(CLAUDE_DIR, "alpha", canonical)
+                self.assertTrue(os.path.samestat(before, claude_entry.lstat()))
+                self.assertTrue(os.path.samestat(before, claude_receipt.lstat()))
+                self.assertEqual((self.repo / "skills.txt").read_text(encoding="utf-8"), selection)
+                self.assertEqual(self.run_reconciler("--check").returncode, 0)
+
+    def test_invalid_variant_blocks_install_and_check_regardless_of_selection(self) -> None:
+        write_skill(self.source, "dist/codex/alpha")
+        (self.repo / "sources.toml").write_text(
+            '["acme/skills".variants]\ncodex = "dist/codex"\npi = "dist/pi"\n',
+            encoding="utf-8",
+        )
+        for name, selection in (("alpha", [self.alpha]), ("beta", [self.alpha]),
+                                ("only-variant", [])):
+            with self.subTest(name=name, selection=selection):
+                pi_tree = self.source / "dist/pi"
+                if pi_tree.exists():
+                    shutil.rmtree(pi_tree)
+                invalid = write_skill(pi_tree, name)
+                (invalid / "SKILL.md").write_text("not frontmatter", encoding="utf-8")
+                self.selection = selection
+                self.write_selection()
+                self.commit_source()
+                for args in ((), ("--check",)):
+                    result = self.run_reconciler(*args)
+                    self.assert_reconcile_fails(result, "invalid variant skill")
+                    self.assertIn(str(invalid / "SKILL.md"), result.stderr)
+                    self.assertIn("unsupported frontmatter", result.stderr)
+                    self.assertEqual(list(self.home.iterdir()), [])
+
     def test_receipt_before_publication_recovers_without_adopting(self) -> None:
         failed = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-receipt-create"})
         self.assertEqual(failed.returncode, 73)

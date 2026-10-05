@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from skill_catalog import (
+    AGENTS_DIR,
+    CLAUDE_DIR,
+    INSTALL_HARNESSES,
     NAME_PATTERN,
     SELECTION_PATH,
     ReconcileError,
@@ -23,10 +26,7 @@ from skill_catalog import (
     validate_sources,
 )
 
-# Install directories are relative to HOME.
-AGENTS_DIR = Path(".agents/skills")
-CLAUDE_DIR = Path(".claude/skills")
-INSTALL_DIRS = (AGENTS_DIR, CLAUDE_DIR)
+INSTALL_DIRS = tuple(INSTALL_HARNESSES)
 
 
 @dataclass(frozen=True, order=True)
@@ -149,7 +149,7 @@ def local_collision(desired: set[str], retiring: set[Path]) -> None:
 
 
 
-def read_selection(root: Path) -> tuple[str, list[tuple[str, str]]]:
+def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str]]:
     head = require_primary_checkout(root)
     modules = parse_modules(root)
     validate_sources(root, modules)
@@ -161,8 +161,7 @@ def build_plan(root: Path) -> Plan:
     return plan_links(*read_selection(root))
 
 
-def plan_links(head: str, selected: list[tuple[str, str]]) -> Plan:
-    desired = {(directory, name): target for name, target in selected for directory in INSTALL_DIRS}
+def plan_links(head: str, desired: dict[tuple[Path, str], str]) -> Plan:
     for install_dir in INSTALL_DIRS:
         safe_components(home_path() / install_dir, directory=True)
         safe_components(home_path() / install_dir.parent / ".skillset/receipts", directory=True)
@@ -209,7 +208,7 @@ def plan_links(head: str, selected: list[tuple[str, str]]) -> Plan:
             if es is not None:
                 raise ReconcileError(f"unowned install directory entry collision: {entry}")
             creations.append(LinkRecord(install_dir, name, want))
-    local_collision({name for name, _ in selected}, {r.path for r in removals})
+    local_collision({name for _, name in desired}, {r.path for r in removals})
     return Plan(head, removals, creations, receipt_cleanup)
 
 
