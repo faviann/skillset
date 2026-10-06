@@ -116,7 +116,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             skills = app.query_one("#skills", selector.CatalogList)
             self.assertIs(app.focused, sources)
             self.assertEqual(skills.current, "acme/skills:alpha")
-            self.assertIn("acme/skills:alpha\nNot selected", self.text(app, "#skill-metadata"))
+            self.assertIn("○ not selected\nacme/skills:alpha", self.details(app))
             await pilot.press("enter", "up")
             self.assertIs(app.focused, skills)
             self.assertEqual(skills.current, "acme/skills:alpha")
@@ -124,10 +124,10 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(skills.current, "acme/skills:beta")
             self.assertEqual(self.lines(app, "skills"), ["Workflow", "○ alpha", "○ beta"])
             self.assertIn("0 selected · 1 unsaved", self.text(app, "#title"))
-            self.assertIn("acme/skills:beta\nNot selected", self.text(app, "#skill-metadata"))
+            self.assertIn("○ not selected\nacme/skills:beta", self.details(app))
             await pilot.press("enter")
             self.assertEqual(self.lines(app, "skills"), ["Workflow", "○ alpha", "● beta"])
-            self.assertIn("acme/skills:beta\nSelected", self.text(app, "#skill-metadata"))
+            self.assertIn("● selected\nacme/skills:beta", self.details(app))
             await pilot.press("ctrl+s")
             self.assertEqual(self.text(app, "#message"), "⎿ No changes to save.")
             self.assertFalse(app.screen.is_modal)
@@ -135,7 +135,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIs(app.focused, sources)
             self.assertEqual(sources.current, "zebra/tools")
             self.assertEqual(skills.current, "zebra/tools:gamma")
-            self.assertIn("zebra/tools:gamma\nNot selected", self.text(app, "#skill-metadata"))
+            self.assertIn("○ not selected\nzebra/tools:gamma", self.details(app))
             await pilot.press("right")
             self.assertIs(app.focused, skills)
             await pilot.press("escape")
@@ -174,7 +174,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIs(app.focused, skills)
             self.assertEqual(skills.current, "beta/tools:gamma")
             await pilot.press("space")
-            self.assertIn("beta/tools:gamma\nSelected", self.text(app, "#skill-metadata"))
+            self.assertIn("● selected\nbeta/tools:gamma", self.details(app))
             self.assertIn("beta · 1/2", self.lines(app, "sources"))
             await pilot.press("/")
             self.assertIs(app.focused, search)
@@ -187,7 +187,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIn("2 matches · tools", self.lines(app, "sources"))
             await pilot.press("enter")
             self.assertIs(app.focused, skills)
-            self.assertIn("beta/tools:gamma\nSelected", self.text(app, "#skill-metadata"))
+            self.assertIn("● selected\nbeta/tools:gamma", self.details(app))
             await pilot.press("/", "escape", "escape", "tab")
             self.assertIs(app.focused, app.query_one("#details"))
             await pilot.press(*"fragile", "space", *"builds")
@@ -231,7 +231,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIn("1 selected", self.text(app, "#title"))
             await pilot.click("#skills RowsView", offset=(2, 1))
             self.assertEqual(self.lines(app, "skills"), ["○ gamma", "● omega"])
-            self.assertIn("zebra/tools:omega\nSelected", self.text(app, "#skill-metadata"))
+            self.assertIn("● selected\nzebra/tools:omega", self.details(app))
             await pilot.press("ctrl+s")
             self.assertTrue(await pilot.click("#choices RowsView", offset=(6, 1)))
             self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
@@ -259,24 +259,23 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             self.assertEqual(self.lines(app, "skills"), ["● alpha  manual"])
-            self.assertEqual(self.text(app, "#skill-metadata").splitlines(), [
-                "alpha", "acme/skills:alpha", "Selected",
+            self.assertEqual(self.details(app).splitlines(), [
+                "alpha", "● selected", "acme/skills:alpha",
                 "Manual only: description not loaded into context",
-                "Same name in other sources: zebra/tools:alpha",
-                "Alpha description.", str(skill_dir), "3 tracked files",
+                "Same name in other sources: zebra/tools:alpha", "",
+                "Alpha description.", "", "alpha · 3 files",
             ])
             await pilot.press("down", "right", "space", "1", "left", "up")
-            self.assertIn("acme/skills:alpha\nNot selected", self.text(app, "#skill-metadata"))
+            self.assertIn("○ not selected\nacme/skills:alpha", self.details(app))
             await pilot.press("down")
-            self.assertEqual(self.text(app, "#skill-metadata").splitlines(), [
-                "alpha", "zebra/tools:alpha", "Selected",
-                "Same name in other sources: acme/skills:alpha",
-                "Other description.", str(fixture.sources["zebra/tools"] / "alpha"),
-                "1 tracked file",
+            self.assertEqual(self.details(app).splitlines(), [
+                "alpha", "● selected", "zebra/tools:alpha",
+                "Same name in other sources: acme/skills:alpha", "",
+                "Other description.", "", "alpha · 1 file",
             ])
             await pilot.press("right", "down")
-            self.assertIn("zebra/tools:broken\nNot selected\ndescription unreadable",
-                          self.text(app, "#skill-metadata"))
+            self.assertIn("○ not selected\nzebra/tools:broken\n\ndescription unreadable",
+                          self.details(app))
 
     async def test_full_markdown_body_can_be_scrolled_and_changes_with_highlight(self) -> None:
         fixture = self.fixture()

@@ -275,8 +275,20 @@ class SelectorApp(App[bool]):
     #source-column { width: 30; }
     #skill-column { width: 1fr; }
     #details { width: 1.3fr; }
-    #skill-metadata { margin-bottom: 1; }
+    #details {
+        scrollbar-size-vertical: 1;
+        scrollbar-background: transparent;
+        scrollbar-color: #999999;
+        scrollbar-color-hover: #999999;
+        scrollbar-color-active: #D77757;
+    }
+    #skill-head { height: auto; }
+    #skill-name { width: 1fr; text-style: bold; }
+    #skill-state { width: auto; }
+    #skill-metadata { border-bottom: solid #999999; padding-bottom: 1; margin-bottom: 1; }
+    #details.-empty #skill-head, #details.-empty #skill-metadata { display: none; }
     #skill-body { padding: 0; }
+    #skill-body MarkdownH1 { content-align: left middle; margin: 0 0 1 0; }
     #skill-body, #skill-body * {
         color: ansi_default;
         link-color: ansi_default;
@@ -335,6 +347,9 @@ class SelectorApp(App[bool]):
                 yield Static("Skills", id="skill-heading", classes="heading")
                 yield CatalogList(circle_toggle=True, id="skills")
             with VerticalScroll(id="details", classes="column"):
+                with Horizontal(id="skill-head"):
+                    yield Static(id="skill-name")
+                    yield Static(id="skill-state")
                 yield Static(id="skill-metadata")
                 yield SkillMarkdown(id="skill-body")
         yield Static(id="message")
@@ -456,34 +471,44 @@ class SelectorApp(App[bool]):
         key = self.query_one("#skills", CatalogList).current
         metadata = self.query_one("#skill-metadata", Static)
         body = self.query_one("#skill-body", Markdown)
-        self.query_one("#details", VerticalScroll).scroll_home(animate=False)
+        details = self.query_one("#details", VerticalScroll)
+        details.scroll_home(animate=False)
+        details.set_class(key is None, "-empty")
         if key is None:
-            metadata.update("")
+            for part in ("#skill-name", "#skill-state", "#skill-metadata"):
+                self.query_one(part, Static).update("")
             await body.update("")
             return
+        selected = key in self.draft
+        self.query_one("#skill-state", Static).update(
+            Text("● selected", style=ACCENT) if selected else Text("○ not selected", style=SECONDARY),
+        )
         if key in self.draft.off_catalog:
             line = self.draft.off_catalog[key]
-            metadata.update(Text("\n".join([
-                line.value, "Selected" if key in self.draft else "Not selected",
-                f"skills.txt:{line.number}: {line.error}", "Can be deselected only.",
-            ])))
+            self.query_one("#skill-name", Static).update(Text(line.value))
+            metadata.update(Text.assemble(
+                (f"skills.txt:{line.number}", SECONDARY), "\n\n", line.error, "\n\n",
+                ("Can be deselected only.", SECONDARY),
+            ))
             await body.update("")
             return
         source, name = key.split(":")
         skill = next(skill for skill in self.catalog[source] if skill.name == name)
-        lines = [skill.name, key, "Selected" if key in self.draft else "Not selected"]
+        notes = [key]
         if skill.manual_only:
-            lines.append("Manual only: description not loaded into context")
+            notes.append("Manual only: description not loaded into context")
         others = [f"{other}:{name}" for other, skills in self.catalog.items()
                   if other != source and any(skill.name == name for skill in skills)]
         if others:
-            lines.append("Same name in other sources: " + ", ".join(others))
-        lines.extend([
-            "description unreadable" if skill.unreadable else skill.description,
-            str(skill.path),
-            f"{skill.file_count} tracked {'file' if skill.file_count == 1 else 'files'}",
-        ])
-        metadata.update(Text("\n".join(lines)))
+            notes.append("Same name in other sources: " + ", ".join(others))
+        location = skill.path.relative_to(self.selection_catalog.sources[source].path).as_posix()
+        files = f"{skill.file_count} {'file' if skill.file_count == 1 else 'files'}"
+        self.query_one("#skill-name", Static).update(Text(skill.name))
+        metadata.update(Text.assemble(
+            ("\n".join(notes), SECONDARY), "\n\n",
+            ("description unreadable", SECONDARY) if skill.unreadable else skill.description, "\n\n",
+            (f"{'source root' if location == '.' else location} · {files}", SECONDARY),
+        ))
         await body.update(skill.body)
 
     @on(CatalogList.Highlighted, "#sources")
