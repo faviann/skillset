@@ -11,8 +11,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from markdown_it import MarkdownIt
-
 from fixture import CHECKOUT, SkillsetFixture, git, write_selection
 from pilot import PilotTestCase, selector
 
@@ -316,12 +314,29 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             await pilot.press("right", "tab", "end")
             self.assertIn("EndOfSkill", await self.screen_text(pilot))
             await pilot.press("right", "down")
+            # Never the previous skill's text, whether or not the new one has rendered.
+            self.assertNotIn("EndOfSkill", self.shown_body(app))
             self.assertIn("beta", await self.body_text(pilot))
-            self.assertNotIn("EndOfSkill", await self.body_text(pilot))
             self.assertIn("acme/skills:beta", self.text(app, "#skill-metadata"))
-            await pilot.press("up", "space")
+            await pilot.press("up")
+            # A skill seen before shows at once.
+            self.assertIn("BodyHeading", self.shown_body(app))
+            await pilot.press("space")
             self.assertIn("BodyHeading", await self.body_text(pilot))
             self.assertIn("BodyHeading", await self.screen_text(pilot))
+
+    async def test_body_rewraps_when_the_terminal_resizes(self) -> None:
+        fixture = self.fixture()
+        file = fixture.sources["acme/skills"] / "skills/alpha/SKILL.md"
+        words = " ".join(f"word{number}" for number in range(12))
+        file.write_text(f"---\nname: alpha\ndescription: fixture\n---\n\n{words} TailWord\n", encoding="utf-8")
+        self.pin_changes(fixture, "acme/skills")
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test(size=(160, 40)) as pilot:
+            # One line at this width.
+            self.assertIn(f"{words} TailWord".replace(" ", "\xa0"), await self.screen_text(pilot))
+            await pilot.resize_terminal(100, 40)
+            self.assertIn("TailWord", await self.screen_text(pilot))
 
     async def test_dirty_linked_worktree_can_browse_its_own_selection(self) -> None:
         fixture = self.fixture()
@@ -516,22 +531,19 @@ class SelectorTests(SkillsetCase, PilotTestCase):
 
 
 class RealCatalogTests(unittest.TestCase):
-    def test_every_pinned_skill_has_display_data_and_a_parsable_body(self) -> None:
+    def test_every_pinned_skill_has_display_data(self) -> None:
         catalog = selector.skill_catalog.load_catalog(CHECKOUT)
         display = selector.display_catalog(catalog)
         self.assertEqual(
             {f"{source}:{skill.name}" for source, skills in display.items() for skill in skills},
             {f"{name}:{skill}" for name, source in catalog.sources.items() for skill in source.skills},
         )
-        # The parser Textual's Markdown widget uses by default.
-        parser = MarkdownIt("gfm-like")
         for source, skills in display.items():
             for skill in skills:
                 with self.subTest(skill=f"{source}:{skill.name}"):
                     self.assertFalse(skill.unreadable)
                     self.assertTrue(skill.description.strip())
                     self.assertGreater(skill.file_count, 0)
-                    self.assertTrue(parser.parse(skill.body))
 
 
 class SelectorRealDataTests(PilotTestCase):
