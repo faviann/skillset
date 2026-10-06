@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import yaml
+from rich.cells import cell_len
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -272,11 +273,26 @@ class SelectorApp(App[bool]):
     #search:focus { border: none; }
     #columns { margin: 0 1 1 1; }
     .column { padding: 0 1; }
-    #source-column { width: 30; }
     #skill-column { width: 1fr; }
-    #details { width: 1.3fr; }
+    #details { width: 2fr; }
+    #details {
+        scrollbar-size-vertical: 1;
+        scrollbar-background: transparent;
+        scrollbar-color: #999999;
+        scrollbar-color-hover: #999999;
+        scrollbar-color-active: #D77757;
+    }
+    #skill-head { height: auto; }
+    #skill-name { width: 1fr; text-style: bold; }
+    #skill-state { width: auto; }
     #skill-metadata { margin-bottom: 1; }
+    #skill-foot {
+        text-wrap: nowrap; text-overflow: fold;
+        border-bottom: solid #999999; padding-bottom: 1; margin-bottom: 1;
+    }
+    #details.-empty #skill-head, #details.-empty #skill-metadata, #details.-empty #skill-foot { display: none; }
     #skill-body { padding: 0; }
+    #skill-body MarkdownH1 { content-align: left middle; margin: 0 0 1 0; }
     #skill-body, #skill-body * {
         color: ansi_default;
         link-color: ansi_default;
@@ -335,12 +351,19 @@ class SelectorApp(App[bool]):
                 yield Static("Skills", id="skill-heading", classes="heading")
                 yield CatalogList(circle_toggle=True, id="skills")
             with VerticalScroll(id="details", classes="column"):
+                with Horizontal(id="skill-head"):
+                    yield Static(id="skill-name")
+                    yield Static(id="skill-state")
                 yield Static(id="skill-metadata")
+                yield Static(id="skill-foot")
                 yield SkillMarkdown(id="skill-body")
         yield Static(id="message")
         yield Static(id="hints")
 
     async def on_mount(self) -> None:
+        # Pointer, scrollbar and padding take 5 cells; past the cap, rows truncate.
+        names = [NOT_IN_CATALOG, *self.catalog]
+        self.query_one("#source-column").styles.width = min(max(map(cell_len, names)) + 5, 48)
         self.refresh_title()
         self.fill_sources()
         await self.fill_skills()
@@ -373,17 +396,16 @@ class SelectorApp(App[bool]):
         if off_catalog:
             selected = sum(key in self.draft for key in off_catalog)
             count = sum(self.search_text in line.value.casefold() for line in off_catalog.values())
-            matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
-            rows.append(Row(NOT_IN_CATALOG, [Text(matches + NOT_IN_CATALOG),
-                                             Text(f"{selected}/{len(off_catalog)}", style=SECONDARY)]))
+            matches = f" · {count} match{'es' if count != 1 else ''}" if self.search_text else ""
+            rows.append(Row(NOT_IN_CATALOG, [Text(NOT_IN_CATALOG),
+                                             Text(f"  {selected}/{len(off_catalog)}{matches}", style=SECONDARY)]))
             if count:
                 matching_sources.append(NOT_IN_CATALOG)
         for source, skills in self.catalog.items():
-            owner, repo = source.split("/")
             selected = sum(f"{source}:{skill.name}" in self.draft for skill in skills)
             count = len(self.matching_skills(source))
-            matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
-            rows.append(Row(source, [Text(matches + repo), Text(f"{owner} · {selected}/{len(skills)}", style=SECONDARY)]))
+            matches = f" · {count} match{'es' if count != 1 else ''}" if self.search_text else ""
+            rows.append(Row(source, [Text(source), Text(f"  {selected}/{len(skills)}{matches}", style=SECONDARY)]))
             if count:
                 matching_sources.append(source)
         sources = self.query_one("#sources", CatalogList)
@@ -455,35 +477,50 @@ class SelectorApp(App[bool]):
     async def refresh_details(self) -> None:
         key = self.query_one("#skills", CatalogList).current
         metadata = self.query_one("#skill-metadata", Static)
+        foot = self.query_one("#skill-foot", Static)
         body = self.query_one("#skill-body", Markdown)
-        self.query_one("#details", VerticalScroll).scroll_home(animate=False)
+        details = self.query_one("#details", VerticalScroll)
+        details.scroll_home(animate=False)
+        details.set_class(key is None, "-empty")
         if key is None:
-            metadata.update("")
+            for part in ("#skill-name", "#skill-state", "#skill-metadata", "#skill-foot"):
+                self.query_one(part, Static).update("")
             await body.update("")
             return
+        selected = key in self.draft
+        name_style = ACCENT if selected else SECONDARY
+        self.query_one("#skill-state", Static).update(
+            Text("● selected", style=ACCENT) if selected else Text("○ not selected", style=SECONDARY),
+        )
         if key in self.draft.off_catalog:
             line = self.draft.off_catalog[key]
-            metadata.update(Text("\n".join([
-                line.value, "Selected" if key in self.draft else "Not selected",
-                f"skills.txt:{line.number}: {line.error}", "Can be deselected only.",
-            ])))
+            self.query_one("#skill-name", Static).update(Text(line.value, style=name_style))
+            metadata.update(Text.assemble(
+                (f"skills.txt:{line.number}", SECONDARY), "\n\n", line.error,
+            ))
+            foot.update(Text("Can be deselected only.", style=SECONDARY))
             await body.update("")
             return
         source, name = key.split(":")
         skill = next(skill for skill in self.catalog[source] if skill.name == name)
-        lines = [skill.name, key, "Selected" if key in self.draft else "Not selected"]
+        notes = [key]
         if skill.manual_only:
-            lines.append("Manual only: description not loaded into context")
+            notes.append("Manual only: description not loaded into context")
         others = [f"{other}:{name}" for other, skills in self.catalog.items()
                   if other != source and any(skill.name == name for skill in skills)]
         if others:
-            lines.append("Same name in other sources: " + ", ".join(others))
-        lines.extend([
-            "description unreadable" if skill.unreadable else skill.description,
-            str(skill.path),
-            f"{skill.file_count} tracked {'file' if skill.file_count == 1 else 'files'}",
-        ])
-        metadata.update(Text("\n".join(lines)))
+            notes.append("Same name in other sources: " + ", ".join(others))
+        location = skill.path.relative_to(self.selection_catalog.sources[source].path).as_posix()
+        files = f"{skill.file_count} {'file' if skill.file_count == 1 else 'files'}"
+        self.query_one("#skill-name", Static).update(Text(skill.name, style=name_style))
+        metadata.update(Text.assemble(
+            ("\n".join(notes), SECONDARY), "\n\n",
+            ("description unreadable", SECONDARY) if skill.unreadable else skill.description,
+        ))
+        # Folds inside the path instead of wrapping at a space and orphaning the file count.
+        foot.update(Text.assemble(
+            (f"{files} · ", SECONDARY), source, ("" if location == "." else f"/{location}", SECONDARY),
+        ))
         await body.update(skill.body)
 
     @on(CatalogList.Highlighted, "#sources")

@@ -25,6 +25,10 @@ class PilotTestCase(unittest.IsolatedAsyncioTestCase):
         content = app.screen.query_one(query, selector.Static).content
         return content.plain if isinstance(content, selector.Text) else str(content)
 
+    def details(self, app) -> str:
+        """The details header as one block: name, selection state, then metadata."""
+        return "\n".join(self.text(app, part) for part in ("#skill-name", "#skill-state", "#skill-metadata", "#skill-foot"))
+
     def lines(self, app, column: str) -> list[str]:
         return [line.removeprefix("❯ ").strip() for line in self.text(app, f"#{column} RowsView").splitlines()]
 
