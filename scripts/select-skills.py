@@ -47,6 +47,9 @@ from selection_draft import Blocked, Changes, CheckoutStore, Conflict, Refused, 
 
 ACCENT = "#D77757"
 SECONDARY = "#999999"
+# ANSI names, so the terminal theme keeps them readable on light and dark.
+MANUAL = "red"
+AUTOMATIC = "green"
 NOT_IN_CATALOG = "Not in catalog"
 
 
@@ -57,6 +60,7 @@ class Skill:
     description: str = ""
     group: str = ""
     manual_only: bool = False
+    agent_only: bool = False
     unreadable: bool = False
     body: str = ""
     file_count: int = 0
@@ -79,6 +83,7 @@ def display_skill(name: str, path: str, common_root: Path) -> Skill:
         if isinstance(category, str) and category.strip():
             skill.group = " ".join(category.split())
         skill.manual_only = metadata.get("disable-model-invocation") is True
+        skill.agent_only = metadata.get("user-invocable") is False
     except (OSError, UnicodeError, ValueError, yaml.YAMLError):
         skill.unreadable = True
     return skill
@@ -586,20 +591,22 @@ class SelectorApp(App[bool]):
             return
         source, name = key.split(":")
         skill = next(skill for skill in self.catalog[source] if skill.name == name)
-        notes = [key]
-        if skill.manual_only:
-            notes.append("Manual only: description not loaded into context")
+        notes = [Text(key, style=SECONDARY)]
+        if not skill.unreadable:
+            notes.append(Text("manual: description not loaded into context", style=MANUAL) if skill.manual_only
+                         else Text("automatic only: not in the / menu", style=AUTOMATIC) if skill.agent_only
+                         else Text("automatic", style=AUTOMATIC))
         others = [f"{other}:{name}" for other, skills in self.catalog.items()
                   if other != source and any(skill.name == name for skill in skills)]
         if others:
-            notes.append("Same name in other sources: " + ", ".join(others))
+            notes.append(Text("Same name in other sources: " + ", ".join(others), style=SECONDARY))
         location = skill.path.relative_to(self.selection_catalog.sources[source].path).as_posix()
         files = f"{skill.file_count} {'file' if skill.file_count == 1 else 'files'}"
         self.query_one("#skill-name", Static).update(Text.assemble(
             (skill.name, name_style), (" (forked)", f"not bold {SECONDARY}") if skill.forked else "",
         ))
         metadata.update(Text.assemble(
-            ("\n".join(notes), SECONDARY), "\n\n",
+            Text("\n").join(notes), "\n\n",
             ("description unreadable", SECONDARY) if skill.unreadable else skill.description,
         ))
         # Folds inside the path instead of wrapping at a space and orphaning the file count.

@@ -235,7 +235,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
     async def test_details_metadata_and_current_selection(self) -> None:
         fixture = self.fixture({
             "acme/skills": {"alpha": "alpha"},
-            "zebra/tools": {"alpha": "alpha", "broken": "broken"},
+            "zebra/tools": {"alpha": "alpha", "beta": "beta", "broken": "broken"},
         }, ["acme/skills:alpha"])
         self.metadata(fixture, "acme/skills", "alpha",
                       "description: Alpha description.\ndisable-model-invocation: true")
@@ -255,7 +255,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(self.lines(app, "skills"), ["● alpha  manual"])
             self.assertEqual(self.details(app).splitlines(), [
                 "alpha", "● selected", "acme/skills:alpha",
-                "Manual only: description not loaded into context",
+                "manual: description not loaded into context",
                 "Same name in other sources: zebra/tools:alpha", "",
                 "Alpha description.", "3 files · acme/skills/alpha",
             ])
@@ -263,11 +263,13 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIn("○ not selected\nacme/skills:alpha", self.details(app))
             await pilot.press("down")
             self.assertEqual(self.details(app).splitlines(), [
-                "alpha", "● selected", "zebra/tools:alpha",
+                "alpha", "● selected", "zebra/tools:alpha", "automatic only: not in the / menu",
                 "Same name in other sources: acme/skills:alpha", "",
                 "Other description.", "1 file · zebra/tools/alpha",
             ])
             await pilot.press("right", "down")
+            self.assertIn("○ not selected\nzebra/tools:beta\nautomatic\n\n", self.details(app))
+            await pilot.press("down")
             self.assertIn("○ not selected\nzebra/tools:broken\n\ndescription unreadable",
                           self.details(app))
 
