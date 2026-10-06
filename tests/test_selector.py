@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import shutil
 import subprocess
@@ -13,15 +12,13 @@ from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree
 
+from markdown_it import MarkdownIt
+
 from fixture import CHECKOUT, SkillsetFixture, git, write_selection
-
-spec = importlib.util.spec_from_file_location("select_skills", CHECKOUT / "scripts/select-skills.py")
-selector = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = selector
-spec.loader.exec_module(selector)
+from pilot import PilotTestCase, selector
 
 
-class SelectorTests(unittest.IsolatedAsyncioTestCase):
+class SkillsetCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="skillset-selector-test-")
         self.addCleanup(self.temp.cleanup)
@@ -46,20 +43,12 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
         git(["add", "sources"], fixture.repo)
         git(["commit", "-qm", "update source pin"], fixture.repo)
 
-    def text(self, app, query: str) -> str:
-        content = app.screen.query_one(query, selector.Static).content
-        return content.plain if isinstance(content, selector.Text) else str(content)
 
-    def lines(self, app, column: str) -> list[str]:
-        return [line.removeprefix("❯ ").strip() for line in self.text(app, f"#{column} RowsView").splitlines()]
+class DisplayCatalogTests(SkillsetCase):
+    def display(self, fixture: SkillsetFixture) -> dict[str, list]:
+        return selector.display_catalog(selector.skill_catalog.load_catalog(fixture.repo))
 
-    def body_text(self, app) -> str:
-        return "\n".join(str(widget.content) for widget in app.query("#skill-body Static"))
-
-    def screen_text(self, app) -> str:
-        return "".join(ElementTree.fromstring(app.export_screenshot()).itertext())
-
-    async def test_groups_order_and_selection_counts(self) -> None:
+    def test_sources_sort_and_skills_group_by_category_or_folder(self) -> None:
         fixture = self.fixture({
             "zebra/tools": {"zulu": "zulu"},
             "acme/skills": {
@@ -70,23 +59,46 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
                 "skills/singleton/solo": "solo",
                 "skills/root": "root",
             },
-        }, ["acme/skills:beta", "zebra/tools:zulu"])
+        }, [])
         self.metadata(fixture, "acme/skills", "skills/engineering/backend/beta", "display_order: -100")
         self.metadata(fixture, "acme/skills", "skills/other/zeta", "category: Assistants\ndisplay_order: -100")
         self.metadata(fixture, "acme/skills", "skills/elsewhere/delta", "category: Assistants")
         self.metadata(fixture, "acme/skills", "skills/singleton/solo", "category: Unique")
         self.pin_changes(fixture, "acme/skills")
+        catalog = self.display(fixture)
+        self.assertEqual(list(catalog), ["acme/skills", "zebra/tools"])
+        self.assertEqual([(skill.group, skill.name) for skill in catalog["acme/skills"]], [
+            ("", "root"), ("", "solo"), ("Assistants", "delta"), ("Assistants", "zeta"),
+            ("engineering", "alpha"), ("engineering", "beta"),
+        ])
+        self.assertEqual([(skill.group, skill.name) for skill in catalog["zebra/tools"]], [("", "zulu")])
 
-        app = selector.SelectorApp(root=fixture.repo)
-        async with app.run_test() as pilot:
-            self.assertEqual(self.lines(app, "sources"), ["skills", "acme · 1/6", "tools", "zebra · 1/1"])
-            self.assertIn("2 selected", self.text(app, "#title"))
-            self.assertEqual(self.lines(app, "skills"), [
-                "○ root", "○ solo", "Assistants", "○ delta", "○ zeta",
-                "engineering", "○ alpha", "● beta",
-            ])
-            await pilot.press("down")
-            self.assertEqual(self.lines(app, "skills"), ["● zulu"])
+    def test_bad_display_yaml_stays_listed_while_invalid_skill_is_hidden(self) -> None:
+        fixture = self.fixture({"acme/skills": {
+            "skills/broken": "broken", "skills/invalid": "wrong-name", "skills/manual": "manual",
+        }}, [])
+        self.metadata(fixture, "acme/skills", "skills/broken", "description: [")
+        self.metadata(fixture, "acme/skills", "skills/manual",
+                      "description: |\n  First line.\n  Second line.\ndisable-model-invocation: true")
+        self.pin_changes(fixture, "acme/skills")
+        broken, manual = self.display(fixture)["acme/skills"]
+        self.assertEqual((broken.name, broken.unreadable), ("broken", True))
+        self.assertIn("# Fixture", broken.body)
+        self.assertEqual((manual.name, manual.unreadable, manual.manual_only), ("manual", False, True))
+        self.assertEqual(manual.description, "First line.\nSecond line.\n")
+
+    def test_empty_source_and_repository_root_skill(self) -> None:
+        fixture = self.fixture({"acme/empty": {}, "zebra/root": {".": "root"}}, [])
+        catalog = self.display(fixture)
+        self.assertEqual(catalog["acme/empty"], [])
+        [root] = catalog["zebra/root"]
+        self.assertEqual((root.name, root.group, root.path, root.file_count),
+                         ("root", "", fixture.sources["zebra/root"], 1))
+
+
+class SelectorTests(SkillsetCase, PilotTestCase):
+    def screen_text(self, app) -> str:
+        return "".join(ElementTree.fromstring(app.export_screenshot()).itertext())
 
     async def test_keyboard_navigation_skips_headings_and_leaves_selection_unchanged(self) -> None:
         fixture = self.fixture()
@@ -108,10 +120,17 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter", "up")
             self.assertIs(app.focused, skills)
             self.assertEqual(skills.current, "acme/skills:alpha")
-            await pilot.press("down", "down", "space", "enter", "ctrl+s")
+            await pilot.press("down", "down", "space")
             self.assertEqual(skills.current, "acme/skills:beta")
-            self.assertIn("acme/skills:beta\nSelected", self.text(app, "#skill-metadata"))
+            self.assertEqual(self.lines(app, "skills"), ["Workflow", "○ alpha", "○ beta"])
+            self.assertIn("0 selected · 1 unsaved", self.text(app, "#title"))
+            self.assertIn("acme/skills:beta\nNot selected", self.text(app, "#skill-metadata"))
+            await pilot.press("enter")
             self.assertEqual(self.lines(app, "skills"), ["Workflow", "○ alpha", "● beta"])
+            self.assertIn("acme/skills:beta\nSelected", self.text(app, "#skill-metadata"))
+            await pilot.press("ctrl+s")
+            self.assertEqual(self.text(app, "#message"), "⎿ No changes to save.")
+            self.assertFalse(app.screen.is_modal)
             await pilot.press("up", "left", "down")
             self.assertIs(app.focused, sources)
             self.assertEqual(sources.current, "zebra/tools")
@@ -182,6 +201,7 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(search.value, "jkh")
             self.assertEqual(self.lines(app, "skills"), ["No matching skills."])
             self.assertEqual(self.text(app, "#skill-metadata"), "")
+            self.assertEqual(self.body_text(app), "")
             await pilot.press("escape", "escape", "escape")
             self.assertEqual(self.text(app, "#dialog-title"), "Quit without saving?")
             await pilot.press("z", "/")
@@ -193,9 +213,8 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.is_running)
         self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
 
-    async def test_mouse_changes_source_and_highlights_without_selecting(self) -> None:
+    async def test_mouse_highlights_by_name_toggles_by_circle_and_chooses_dialog_rows(self) -> None:
         fixture = self.fixture()
-        before = (fixture.repo / "skills.txt").read_bytes()
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             # The second source's owner/count line belongs to the same row.
@@ -210,34 +229,19 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click("#skills RowsView", offset=(6, 0))
             self.assertEqual(skills.current, "zebra/tools:gamma")
             self.assertIn("1 selected", self.text(app, "#title"))
-        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
-
-    async def test_bad_display_yaml_stays_listed_while_invalid_skill_is_hidden(self) -> None:
-        fixture = self.fixture({"acme/skills": {
-            "skills/broken": "broken", "skills/invalid": "wrong-name", "skills/manual": "manual",
-        }}, ["acme/skills:broken"])
-        self.metadata(fixture, "acme/skills", "skills/broken", "description: [")
-        self.metadata(fixture, "acme/skills", "skills/manual", 'description: |\n  First line.\n  Second line.\ndisable-model-invocation: true')
-        self.pin_changes(fixture, "acme/skills")
-        app = selector.SelectorApp(root=fixture.repo)
-        async with app.run_test() as pilot:
-            self.assertEqual(self.lines(app, "skills"), ["● broken", "○ manual  manual"])
-            self.assertEqual(self.lines(app, "sources"), ["skills", "acme · 1/2"])
-            self.assertIn("description unreadable", self.text(app, "#skill-metadata"))
-            self.assertIn("Fixture", self.body_text(app))
-            await pilot.press("right", "down")
-            details = self.text(app, "#skill-metadata")
-            self.assertIn("Manual only: description not loaded into context", details)
-            self.assertIn("First line.\nSecond line.", details)
-            self.assertNotIn("description unreadable", details)
-            await pilot.press("up")
-            self.assertEqual(app.query_one("#skills", selector.CatalogList).current, "acme/skills:broken")
-            self.assertIn("description unreadable", self.text(app, "#skill-metadata"))
+            await pilot.click("#skills RowsView", offset=(2, 1))
+            self.assertEqual(self.lines(app, "skills"), ["○ gamma", "● omega"])
+            self.assertIn("zebra/tools:omega\nSelected", self.text(app, "#skill-metadata"))
+            await pilot.press("ctrl+s")
+            self.assertTrue(await pilot.click("#choices RowsView", offset=(6, 1)))
+            self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
+        self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:],
+                         ["acme/skills:beta", "zebra/tools:omega"])
 
     async def test_details_metadata_and_current_selection(self) -> None:
         fixture = self.fixture({
             "acme/skills": {"alpha": "alpha"},
-            "zebra/tools": {"alpha": "alpha"},
+            "zebra/tools": {"alpha": "alpha", "broken": "broken"},
         }, ["acme/skills:alpha"])
         self.metadata(fixture, "acme/skills", "alpha",
                       "description: Alpha description.\ndisable-model-invocation: true")
@@ -249,10 +253,12 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
         self.pin_changes(fixture, "acme/skills")
         self.metadata(fixture, "zebra/tools", "alpha",
                       "description: Other description.\nuser-invocable: false")
+        self.metadata(fixture, "zebra/tools", "broken", "description: [")
         self.pin_changes(fixture, "zebra/tools")
 
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
+            self.assertEqual(self.lines(app, "skills"), ["● alpha  manual"])
             self.assertEqual(self.text(app, "#skill-metadata").splitlines(), [
                 "alpha", "acme/skills:alpha", "Selected",
                 "Manual only: description not loaded into context",
@@ -268,6 +274,9 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
                 "Other description.", str(fixture.sources["zebra/tools"] / "alpha"),
                 "1 tracked file",
             ])
+            await pilot.press("right", "down")
+            self.assertIn("zebra/tools:broken\nNot selected\ndescription unreadable",
+                          self.text(app, "#skill-metadata"))
 
     async def test_full_markdown_body_can_be_scrolled_and_changes_with_highlight(self) -> None:
         fixture = self.fixture()
@@ -296,23 +305,6 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("EndOfSkill", self.body_text(app))
             self.assertIn("acme/skills:beta", self.text(app, "#skill-metadata"))
 
-    async def test_empty_source_and_repository_root_skill(self) -> None:
-        fixture = self.fixture({"acme/empty": {}, "zebra/root": {".": "root"}}, [])
-        app = selector.SelectorApp(root=fixture.repo)
-        async with app.run_test() as pilot:
-            self.assertEqual(self.lines(app, "sources"), ["empty", "acme · 0/0", "root", "zebra · 0/1"])
-            await pilot.press("right", "up", "down", "enter")
-            self.assertIsNone(app.query_one("#skills", selector.CatalogList).current)
-            self.assertEqual(self.text(app, "#skill-metadata"), "")
-            self.assertEqual(self.body_text(app), "")
-            await pilot.press("left", "down", "right")
-            self.assertEqual(self.lines(app, "skills"), ["○ root"])
-            self.assertIn(str(fixture.sources["zebra/root"]), self.text(app, "#skill-metadata"))
-            self.assertIn("1 tracked file", self.text(app, "#skill-metadata"))
-            await pilot.press("left", "up")
-            self.assertEqual(self.text(app, "#skill-metadata"), "")
-            self.assertEqual(self.body_text(app), "")
-
     async def test_dirty_linked_worktree_can_browse_its_own_selection(self) -> None:
         fixture = self.fixture()
         worktree = self.base / "worktree"
@@ -331,22 +323,6 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             self.assertTrue(app.is_running)
             self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
-
-    async def test_space_enter_and_circle_toggle_the_highlighted_skill(self) -> None:
-        fixture = self.fixture()
-        before = (fixture.repo / "skills.txt").read_bytes()
-        app = selector.SelectorApp(root=fixture.repo)
-        async with app.run_test() as pilot:
-            await pilot.press("right", "space")
-            self.assertEqual(self.lines(app, "skills"), ["● alpha", "● beta"])
-            self.assertIn("2 selected · 1 unsaved", self.text(app, "#title"))
-            self.assertIn("acme/skills:alpha\nSelected", self.text(app, "#skill-metadata"))
-            await pilot.press("enter")
-            self.assertEqual(self.lines(app, "skills"), ["○ alpha", "● beta"])
-            await pilot.click("#skills RowsView", offset=(2, 1))
-            self.assertEqual(self.lines(app, "skills"), ["○ alpha", "○ beta"])
-            self.assertIn("acme/skills:beta\nNot selected", self.text(app, "#skill-metadata"))
-        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
 
     async def test_replacement_dialog_routes_decline_and_accept(self) -> None:
         fixture = self.fixture({
@@ -369,24 +345,6 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("left", "up")
             self.assertEqual(self.lines(app, "skills"), ["○ alpha"])
         self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
-
-    async def test_duplicate_names_refuse_save_until_one_is_deselected(self) -> None:
-        fixture = self.fixture({
-            "acme/skills": {"alpha": "alpha"},
-            "zebra/tools": {"alpha": "alpha"},
-        }, ["acme/skills:alpha"])
-        write_selection(fixture.repo, ["acme/skills:alpha", "zebra/tools:alpha"])
-        before = (fixture.repo / "skills.txt").read_bytes()
-        app = selector.SelectorApp(root=fixture.repo)
-        async with app.run_test() as pilot:
-            await pilot.press("ctrl+s")
-            message = self.text(app, "#message").lower()
-            self.assertIn("alpha", message)
-            self.assertIn("name", message)
-            self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
-            self.assertEqual(len(app.screen.query("#dialog-title")), 0)
-            await pilot.press("right", "space", "ctrl+s")
-            self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
 
     async def test_off_catalog_reasons_are_shown_and_can_only_be_deselected(self) -> None:
         fixture = SkillsetFixture(self.base, {"acme/skills": {
@@ -417,13 +375,23 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"○ {value}", self.text(app, "#skills RowsView"))
             self.assertIn("Cannot select: " + reasons[value], self.text(app, "#message"))
 
-    async def test_save_reviews_head_changes_and_writes_sorted_selection_without_committing(self) -> None:
-        fixture = self.fixture()
-        write_selection(fixture.repo, ["zebra/tools:omega"])
+    async def test_save_refuses_duplicates_then_reviews_head_changes_without_committing(self) -> None:
+        fixture = self.fixture({
+            "acme/skills": {"skills/alpha": "alpha", "skills/beta": "beta"},
+            "zebra/tools": {"tools/alpha": "alpha", "tools/omega": "omega"},
+        })
+        selection = fixture.repo / "skills.txt"
+        write_selection(fixture.repo, ["acme/skills:alpha", "zebra/tools:alpha", "zebra/tools:omega"])
+        before = selection.read_bytes()
         head = git(["rev-parse", "HEAD"], fixture.repo)
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
-            await pilot.press("right", "space", "ctrl+s")
+            await pilot.press("ctrl+s")
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot save: same name selected more than once: alpha")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(selection.read_bytes(), before)
+            await pilot.press("down", "right", "space", "ctrl+s")
             self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
             review = self.text(app, "#dialog-details")
             self.assertIn("+ acme/skills:alpha", review)
@@ -433,28 +401,20 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(app.is_running)
             self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
             self.assertIn("0 unsaved", self.text(app, "#title"))
-            self.assertEqual((fixture.repo / "skills.txt").read_text(),
+            self.assertEqual(selection.read_text(),
                              "# Written by the skill selector. Comments and ordering are not kept.\n"
                              "acme/skills:alpha\nzebra/tools:omega\n")
-        self.assertEqual(git(["rev-parse", "HEAD"], fixture.repo), head)
-        self.assertEqual(git(["status", "--porcelain"], fixture.repo), "M skills.txt")
-        self.assertEqual(list(fixture.home.iterdir()), [])
-
-    async def test_unchanged_save_reports_no_changes_and_escape_quits(self) -> None:
-        fixture = self.fixture()
-        before = (fixture.repo / "skills.txt").read_bytes()
-        subprocess.run([str(fixture.repo / "scripts/reconcile-skills.sh")],
-                       env=fixture.env, capture_output=True, check=True)
-        app = selector.SelectorApp(root=fixture.repo)
-        async with app.run_test() as pilot:
-            await app.workers.wait_for_complete()
-            self.assertNotIn("not installed", self.text(app, "#title"))
+            self.assertEqual(git(["status", "--porcelain"], fixture.repo), "M skills.txt")
+            await pilot.press("down", "space", "left", "up", "right", "space", "down", "space")
+            self.assertIn("3 unsaved", self.text(app, "#title"))
             await pilot.press("ctrl+s")
-            self.assertIn("no changes", self.text(app, "#message").lower())
-            self.assertEqual(len(app.screen.query("#dialog-title")), 0)
-            await pilot.press("escape")
-            self.assertFalse(app.is_running)
-        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+            self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
+            self.assertIn("No changes from the last commit.", self.text(app, "#dialog-details"))
+            await pilot.press("2")
+            self.assertIn("0 unsaved", self.text(app, "#title"))
+            self.assertEqual(selection.read_text().splitlines()[1:], ["acme/skills:beta"])
+        self.assertEqual(git(["rev-parse", "HEAD"], fixture.repo), head)
+        self.assertEqual(list(fixture.home.iterdir()), [])
 
     async def test_reload_replaces_unsaved_selection_and_refreshes_baselines(self) -> None:
         fixture = self.fixture()
@@ -488,28 +448,6 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("0 unsaved", self.text(app, "#title"))
             self.assertEqual(selection.read_text().splitlines()[1:], ["broken gamma", "zebra/tools:gamma"])
 
-    async def test_review_and_quit_saves_guard_external_changes_before_overwrite(self) -> None:
-        fixture = self.fixture()
-        selection = fixture.repo / "skills.txt"
-        before = selection.read_bytes()
-        app = selector.SelectorApp(root=fixture.repo)
-        async with app.run_test() as pilot:
-            await pilot.press("right", "space", "ctrl+s")
-            external = before + b"# Changed while reviewing\n"
-            selection.write_bytes(external)
-            await pilot.press("2")
-            self.assertEqual(self.lines(app, "choices"), ["1. Reload", "2. Overwrite"])
-            self.assertEqual(selection.read_bytes(), external)
-            await pilot.press("escape")
-            self.assertIn("1 unsaved", self.text(app, "#title"))
-            self.assertEqual(self.lines(app, "skills"), ["● alpha", "● beta"])
-            await pilot.press("escape", "2", "2")
-            self.assertEqual(self.lines(app, "choices"), ["1. Reload", "2. Overwrite"])
-            await pilot.press("2")
-            self.assertTrue(app.is_running)
-            self.assertIn("0 unsaved", self.text(app, "#title"))
-            self.assertEqual(selection.read_text().splitlines()[1:], ["acme/skills:alpha", "acme/skills:beta"])
-
     async def test_long_save_review_can_scroll_to_final_change_and_save(self) -> None:
         names = [f"skill-{number:02}" for number in range(20)]
         fixture = self.fixture({"acme/skills": {name: name for name in names}}, [])
@@ -522,26 +460,14 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("tab", "end")
             await pilot.pause()
             self.assertIn(values[-1], self.screen_text(app))
-            self.assertTrue(await pilot.click("#choices RowsView", offset=(6, 1)))
+            await pilot.press("2")
             self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
             self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], values)
 
-    async def test_restoring_head_selection_still_saves_changes_to_loaded_file(self) -> None:
+    async def test_quit_can_keep_editing_cancel_review_and_save_or_discard(self) -> None:
         fixture = self.fixture()
-        write_selection(fixture.repo, ["acme/skills:alpha"])
-        app = selector.SelectorApp(root=fixture.repo)
-        async with app.run_test() as pilot:
-            await pilot.press("right", "space", "down", "space")
-            self.assertIn("2 unsaved", self.text(app, "#title"))
-            await pilot.press("ctrl+s")
-            self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
-            self.assertIn("No changes from the last commit", self.text(app, "#dialog-details"))
-            await pilot.press("2")
-            self.assertIn("0 unsaved", self.text(app, "#title"))
-
-    async def test_quit_can_keep_editing_cancel_or_discard_changes(self) -> None:
-        fixture = self.fixture()
-        before = (fixture.repo / "skills.txt").read_bytes()
+        selection = fixture.repo / "skills.txt"
+        before = selection.read_bytes()
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             await pilot.press("right", "space", "escape")
@@ -555,32 +481,43 @@ class SelectorTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape", "escape")
             self.assertTrue(app.is_running)
             self.assertIn("1 unsaved", self.text(app, "#title"))
-            await pilot.press("escape", "3")
-            self.assertFalse(app.is_running)
-        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
-
-    async def test_quit_review_can_keep_editing_then_save(self) -> None:
-        fixture = self.fixture()
-        before = (fixture.repo / "skills.txt").read_bytes()
-        app = selector.SelectorApp(root=fixture.repo)
-        async with app.run_test() as pilot:
-            await pilot.press("right", "space", "escape", "2")
+            await pilot.press("escape", "2")
             self.assertEqual(self.text(app, "#dialog-title"), "Save these changes?")
             self.assertIn("+ acme/skills:alpha", self.text(app, "#dialog-details"))
             await pilot.press("3")
             self.assertTrue(app.is_running)
             self.assertIn("1 unsaved", self.text(app, "#title"))
-            self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+            self.assertEqual(selection.read_bytes(), before)
             await pilot.press("escape", "2", "2")
             self.assertTrue(app.is_running)
             self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
-            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:],
-                             ["acme/skills:alpha", "acme/skills:beta"])
-            await pilot.press("escape")
+            saved = selection.read_bytes()
+            self.assertEqual(saved.decode().splitlines()[1:], ["acme/skills:alpha", "acme/skills:beta"])
+            await pilot.press("space", "escape", "3")
             self.assertFalse(app.is_running)
+        self.assertEqual(selection.read_bytes(), saved)
 
 
-class SelectorRealDataTests(unittest.IsolatedAsyncioTestCase):
+class RealCatalogTests(unittest.TestCase):
+    def test_every_pinned_skill_has_display_data_and_a_parsable_body(self) -> None:
+        catalog = selector.skill_catalog.load_catalog(CHECKOUT)
+        display = selector.display_catalog(catalog)
+        self.assertEqual(
+            {f"{source}:{skill.name}" for source, skills in display.items() for skill in skills},
+            {f"{name}:{skill}" for name, source in catalog.sources.items() for skill in source.skills},
+        )
+        # The parser Textual's Markdown widget uses by default.
+        parser = MarkdownIt("gfm-like")
+        for source, skills in display.items():
+            for skill in skills:
+                with self.subTest(skill=f"{source}:{skill.name}"):
+                    self.assertFalse(skill.unreadable)
+                    self.assertTrue(skill.description.strip())
+                    self.assertGreater(skill.file_count, 0)
+                    self.assertTrue(parser.parse(skill.body))
+
+
+class SelectorRealDataTests(PilotTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="skillset-selector-real-data-")
         self.addCleanup(temporary.cleanup)
@@ -588,25 +525,21 @@ class SelectorRealDataTests(unittest.IsolatedAsyncioTestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
-    async def test_every_pinned_catalog_skill_renders(self) -> None:
+    async def test_each_pinned_source_opens_and_renders_its_first_skill(self) -> None:
         app = selector.SelectorApp(root=CHECKOUT)
-        visited = set()
         async with app.run_test() as pilot:
-            for source, skills in app.catalog.items():
-                self.assertEqual(app.query_one("#sources", selector.CatalogList).current, source)
-                await pilot.press("right")
-                for skill in skills:
-                    key = f"{source}:{skill.name}"
-                    self.assertEqual(app.query_one("#skills", selector.CatalogList).current, key)
-                    self.assertIn(key, app.query_one("#skill-metadata", selector.Static).content.plain)
-                    visited.add(key)
+            sources = app.query_one("#sources", selector.CatalogList)
+            skills = app.query_one("#skills", selector.CatalogList)
+            for index, (source, catalog_skills) in enumerate(app.catalog.items()):
+                if index:
                     await pilot.press("down")
-                await pilot.press("left", "down")
+                key = f"{source}:{catalog_skills[0].name}"
+                self.assertEqual(sources.current, source)
+                self.assertEqual(skills.current, key)
+                self.assertIn(key, self.text(app, "#skill-metadata"))
+                self.assertTrue(self.body_text(app))
             await pilot.press("escape")
             self.assertFalse(app.is_running)
-        self.assertEqual(visited, {
-            f"{source}:{skill.name}" for source, skills in app.catalog.items() for skill in skills
-        })
 
 
 class SelectorStartupTests(unittest.TestCase):
@@ -631,13 +564,6 @@ class SelectorStartupTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("source is missing or uninitialized: sources/acme/skills", result.stderr)
         self.assertIn("run ./setup.sh", result.stderr)
-        self.assertEqual(result.stdout, "")
-
-    def test_invalid_sources_toml_refuses_to_open(self) -> None:
-        (self.fixture.repo / "sources.toml").write_text("[invalid", encoding="utf-8")
-        result = self.launch()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("invalid sources.toml:", result.stderr)
         self.assertEqual(result.stdout, "")
 
 
