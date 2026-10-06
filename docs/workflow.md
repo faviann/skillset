@@ -121,6 +121,17 @@ receives through the
 A source without variants needs no entry. Keep `sources.toml` tracked, even if
 it is empty.
 
+When you re-pin or rebase a source fetched from a fork, set its `upstream` in
+`sources.toml` to the full SHA of the fork's merge-base with upstream `main`:
+
+```bash
+git -C sources/owner/repo fetch https://github.com/owner/repo.git main
+git -C sources/owner/repo merge-base FETCH_HEAD HEAD
+```
+
+The selector marks skills changed since that commit as `(forked)`, and
+`--check` reports an `upstream` that is not an ancestor of the pin.
+
 If the new source commit removes or renames selected skills, update
 `skills.txt` in the same commit. Moving a skill within its source while keeping
 its frontmatter name leaves its selection valid; the install relinks it at the

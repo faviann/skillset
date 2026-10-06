@@ -52,6 +52,22 @@ fails the whole install and `--check`. Valid copies match canonical skills by
 frontmatter name; a name present only in a variant tree is not in the catalog.
 Repeated names within one variant tree fail because the target is ambiguous.
 
+A source fetched from a fork may also declare `upstream`, the full SHA of the
+upstream commit the fork is based on. Its presence declares the fork:
+
+```toml
+["mattpocock/skills"]
+upstream = "d81f3a183412e71a5b1e84ca21bc1a35eea03a60"
+```
+
+The selector diffs `upstream` against the pin once per fork source, offline,
+and shows `(forked)` beside a canonical skill whose directory contains a
+changed path. If the object is missing, as in a shallow clone, or Git fails, no
+skill is marked. `--check` reports an `upstream` that is present but not an
+ancestor of the pin. Install and the selector ignore that, because only the
+marker depends on it. Today `upstream` equals the mattpocock pin, so nothing is
+marked.
+
 The catalog uses this fixed harness order for each install directory:
 
 | Install directory | Harness precedence |
