@@ -363,6 +363,7 @@ class SelectorApp(App[bool]):
     #search:focus { border: none; }
     #columns { margin: 0 1 1 1; }
     .column { padding: 0 1; }
+    #source-column, #skill-column { border-right: solid #999999; }
     #skill-column { width: 1fr; }
     #details { width: 2fr; }
     #details {
@@ -443,9 +444,9 @@ class SelectorApp(App[bool]):
         yield Static(id="hints")
 
     def on_mount(self) -> None:
-        # Pointer, scrollbar and padding take 5 cells; past the cap, rows truncate.
+        # Pointer, scrollbar, padding and divider take 6 cells; past the cap, rows truncate.
         names = [NOT_IN_CATALOG, *self.catalog]
-        self.query_one("#source-column").styles.width = min(max(map(cell_len, names)) + 5, 48)
+        self.query_one("#source-column").styles.width = min(max(map(cell_len, names)) + 6, 49)
         self.refresh_title()
         self.fill_sources()
         self.fill_skills()
@@ -541,7 +542,8 @@ class SelectorApp(App[bool]):
         for skill in self.matching_skills(self.source):
             if skill.group != group:
                 group = skill.group
-                rows.append(Row(None, [Text(group, style=SECONDARY)]))
+                # A blank line above each heading but the first separates the groups.
+                rows.append(Row(None, [Text()] * bool(rows) + [Text(group, style=SECONDARY)]))
             key = f"{self.source}:{skill.name}"
             selected = key in self.draft
             line = Text("● " if selected else "○ ", style=ACCENT if selected else SECONDARY)
