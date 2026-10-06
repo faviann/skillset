@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import yaml
+from rich.cells import cell_len
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -272,7 +273,6 @@ class SelectorApp(App[bool]):
     #search:focus { border: none; }
     #columns { margin: 0 1 1 1; }
     .column { padding: 0 1; }
-    #source-column { width: 30; }
     #skill-column { width: 1fr; }
     #details { width: 1.3fr; }
     #details {
@@ -356,6 +356,9 @@ class SelectorApp(App[bool]):
         yield Static(id="hints")
 
     async def on_mount(self) -> None:
+        # Pointer, scrollbar and padding take 5 cells; past the cap, rows truncate.
+        names = [NOT_IN_CATALOG, *self.catalog]
+        self.query_one("#source-column").styles.width = min(max(map(cell_len, names)) + 5, 48)
         self.refresh_title()
         self.fill_sources()
         await self.fill_skills()
@@ -388,16 +391,16 @@ class SelectorApp(App[bool]):
         if off_catalog:
             selected = sum(key in self.draft for key in off_catalog)
             count = sum(self.search_text in line.value.casefold() for line in off_catalog.values())
-            matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
-            rows.append(Row(NOT_IN_CATALOG, [Text(matches + NOT_IN_CATALOG),
-                                             Text(f"  {selected}/{len(off_catalog)}", style=SECONDARY)]))
+            matches = f" · {count} match{'es' if count != 1 else ''}" if self.search_text else ""
+            rows.append(Row(NOT_IN_CATALOG, [Text(NOT_IN_CATALOG),
+                                             Text(f"  {selected}/{len(off_catalog)}{matches}", style=SECONDARY)]))
             if count:
                 matching_sources.append(NOT_IN_CATALOG)
         for source, skills in self.catalog.items():
             selected = sum(f"{source}:{skill.name}" in self.draft for skill in skills)
             count = len(self.matching_skills(source))
-            matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
-            rows.append(Row(source, [Text(matches + source), Text(f"  {selected}/{len(skills)}", style=SECONDARY)]))
+            matches = f" · {count} match{'es' if count != 1 else ''}" if self.search_text else ""
+            rows.append(Row(source, [Text(source), Text(f"  {selected}/{len(skills)}{matches}", style=SECONDARY)]))
             if count:
                 matching_sources.append(source)
         sources = self.query_one("#sources", CatalogList)

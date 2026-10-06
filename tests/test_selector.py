@@ -167,15 +167,15 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(sources.current, "beta/tools")
             self.assertEqual(self.lines(app, "skills"), ["Maintenance", "○ gamma"])
             self.assertEqual(self.lines(app, "sources"), [
-                "0 matches · acme/skills", "1/2", "1 match · beta/tools", "0/2",
-                "1 match · zebra/more", "0/1",
+                "acme/skills", "1/2 · 0 matches", "beta/tools", "0/2 · 1 match",
+                "zebra/more", "0/1 · 1 match",
             ])
             await pilot.press("down")
             self.assertIs(app.focused, skills)
             self.assertEqual(skills.current, "beta/tools:gamma")
             await pilot.press("space")
             self.assertIn("● selected\nbeta/tools:gamma", self.details(app))
-            self.assertEqual(self.lines(app, "sources")[2:4], ["1 match · beta/tools", "1/2"])
+            self.assertEqual(self.lines(app, "sources")[2:4], ["beta/tools", "1/2 · 1 match"])
             await pilot.press("/")
             self.assertIs(app.focused, search)
             self.assertEqual(search.value, "GAMMA")
@@ -184,7 +184,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(search.value, "")
             await pilot.press(*"Maintenance")
             self.assertEqual(self.lines(app, "skills"), ["Maintenance", "● gamma", "○ omega"])
-            self.assertIn("2 matches · beta/tools", self.lines(app, "sources"))
+            self.assertEqual(self.lines(app, "sources")[2:4], ["beta/tools", "1/2 · 2 matches"])
             await pilot.press("enter")
             self.assertIs(app.focused, skills)
             self.assertIn("● selected\nbeta/tools:gamma", self.details(app))
