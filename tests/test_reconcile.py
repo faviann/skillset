@@ -225,6 +225,28 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertIn("missing:", result.stderr)
         self.assertEqual(set(self.home.iterdir()), before)
 
+    def declare_upstream(self, upstream: str) -> None:
+        (self.repo / "sources.toml").write_text(f'["acme/skills"]\nupstream = "{upstream}"\n', encoding="utf-8")
+        self.commit_skillset("declare fork upstream")
+
+    def test_check_reports_a_stale_upstream_without_blocking_install(self) -> None:
+        # A commit the source has but its pin does not descend from.
+        git(["commit", "--allow-empty", "-qm", "rebased away"], self.source)
+        stale = git(["rev-parse", "HEAD"], self.source)
+        git(["reset", "-q", "--hard", self.initial_source_commit], self.source)
+        self.declare_upstream(stale)
+        installed = self.run_reconciler()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        check = self.run_reconciler("--check")
+        self.assertEqual(check.returncode, 1)
+        self.assertIn(f"stale upstream in sources.toml: acme/skills: {stale}", check.stderr)
+
+    def test_check_ignores_an_upstream_object_the_clone_lacks(self) -> None:
+        self.declare_upstream("1" * 40)
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        check = self.run_reconciler("--check")
+        self.assertEqual(check.returncode, 0, check.stderr)
+
     def test_check_never_initializes_or_uses_network(self) -> None:
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)

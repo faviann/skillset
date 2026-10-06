@@ -1,3 +1,6 @@
+["mattpocock/skills"]
+upstream = "d81f3a183412e71a5b1e84ca21bc1a35eea03a60"
+
 ["rampstackco/claude-skills".variants]
 codex = "dist/codex/.agents/skills"
 pi = "dist/pi/.agents/skills"

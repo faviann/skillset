@@ -433,6 +433,16 @@ class CatalogTests(unittest.TestCase):
                 self.assertIn("sources.toml", str(caught.exception))
                 self.assertIn(unexpected, str(caught.exception))
 
+    def test_upstream_is_a_full_commit_sha(self) -> None:
+        upstream = git(["rev-parse", "HEAD"], self.source)
+        self.manifest.write_text(f'["acme/skills"]\nupstream = "{upstream}"\n', encoding="utf-8")
+        self.assertEqual(self.catalog().upstream, upstream)
+        for value in ('"main"', f'"{upstream[:7]}"', "42"):
+            with self.subTest(value=value):
+                self.manifest.write_text(f'["acme/skills"]\nupstream = {value}\n', encoding="utf-8")
+                with self.assertRaisesRegex(ReconcileError, "upstream must be a full commit SHA"):
+                    self.catalog()
+
     def test_sources_manifest_requires_source_and_variants_tables(self) -> None:
         for content in (
             '"acme/skills" = "skills"\n',

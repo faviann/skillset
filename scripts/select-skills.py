@@ -54,6 +54,7 @@ class Skill:
     unreadable: bool = False
     body: str = ""
     file_count: int = 0
+    forked: bool = False
 
 
 def display_skill(name: str, path: str, common_root: Path) -> Skill:
@@ -84,9 +85,16 @@ def display_catalog(catalog: skill_catalog.Catalog) -> dict[str, list[Skill]]:
         common_root = Path(os.path.commonpath([Path(path).parent for path in paths])) if paths else source.path
         skills = [display_skill(name, path, common_root) for name, path in source.skills.items()]
         files = skill_catalog.path_prefixes(source.path / path for path in source.tracked)
+        changed: Counter[Path] = Counter()
+        if source.upstream:
+            # A missing upstream object (a shallow clone) fails the diff and marks nothing.
+            diff = skill_catalog.git(["diff", "--name-only", "-z", "--no-renames", source.upstream, "HEAD"],
+                                     cwd=source.path, check=False)
+            changed = skill_catalog.path_prefixes(source.path / path for path in diff.split("\0") if path)
         groups = Counter(skill.group for skill in skills)
         for skill in skills:
             skill.file_count = files[skill.path]
+            skill.forked = changed[skill.path] > 0
             if groups[skill.group] == 1:
                 skill.group = ""
         result[source_name] = sorted(
@@ -530,7 +538,9 @@ class SelectorApp(App[bool]):
             notes.append("Same name in other sources: " + ", ".join(others))
         location = skill.path.relative_to(self.selection_catalog.sources[source].path).as_posix()
         files = f"{skill.file_count} {'file' if skill.file_count == 1 else 'files'}"
-        self.query_one("#skill-name", Static).update(Text(skill.name, style=name_style))
+        self.query_one("#skill-name", Static).update(Text.assemble(
+            (skill.name, name_style), (" (forked)", f"not bold {SECONDARY}") if skill.forked else "",
+        ))
         metadata.update(Text.assemble(
             ("\n".join(notes), SECONDARY), "\n\n",
             ("description unreadable", SECONDARY) if skill.unreadable else skill.description,

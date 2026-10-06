@@ -273,6 +273,27 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIn("○ not selected\nzebra/tools:broken\n\ndescription unreadable",
                           self.details(app))
 
+    async def test_forked_marker_shows_skills_changed_since_upstream(self) -> None:
+        fixture = self.fixture()
+        upstream = git(["rev-parse", "HEAD"], fixture.sources["acme/skills"])
+        self.metadata(fixture, "acme/skills", "skills/alpha", "description: Changed in the fork.")
+        self.pin_changes(fixture, "acme/skills")
+        # zebra/tools names an upstream object the clone does not have.
+        (fixture.repo / "sources.toml").write_text(
+            f'["acme/skills"]\nupstream = "{upstream}"\n["zebra/tools"]\nupstream = "{"1" * 40}"\n',
+            encoding="utf-8",
+        )
+        git(["commit", "-qam", "declare fork upstreams"], fixture.repo)
+
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            self.assertEqual(self.text(app, "#skill-name"), "alpha (forked)")
+            await pilot.press("right", "down")
+            self.assertEqual(self.text(app, "#skill-name"), "beta")
+            await pilot.press("left", "down")
+            self.assertEqual(app.query_one("#skills", selector.CatalogList).current, "zebra/tools:gamma")
+            self.assertEqual(self.text(app, "#skill-name"), "gamma")
+
     async def test_full_markdown_body_can_be_scrolled_and_changes_with_highlight(self) -> None:
         fixture = self.fixture()
         file = fixture.sources["acme/skills"] / "skills/alpha/SKILL.md"
