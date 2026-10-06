@@ -49,16 +49,31 @@ class SelectionLine:
     name: str | None = None
 
 
-def git(args: list[str], cwd: Path, *, check: bool = True) -> str:
+def git_env(*, interactive: bool = False) -> dict[str, str]:
+    """Environment for Git on the checkout itself, without inherited GIT_* overrides.
+
+    Captured reads also get hardening flags. Interactive commands do not:
+    hooks inherit the commit's environment, and GIT_LITERAL_PATHSPECS or
+    GIT_TERMINAL_PROMPT would change how user hooks behave.
+    """
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    env.update(GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1",
-               GIT_NO_REPLACE_OBJECTS="1", GIT_TERMINAL_PROMPT="0",
-               GIT_LITERAL_PATHSPECS="1")
-    result = subprocess.run(["git", *args], cwd=cwd, env=env, text=True,
+    if not interactive:
+        env.update(GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1",
+                   GIT_NO_REPLACE_OBJECTS="1", GIT_TERMINAL_PROMPT="0",
+                   GIT_LITERAL_PATHSPECS="1")
+    return env
+
+
+def git(args: list[str], cwd: Path, *, check: bool = True) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, env=git_env(), text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if check and result.returncode:
         raise ReconcileError(f"git {' '.join(args)} failed: {result.stderr.strip() or result.stdout.strip()}")
     return result.stdout.rstrip("\n") if result.returncode == 0 else ""
+
+
+def selection_uncommitted(root: Path) -> bool:
+    return bool(git(["diff", "--name-only", "--no-ext-diff", "HEAD", "--", SELECTION_PATH], cwd=root))
 
 
 def parse_modules(root: Path) -> dict[str, str]:

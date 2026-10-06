@@ -19,9 +19,12 @@ sys.path.insert(0, str(CHECKOUT / "scripts"))
 from reconcile_skills import (
     AGENTS_DIR,
     CLAUDE_DIR,
+    InstallStatus,
     ReconcileError,
     build_plan,
     ensure_skillset_committed,
+    install_status,
+    selection_install_blocker,
 )
 
 
@@ -872,6 +875,103 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assert_reconcile_fails(self.run_reconciler(), "no committed URL")
         self.assertFalse((self.home / ".agents").exists())
 
+
+
+class InstallInterfaceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="skillset-test-")
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.fixture = SkillsetFixture(self.base, {
+            "acme/skills": {"skills/alpha": "alpha", "skills/beta": "beta"},
+        }, ["acme/skills:alpha"])
+        self.repo = self.fixture.repo
+        self.home = self.fixture.home
+        environment = patch.dict(os.environ, {"HOME": str(self.home)})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def commit_readme(self) -> Path:
+        readme = self.repo / "README.md"
+        readme.write_text("Base\n", encoding="utf-8")
+        git(["add", "README.md"], self.repo)
+        git(["commit", "-qm", "add readme"], self.repo)
+        return readme
+
+    def conflicting_branches(self) -> None:
+        branch = git(["branch", "--show-current"], self.repo)
+        readme = self.commit_readme()
+        git(["checkout", "-qb", "competing"], self.repo)
+        readme.write_text("Competing edit\n", encoding="utf-8")
+        git(["commit", "-qam", "edit readme on competing branch"], self.repo)
+        git(["checkout", "-q", branch], self.repo)
+        readme.write_text("Local edit\n", encoding="utf-8")
+        git(["commit", "-qam", "edit readme locally"], self.repo)
+
+    def test_install_status_reports_whether_head_selection_is_installed(self) -> None:
+        self.assertEqual(install_status(self.repo), InstallStatus(False, None))
+        result = subprocess.run([str(self.repo / "scripts/reconcile-skills.sh")], cwd=self.repo,
+                                env=self.fixture.env, text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(install_status(self.repo), InstallStatus(True, None))
+
+    def test_install_status_reports_collision_as_problem(self) -> None:
+        local = self.home / ".agents/skills/local-folder"
+        local.mkdir(parents=True)
+        (local / "SKILL.md").write_text("---\nname: alpha\ndescription: local\n---\n", encoding="utf-8")
+        status = install_status(self.repo)
+        self.assertFalse(status.installed)
+        self.assertIn("existing install directory skill identity collision", status.problem)
+        self.assertEqual(list((self.home / ".agents/skills").iterdir()), [local])
+
+    @unittest.skipIf(os.geteuid() == 0, "root can traverse permission-denied directories")
+    def test_install_status_reports_unreadable_install_directory_as_problem(self) -> None:
+        directory = self.home / ".agents/skills"
+        directory.mkdir(parents=True)
+        directory.chmod(0)
+        try:
+            status = install_status(self.repo)
+        finally:
+            directory.chmod(0o700)
+        self.assertFalse(status.installed)
+        self.assertIn("Permission denied", status.problem)
+        self.assertIn(str(directory), status.problem)
+
+    def test_install_blocker_allows_clean_checkout_and_saved_selection(self) -> None:
+        self.assertIsNone(selection_install_blocker(self.repo))
+        write_selection(self.repo, ["acme/skills:beta"])
+        self.assertIsNone(selection_install_blocker(self.repo))
+
+    def test_install_blocker_names_other_tracked_changes(self) -> None:
+        readme = self.commit_readme()
+        readme.write_text("Uncommitted edit\n", encoding="utf-8")
+        write_selection(self.repo, ["acme/skills:beta"])
+        blocker = selection_install_blocker(self.repo)
+        self.assertIn("tracked skillset changes are not committed", blocker)
+        self.assertIn("README.md", blocker)
+        self.assertNotIn("skills.txt", blocker)
+
+    def test_install_blocker_refuses_detached_head(self) -> None:
+        git(["checkout", "-q", "--detach"], self.repo)
+        self.assertEqual(selection_install_blocker(self.repo),
+                         "checkout is on a detached HEAD; switch to a branch")
+
+    def test_install_blocker_refuses_merge_in_progress(self) -> None:
+        self.conflicting_branches()
+        git(["merge", "--no-edit", "competing"], self.repo, ok=False)
+        self.assertEqual(selection_install_blocker(self.repo),
+                         "a merge is in progress; finish it before installing")
+
+    def test_install_blocker_refuses_rebase_in_progress(self) -> None:
+        self.conflicting_branches()
+        git(["rebase", "competing"], self.repo, ok=False)
+        self.assertEqual(selection_install_blocker(self.repo),
+                         "a rebase is in progress; finish it before installing")
+
+    def test_install_blocker_refuses_linked_worktree(self) -> None:
+        worktree = self.base / "linked-worktree"
+        git(["worktree", "add", "-q", "-b", "fixture-linked", str(worktree)], self.repo)
+        self.assertIn("skill links belong to the primary checkout", selection_install_blocker(worktree))
 
 
 if __name__ == "__main__":
