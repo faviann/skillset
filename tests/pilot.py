@@ -48,10 +48,15 @@ class PilotTestCase(unittest.IsolatedAsyncioTestCase):
             elif not any(node.message_queue_size for node in (app, *app.screen.walk_children(with_self=True))):
                 return
 
+    def shown_body(self, app) -> str:
+        """The body text on display now, without waiting; empty while it renders."""
+        content = app.screen.query_one("#skill-body", selector.Static).content
+        return "".join(segment.text for segment in getattr(content, "segments", []))
+
     async def body_text(self, pilot) -> str:
         """The rendered body of the current skill."""
         await self.settle(pilot)
-        return "\n".join(str(widget.content) for widget in pilot.app.query("#skill-body Static"))
+        return self.shown_body(pilot.app)
 
     async def screen_text(self, pilot) -> str:
         """Every character on screen, once pending renders have painted."""

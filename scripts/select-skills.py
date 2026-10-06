@@ -7,10 +7,11 @@
 
 from __future__ import annotations
 
-import asyncio
+import io
 import os
 import subprocess
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from functools import partial
@@ -20,20 +21,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import yaml
-from markdown_it import MarkdownIt
+from rich import markdown as rich_markdown
 from rich.cells import cell_len
+from rich.console import Console
+from rich.rule import Rule
+from rich.segment import Segment, Segments
+from rich.spinner import Spinner
 from rich.text import Text
+from rich.theme import Theme
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.content import Content
 from textual.events import Click, Key
 from textual.geometry import Region
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Input, Markdown, Static
-from textual.widgets.markdown import MarkdownFence
+from textual.widgets import Input, Static
+from textual.worker import get_current_worker
 
 import reconcile_skills
 import skill_catalog
@@ -262,28 +267,89 @@ class ChoiceDialog(ModalScreen[int | None]):
         self.dismiss(None)
 
 
-class SkillCodeBlock(MarkdownFence):
-    @classmethod
-    def highlight(cls, code: str, language: str, ansi: bool = False, dark: bool = False) -> Content:
-        # Textual's highlighter embeds a theme foreground that overrides CSS.
-        return Content(code)
+class SkillHeading(rich_markdown.Heading):
+    LEVEL_ALIGN = {**rich_markdown.Heading.LEVEL_ALIGN, "h1": "left"}
 
 
-class SkillMarkdown(Markdown):
-    BLOCKS = {**Markdown.BLOCKS, "fence": SkillCodeBlock, "code_block": SkillCodeBlock}
+class SkillCodeBlock(rich_markdown.CodeBlock):
+    def __rich_console__(self, console, options):
+        # Rich's syntax themes set their own colours, unreadable on light or dark terminals.
+        yield Text(str(self.text).rstrip())
+
+
+class SkillRule(rich_markdown.HorizontalRule):
+    def __rich_console__(self, console, options):
+        yield Rule(style=SECONDARY)
+        yield Text()
+
+
+class SkillMarkdown(rich_markdown.Markdown):
+    elements = {**rich_markdown.Markdown.elements, "heading_open": SkillHeading, "hr": SkillRule,
+                "fence": SkillCodeBlock, "code_block": SkillCodeBlock}
+
+
+# Terminal foreground and plain emphasis read on light and dark terminals; secondary marks are grey.
+SKILL_THEME = Theme({
+    "markdown.code": "none", "markdown.block_quote": "none", "markdown.link": "underline",
+    "markdown.h1": "bold", "markdown.h2": "underline", "markdown.h3": "bold",
+    "markdown.h4": "bold underline", "markdown.h5": "bold", "markdown.h6": "bold",
+    "markdown.item.number": "none", "markdown.item.bullet": "none",
+    "markdown.table.header": "bold", "markdown.table.border": SECONDARY,
+})
+
+
+def render_markdown(markdown: str, width: int) -> Segments:
+    console = Console(width=width, theme=SKILL_THEME, file=io.StringIO())
+    segments = []
+    for line in console.render_lines(SkillMarkdown(markdown), pad=False):
+        segments += [*line, Segment.line()]
+    return Segments(segments)
+
+
+class SkillBody(Static):
+    """The skill text, rendered in a thread so keys are handled while a long one renders."""
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.shown: str | None = ""
+        self.markdown = ""
+        self.current: tuple[str, int] | None = None
+        self.cache: dict[tuple[str, int], Segments] = {}
 
-    async def show(self, markdown: str) -> None:
-        """Mount a few blocks at a time, so keys are handled while a long body mounts."""
-        self.shown = None
-        await self.remove_children()
-        blocks = list(self._parse_markdown(MarkdownIt("gfm-like").parse(markdown)))
-        for start in range(0, len(blocks), 8):
-            await self.mount_all(blocks[start:start + 8])
-        self.shown = markdown
+    def show(self, markdown: str) -> None:
+        self.markdown = markdown
+        self.refresh_body()
+
+    def on_resize(self) -> None:
+        self.refresh_body()
+
+    def refresh_body(self) -> None:
+        key = (self.markdown, self.size.width)
+        if key == self.current:
+            return
+        self.current = key
+        self.workers.cancel_group(self, "body")
+        if not self.markdown or not self.size.width or key in self.cache:
+            self.set_content(self.cache.get(key, ""))
+        else:
+            self.set_content(Spinner("dots", style=SECONDARY), loading=True)
+            self.run_worker(partial(self.render_in_thread, *key), thread=True, group="body")
+
+    def render_in_thread(self, markdown: str, width: int) -> None:
+        # Held keys move on before a render starts.
+        time.sleep(0.08)
+        if not get_current_worker().is_cancelled:
+            lines = render_markdown(markdown, width)
+            if not get_current_worker().is_cancelled:
+                self.app.call_from_thread(self.rendered, markdown, width, lines)
+
+    def rendered(self, markdown: str, width: int, lines: Segments) -> None:
+        self.cache[markdown, width] = lines
+        if self.current == (markdown, width):
+            self.set_content(lines)
+
+    def set_content(self, content, *, loading: bool = False) -> None:
+        self.auto_refresh = 1 / 12 if loading else None
+        self.update(content)
 
 
 class SelectorApp(App[bool]):
@@ -301,7 +367,7 @@ class SelectorApp(App[bool]):
     #skill-column { width: 1fr; }
     #details { width: 2fr; }
     #details {
-        /* A body appearing must not narrow the pane and lay every block out twice. */
+        /* A body appearing must not narrow the pane and render the body again. */
         scrollbar-gutter: stable;
         scrollbar-size-vertical: 1;
         scrollbar-background: transparent;
@@ -318,16 +384,6 @@ class SelectorApp(App[bool]):
         border-bottom: solid #999999; padding-bottom: 1; margin-bottom: 1;
     }
     #details.-empty #skill-head, #details.-empty #skill-metadata, #details.-empty #skill-foot { display: none; }
-    #skill-body { padding: 0; }
-    #skill-body MarkdownH1 { content-align: left middle; margin: 0 0 1 0; }
-    #skill-body, #skill-body * {
-        color: ansi_default;
-        link-color: ansi_default;
-        link-color-hover: ansi_default;
-        link-background-hover: transparent;
-    }
-    #skill-body MarkdownBlockQuote { background: transparent; }
-    #skill-body MarkdownBlock > .code_inline { color: ansi_default; }
     .heading { height: 1; color: #999999; margin-bottom: 1; }
     CatalogList {
         background: transparent;
@@ -383,7 +439,7 @@ class SelectorApp(App[bool]):
                     yield Static(id="skill-state")
                 yield Static(id="skill-metadata")
                 yield Static(id="skill-foot")
-                yield SkillMarkdown(id="skill-body")
+                yield SkillBody(id="skill-body")
         yield Static(id="message")
         yield Static(id="hints")
 
@@ -511,7 +567,7 @@ class SelectorApp(App[bool]):
         if key is None:
             for part in ("#skill-name", "#skill-state", "#skill-metadata", "#skill-foot"):
                 self.query_one(part, Static).update("")
-            self.show_body("")
+            self.query_one("#skill-body", SkillBody).show("")
             return
         selected = key in self.draft
         name_style = ACCENT if selected else SECONDARY
@@ -525,7 +581,7 @@ class SelectorApp(App[bool]):
                 (f"skills.txt:{line.number}", SECONDARY), "\n\n", line.error,
             ))
             foot.update(Text("Can be deselected only.", style=SECONDARY))
-            self.show_body("")
+            self.query_one("#skill-body", SkillBody).show("")
             return
         source, name = key.split(":")
         skill = next(skill for skill in self.catalog[source] if skill.name == name)
@@ -549,22 +605,7 @@ class SelectorApp(App[bool]):
         foot.update(Text.assemble(
             (f"{files} · ", SECONDARY), source, ("" if location == "." else f"/{location}", SECONDARY),
         ))
-        self.show_body(skill.body)
-
-    def show_body(self, markdown: str) -> None:
-        # Mounting a long body takes over a second, so render only where the cursor rests.
-        # Hidden, the stale body also stays out of every layout pass until then.
-        body = self.query_one("#skill-body", SkillMarkdown)
-        self.workers.cancel_group(body, "body")
-        body.display = markdown == body.shown
-        if not body.display:
-            # Owned by the body, so the render is cancelled when the body unmounts at exit.
-            body.run_worker(partial(self.render_body, body, markdown), group="body")
-
-    async def render_body(self, body: SkillMarkdown, markdown: str) -> None:
-        await asyncio.sleep(0.08)
-        await body.show(markdown)
-        body.display = True
+        self.query_one("#skill-body", SkillBody).show(skill.body)
 
     @on(CatalogList.Highlighted, "#sources")
     def source_highlighted(self, event: CatalogList.Highlighted) -> None:
