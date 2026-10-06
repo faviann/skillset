@@ -118,8 +118,8 @@ layout, such as a `dist/codex` variant tree. These declarations exclude variant
 copies from canonical discovery and choose which copies each install directory
 receives through the
 [fixed harness precedence](architecture.md#authority-and-committed-inputs).
-A source without variants needs no entry. Keep `sources.toml` tracked, even if
-it is empty.
+A source with neither variants nor `upstream` needs no entry. Keep
+`sources.toml` tracked, even if it is empty.
 
 When you re-pin or rebase a source fetched from a fork, set its `upstream` in
 `sources.toml` to the full SHA of the fork's merge-base with upstream `main`:

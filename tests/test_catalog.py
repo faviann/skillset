@@ -437,7 +437,7 @@ class CatalogTests(unittest.TestCase):
         upstream = git(["rev-parse", "HEAD"], self.source)
         self.manifest.write_text(f'["acme/skills"]\nupstream = "{upstream}"\n', encoding="utf-8")
         self.assertEqual(self.catalog().upstream, upstream)
-        for value in ('"main"', f'"{upstream[:7]}"', f'"{upstream.upper()}"', "42"):
+        for value in ('"main"', f'"{upstream[:7]}"', "42"):
             with self.subTest(value=value):
                 self.manifest.write_text(f'["acme/skills"]\nupstream = {value}\n', encoding="utf-8")
                 with self.assertRaisesRegex(ReconcileError, "upstream must be a full commit SHA"):

@@ -539,7 +539,7 @@ class SelectorApp(App[bool]):
         location = skill.path.relative_to(self.selection_catalog.sources[source].path).as_posix()
         files = f"{skill.file_count} {'file' if skill.file_count == 1 else 'files'}"
         self.query_one("#skill-name", Static).update(Text.assemble(
-            (skill.name, name_style), (" (forked)", SECONDARY) if skill.forked else "",
+            (skill.name, name_style), (" (forked)", f"not bold {SECONDARY}") if skill.forked else "",
         ))
         metadata.update(Text.assemble(
             ("\n".join(notes), SECONDARY), "\n\n",
