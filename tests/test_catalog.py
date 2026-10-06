@@ -16,14 +16,110 @@ from skill_catalog import (
     AGENTS_DIR,
     CLAUDE_DIR,
     SELECTION_PATH,
+    Catalog,
+    InvalidSkill,
     ReconcileError,
     SourceCatalog,
     discover_catalog,
+    load_catalog,
     parse_modules,
-    read_selection,
-    selected_skills,
+    parse_selection,
+    read_selection_text,
     write_selection,
 )
+
+
+class ResolutionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.acme = SourceCatalog(
+            {"alpha": "/acme/alpha"}, {"broken": [InvalidSkill("/acme/broken", "bad frontmatter")]}, {},
+        )
+
+    def targets(self, text: str, **sources: SourceCatalog) -> dict[tuple[Path, str], str]:
+        catalog = Catalog({"acme/skills": self.acme, **{f"other/{name}": source for name, source in sources.items()}})
+        return catalog.resolve(text).install_targets()
+
+    def test_comments_and_blank_lines_are_skipped(self) -> None:
+        resolution = Catalog({"acme/skills": self.acme}).resolve(
+            "\n# chosen skills\n  # another comment\n\n acme/skills:alpha \n")
+        self.assertEqual([(line.value, line.number) for line in resolution.lines], [("acme/skills:alpha", 5)])
+        self.assertEqual(resolution.install_targets(), {
+            (AGENTS_DIR, "alpha"): "/acme/alpha", (CLAUDE_DIR, "alpha"): "/acme/alpha",
+        })
+
+    def test_syntax_errors_including_old_paths_have_line_numbers(self) -> None:
+        for line in ("sources/acme/skills/skills/engineering/alpha", "acme/skills",
+                     "acme/skills:alpha:extra", "acme:team/skills:alpha",
+                     "acme/skills:", "acme//skills:alpha", "../skills:alpha"):
+            with self.subTest(line=line):
+                with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: bad syntax"):
+                    self.targets(f"# selection\n\n{line}\n")
+
+    def test_duplicate_selection_line_has_line_number(self) -> None:
+        with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: duplicate selection line"):
+            self.targets("acme/skills:alpha\n# repeat\nacme/skills:alpha\n")
+
+    def test_unknown_source_has_line_number(self) -> None:
+        with self.assertRaisesRegex(ReconcileError, r"skills.txt:2: unknown source: unknown/skills"):
+            self.targets("# selection\nunknown/skills:alpha\n")
+
+    def test_missing_name_has_line_number(self) -> None:
+        with self.assertRaisesRegex(ReconcileError, r"skills.txt:2: name is missing at the pinned commit: acme/skills:missing"):
+            self.targets("\nacme/skills:missing\n")
+
+    def test_variant_only_name_is_missing(self) -> None:
+        self.acme.variants = {"codex": {"only-variant": "/acme/dist/codex/only-variant"}}
+        with self.assertRaisesRegex(ReconcileError, "skills.txt:1: name is missing at the pinned commit"):
+            self.targets("acme/skills:only-variant\n")
+
+    def test_same_name_selected_from_two_sources_has_line_number(self) -> None:
+        with self.assertRaises(ReconcileError) as caught:
+            self.targets("acme/skills:alpha\n\nother/tools:alpha\n",
+                         tools=SourceCatalog({"alpha": "/tools/alpha"}, {}, {}))
+        self.assertEqual(str(caught.exception), "skills.txt:3: same name selected from two sources: alpha\n"
+                                                "  acme/skills:alpha\n  other/tools:alpha")
+
+    def test_later_syntax_error_wins_over_earlier_catalog_error(self) -> None:
+        with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: bad syntax"):
+            self.targets("unknown/skills:alpha\nacme/skills:missing\nnot a value\n")
+
+    def test_resolve_keeps_every_line_with_its_own_error(self) -> None:
+        lines = Catalog({"acme/skills": self.acme}).resolve(
+            "acme/skills:alpha\nnot a value\nacme/skills:alpha\nunknown/source:x\n"
+            "acme/skills:gone\nacme/skills:broken\n").lines
+        self.assertEqual([line.number for line in lines], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(lines[0].error, "")
+        self.assertEqual(lines[0].targets, {AGENTS_DIR: "/acme/alpha", CLAUDE_DIR: "/acme/alpha"})
+        self.assertEqual([line.syntax_error for line in lines], [False, True, True, False, False, False])
+        self.assertEqual([line.error for line in lines[1:]], [
+            "bad syntax; expected owner/repo:name: not a value",
+            "duplicate selection line: acme/skills:alpha",
+            "unknown source: unknown/source",
+            "name is missing at the pinned commit: acme/skills:gone",
+            "selected name is invalid: acme/skills:broken\n  bad frontmatter",
+        ])
+        for line in lines[1:]:
+            self.assertEqual(line.targets, {})
+
+    def test_install_directories_use_fixed_harness_precedence(self) -> None:
+        for declared, agents_harness, claude_harness in (
+            (("opencode",), "opencode", "opencode"),
+            (("opencode", "pi"), "pi", "opencode"),
+            (("opencode", "pi", "claude-code", "codex"), "codex", "claude-code"),
+        ):
+            with self.subTest(declared=declared):
+                self.acme.variants = {harness: {"alpha": f"/{harness}/alpha"} for harness in declared}
+                self.assertEqual(self.targets("acme/skills:alpha\n"), {
+                    (AGENTS_DIR, "alpha"): f"/{agents_harness}/alpha",
+                    (CLAUDE_DIR, "alpha"): f"/{claude_harness}/alpha",
+                })
+
+    def test_gap_in_first_declared_tree_falls_back_to_canonical(self) -> None:
+        self.acme.variants = {harness: {name: f"/{harness}/{name}"} for harness, name in (
+            ("codex", "other"), ("pi", "alpha"), ("claude-code", "other"), ("opencode", "alpha"))}
+        self.assertEqual(self.targets("acme/skills:alpha\n"), {
+            (AGENTS_DIR, "alpha"): "/acme/alpha", (CLAUDE_DIR, "alpha"): "/acme/alpha",
+        })
 
 
 class CatalogTests(unittest.TestCase):
@@ -39,16 +135,20 @@ class CatalogTests(unittest.TestCase):
         self.alpha = self.source / "skills/engineering/alpha"
         self.manifest = self.repo / "sources.toml"
 
-    def catalog(self) -> SourceCatalog:
-        catalogs = discover_catalog(self.repo, parse_modules(self.repo))
-        self.assertEqual(set(catalogs), {"sources/acme/skills"})
-        return catalogs["sources/acme/skills"]
+    def catalog(self, *, validate: bool = True) -> SourceCatalog:
+        # Some sources are deliberately dirty, which load_catalog rejects before discovery.
+        catalog = load_catalog(self.repo) if validate else discover_catalog(self.repo, parse_modules(self.repo))
+        self.assertEqual(set(catalog.sources), {"acme/skills"})
+        return catalog.sources["acme/skills"]
 
-    def selected(self) -> dict[tuple[Path, str], str]:
-        return selected_skills(self.repo, discover_catalog(self.repo, parse_modules(self.repo)))
+    def targets(self, text: str) -> dict[tuple[Path, str], str]:
+        return load_catalog(self.repo).resolve(text).install_targets()
 
     def selection_text(self, text: str) -> None:
         (self.repo / SELECTION_PATH).write_text(text, encoding="utf-8")
+
+    def selection(self) -> list[str]:
+        return [line.value for line in parse_selection(read_selection_text(self.repo))]
 
     def commit_source(self) -> None:
         git(["add", "-A"], self.source)
@@ -60,8 +160,8 @@ class CatalogTests(unittest.TestCase):
         (self.alpha / "SKILL.md").write_text(f"---\n{fields}\n---\n", encoding="utf-8")
         self.commit_source()
 
-    def assert_invalid(self, name: str, directory: Path, reason: str) -> SourceCatalog:
-        catalog = self.catalog()
+    def assert_invalid(self, name: str, directory: Path, reason: str, *, validate: bool = True) -> SourceCatalog:
+        catalog = self.catalog(validate=validate)
         self.assertNotIn(name, catalog.skills)
         self.assertIn(name, catalog.invalid)
         errors = {entry.path: entry.error for entry in catalog.invalid[name]}
@@ -79,70 +179,38 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog.skills, {"alpha": str(self.alpha)})
         self.assertEqual(catalog.invalid, {})
         self.assertEqual(catalog.variants, {})
+        self.assertEqual(catalog.path, self.source)
+        self.assertIn("skills/engineering/alpha/SKILL.md", catalog.tracked)
 
-    def test_selection_resolves_frontmatter_name_and_skips_blank_and_comment_lines(self) -> None:
-        self.selection_text("\n# chosen skills\n  # another comment\n\n acme/skills:alpha \n")
-        self.assertEqual(read_selection(self.repo), {"acme/skills:alpha": 5})
-        self.assertEqual(self.selected(), {
-            (AGENTS_DIR, "alpha"): str(self.alpha),
-            (CLAUDE_DIR, "alpha"): str(self.alpha),
-        })
+    def test_tracked_excludes_untracked_files(self) -> None:
+        (self.source / "untracked.txt").write_text("not committed", encoding="utf-8")
+        self.assertNotIn("untracked.txt", self.catalog(validate=False).tracked)
 
-    def test_selection_syntax_errors_including_old_paths_have_line_numbers(self) -> None:
-        for line in ("sources/acme/skills/skills/engineering/alpha", "acme/skills",
-                     "acme/skills:alpha:extra", "acme:team/skills:alpha",
-                     "acme/skills:", "acme//skills:alpha", "../skills:alpha"):
-            with self.subTest(line=line):
-                self.selection_text(f"# selection\n\n{line}\n")
-                with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: bad syntax"):
-                    read_selection(self.repo)
-
-    def test_duplicate_selection_line_has_line_number(self) -> None:
-        self.selection_text("acme/skills:alpha\n# repeat\nacme/skills:alpha\n")
-        with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: duplicate selection line"):
-            read_selection(self.repo)
-
-    def test_unknown_source_has_line_number(self) -> None:
-        self.selection_text("# selection\nunknown/skills:alpha\n")
-        with self.assertRaisesRegex(ReconcileError, r"skills.txt:2: unknown source: unknown/skills"):
-            self.selected()
-
-    def test_missing_name_at_pin_has_line_number(self) -> None:
-        self.selection_text("\nacme/skills:missing\n")
-        with self.assertRaisesRegex(ReconcileError, r"skills.txt:2: name is missing at the pinned commit: acme/skills:missing"):
-            self.selected()
+    def test_load_catalog_rejects_a_dirty_source(self) -> None:
+        (self.source / "untracked.txt").write_text("not committed", encoding="utf-8")
+        with self.assertRaisesRegex(ReconcileError, "source checkout is dirty: sources/acme/skills"):
+            load_catalog(self.repo)
 
     def test_invalid_selected_name_has_line_number_and_validation_reason(self) -> None:
         self.write_metadata('name: "alpha"')
-        self.selection_text("# selection\nacme/skills:alpha\n")
         with self.assertRaises(ReconcileError) as caught:
-            self.selected()
+            self.targets("# selection\nacme/skills:alpha\n")
         self.assertIn("skills.txt:2: selected name is invalid: acme/skills:alpha", str(caught.exception))
         self.assertIn("unsupported frontmatter identity", str(caught.exception))
         self.assertIn(str(self.alpha / "SKILL.md"), str(caught.exception))
 
-    def test_same_name_selected_from_two_sources_has_line_number(self) -> None:
-        self.fixture.add_source("other/tools", {"alpha": "alpha"})
-        git(["commit", "-qam", "add another source"], self.repo)
-        self.selection_text("acme/skills:alpha\n\nother/tools:alpha\n")
-        with self.assertRaises(ReconcileError) as caught:
-            self.selected()
-        self.assertIn("skills.txt:3: same name selected from two sources: alpha", str(caught.exception))
-        self.assertIn("acme/skills:alpha", str(caught.exception))
-        self.assertIn("other/tools:alpha", str(caught.exception))
-
     def test_selection_writer_sorts_and_round_trips_even_without_catalog_entries(self) -> None:
         self.selection_text("# handwritten choices\nretired/tools:gone\n\nacme/skills:alpha\n")
-        selection = read_selection(self.repo)
+        selection = self.selection()
         write_selection(self.repo, selection)
         self.assertEqual((self.repo / SELECTION_PATH).read_text(encoding="utf-8"),
                          "# Written by the skill selector. Comments and ordering are not kept.\n"
                          "acme/skills:alpha\nretired/tools:gone\n")
-        self.assertEqual(set(read_selection(self.repo)), set(selection))
+        self.assertEqual(set(self.selection()), set(selection))
         write_selection(self.repo, [])
         self.assertEqual((self.repo / SELECTION_PATH).read_text(encoding="utf-8"),
                          "# Written by the skill selector. Comments and ordering are not kept.\n")
-        self.assertEqual(read_selection(self.repo), {})
+        self.assertEqual(self.selection(), [])
 
     def test_hidden_folders_are_discovered_without_plugin_manifests(self) -> None:
         hidden = write_skill(self.source, ".agents/skills/hidden")
@@ -228,7 +296,7 @@ class CatalogTests(unittest.TestCase):
         self.commit_source()
         write_skill(self.source, "untracked")
         write_skill(self.source, "ignored")
-        catalog = self.catalog()
+        catalog = self.catalog(validate=False)
         self.assertEqual(catalog.skills, {"alpha": str(self.alpha)})
         self.assertEqual(catalog.invalid, {})
 
@@ -239,7 +307,7 @@ class CatalogTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 extra = self.alpha / filename
                 extra.write_text("uncommitted payload", encoding="utf-8")
-                self.assert_invalid("alpha", self.alpha, "untracked or ignored content")
+                self.assert_invalid("alpha", self.alpha, "untracked or ignored content", validate=False)
                 extra.unlink()
 
     def test_undeclared_valid_repeat_names_both_copies(self) -> None:
@@ -261,8 +329,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(len(catalog.invalid["skills"]), 1)
         self.assertEqual(catalog.invalid["skills"][0].path, str(self.source))
         self.assertIn("additional SKILL.md", catalog.invalid["skills"][0].error)
-        self.selection_text("acme/skills:skills\n")
-        self.assertEqual(self.selected(), {
+        self.assertEqual(self.targets("acme/skills:skills\n"), {
             (AGENTS_DIR, "skills"): str(canonical),
             (CLAUDE_DIR, "skills"): str(canonical),
         })
@@ -286,50 +353,8 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog.variants, {"codex": {
             "alpha": str(variant), "only-variant": str(variant_only),
         }})
-        self.selection_text("acme/skills:alpha\n")
-        self.assertEqual(self.selected(), {
+        self.assertEqual(self.targets("acme/skills:alpha\n"), {
             (AGENTS_DIR, "alpha"): str(variant),
-            (CLAUDE_DIR, "alpha"): str(self.alpha),
-        })
-        self.selection_text("acme/skills:only-variant\n")
-        with self.assertRaisesRegex(ReconcileError, "name is missing at the pinned commit"):
-            self.selected()
-
-    def test_install_directories_use_fixed_harness_precedence(self) -> None:
-        self.selection_text("acme/skills:alpha\n")
-        declarations = []
-        for added, agents_harness, claude_harness in (
-            (("opencode",), "opencode", "opencode"),
-            (("pi",), "pi", "opencode"),
-            (("claude-code", "codex"), "codex", "claude-code"),
-        ):
-            with self.subTest(added=added):
-                for harness in added:
-                    write_skill(self.source, f"dist/{harness}/alpha")
-                    declarations.append(f'{harness} = "dist/{harness}"\n')
-                self.commit_source()
-                self.manifest.write_text(
-                    '["acme/skills".variants]\n' + "".join(declarations), encoding="utf-8",
-                )
-                self.assertEqual(self.selected(), {
-                    (AGENTS_DIR, "alpha"): str(self.source / f"dist/{agents_harness}/alpha"),
-                    (CLAUDE_DIR, "alpha"): str(self.source / f"dist/{claude_harness}/alpha"),
-                })
-
-    def test_gap_in_first_declared_tree_falls_back_to_canonical(self) -> None:
-        for harness, name in (("codex", "other"), ("pi", "alpha"),
-                              ("claude-code", "other"), ("opencode", "alpha")):
-            write_skill(self.source, f"dist/{harness}/{name}")
-        self.commit_source()
-        self.manifest.write_text(
-            '["acme/skills".variants]\n'
-            'codex = "dist/codex"\npi = "dist/pi"\n'
-            'claude-code = "dist/claude-code"\nopencode = "dist/opencode"\n',
-            encoding="utf-8",
-        )
-        self.selection_text("acme/skills:alpha\n")
-        self.assertEqual(self.selected(), {
-            (AGENTS_DIR, "alpha"): str(self.alpha),
             (CLAUDE_DIR, "alpha"): str(self.alpha),
         })
 
@@ -444,7 +469,7 @@ class CatalogTests(unittest.TestCase):
         tree.mkdir()
         (tree / "README.md").write_text("untracked variant", encoding="utf-8")
         with self.assertRaisesRegex(ReconcileError, "sources.toml"):
-            self.catalog()
+            self.catalog(validate=False)
 
     def test_variant_tree_must_not_be_or_traverse_a_directory_symlink(self) -> None:
         write_skill(self.source, "ports/codex/alpha")

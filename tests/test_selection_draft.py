@@ -24,15 +24,15 @@ from selection_draft import (
     SelectionDraft,
     Toggled,
 )
-from skill_catalog import SELECTION_HEADER, InvalidSkill, SourceCatalog
+from skill_catalog import SELECTION_HEADER, Catalog, InvalidSkill, SourceCatalog
 
-CATALOG = {
-    "sources/acme/skills": SourceCatalog(
+CATALOG = Catalog({
+    "acme/skills": SourceCatalog(
         {"alpha": "/acme/alpha", "beta": "/acme/beta"},
         {"broken": [InvalidSkill("/acme/broken", "bad frontmatter")]}, {},
     ),
-    "sources/zebra/tools": SourceCatalog({"alpha": "/zebra/alpha", "omega": "/zebra/omega"}, {}, {}),
-}
+    "zebra/tools": SourceCatalog({"alpha": "/zebra/alpha", "omega": "/zebra/omega"}, {}, {}),
+})
 
 
 def selection(*values: str) -> str:
