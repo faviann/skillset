@@ -24,6 +24,7 @@ import yaml
 from rich import markdown as rich_markdown
 from rich.cells import cell_len
 from rich.console import Console
+from rich.padding import Padding
 from rich.rule import Rule
 from rich.segment import Segment, Segments
 from rich.spinner import Spinner
@@ -274,7 +275,7 @@ class SkillHeading(rich_markdown.Heading):
 class SkillCodeBlock(rich_markdown.CodeBlock):
     def __rich_console__(self, console, options):
         # Rich's syntax themes set their own colours, unreadable on light or dark terminals.
-        yield Text(str(self.text).rstrip())
+        yield Padding(Text(str(self.text).rstrip()), (0, 0, 0, 2))
 
 
 class SkillRule(rich_markdown.HorizontalRule):
@@ -290,7 +291,7 @@ class SkillMarkdown(rich_markdown.Markdown):
 
 # Terminal foreground and plain emphasis read on light and dark terminals; secondary marks are grey.
 SKILL_THEME = Theme({
-    "markdown.code": "none", "markdown.block_quote": "none", "markdown.link": "underline",
+    "markdown.code": "none", "markdown.block_quote": "none", "markdown.link_url": "underline",
     "markdown.h1": "bold", "markdown.h2": "underline", "markdown.h3": "bold",
     "markdown.h4": "bold underline", "markdown.h5": "bold", "markdown.h6": "bold",
     "markdown.item.number": "none", "markdown.item.bullet": "none",
@@ -338,9 +339,7 @@ class SkillBody(Static):
         # Held keys move on before a render starts.
         time.sleep(0.08)
         if not get_current_worker().is_cancelled:
-            lines = render_markdown(markdown, width)
-            if not get_current_worker().is_cancelled:
-                self.app.call_from_thread(self.rendered, markdown, width, lines)
+            self.app.call_from_thread(self.rendered, markdown, width, render_markdown(markdown, width))
 
     def rendered(self, markdown: str, width: int, lines: Segments) -> None:
         self.cache[markdown, width] = lines
