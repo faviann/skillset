@@ -17,8 +17,10 @@ from skill_catalog import (
     INSTALL_HARNESSES,
     NAME_PATTERN,
     SELECTION_PATH,
+    Catalog,
     ReconcileError,
     git,
+    git_env,
     identity,
     load_catalog,
     read_selection_text,
@@ -182,15 +184,33 @@ def local_collision(desired: set[str], retiring: set[Path]) -> None:
 
 
 
-def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str]]:
+def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str], Catalog]:
     head = require_primary_checkout(root)
     catalog = load_catalog(root)
     ensure_skillset_committed(root)
-    return head, catalog.resolve(read_selection_text(root)).install_targets()
+    return head, catalog.resolve(read_selection_text(root)).install_targets(), catalog
 
 
 def build_plan(root: Path) -> Plan:
-    return plan_links(*read_selection(root))
+    head, selected, _ = read_selection(root)
+    return plan_links(head, selected)
+
+
+def stale_upstreams(catalog: Catalog) -> list[str]:
+    """Report fork upstreams that are present but not ancestors of the pin.
+
+    Only the (forked) marker reads upstream, so this is a --check finding, not
+    an install failure. A missing object (a shallow clone) is not reported.
+    """
+    stale = []
+    for name, source in catalog.sources.items():
+        if source.upstream and subprocess.run(
+            ["git", "merge-base", "--is-ancestor", source.upstream, "HEAD"], cwd=source.path,
+            env=git_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        ).returncode == 1:
+            stale.append(f"stale upstream in sources.toml: {name}: {source.upstream} is not an "
+                         "ancestor of the pin; set it to the merge-base with upstream main")
+    return stale
 
 
 def install_status(root: Path) -> InstallStatus:
@@ -323,13 +343,14 @@ def apply_plan(plan: Plan) -> str:
     return " and ".join(messages) or "skills are reconciled"
 
 def run(root: Path, check_only: bool) -> int:
-    head, selected = read_selection(root)
+    head, selected, catalog = read_selection(root)
     plan = plan_links(head, selected)
     if check_only:
         discrepancies = [f"missing: {r.path}" for r in plan.creations]
         discrepancies += [f"stale owned link: {r.path}" for r in plan.removals]
         discrepancies += [f"stale receipt: {r.receipt}" for r in plan.receipt_cleanup]
-        if not plan.empty:
+        discrepancies += stale_upstreams(catalog)
+        if discrepancies:
             print("\n".join(discrepancies), file=sys.stderr)
             return 1
         print(f"skills are reconciled at skillset commit {plan.head}")

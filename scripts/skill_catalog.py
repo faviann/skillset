@@ -42,6 +42,7 @@ class SourceCatalog:
     variants: dict[str, dict[str, str]]
     path: Path = Path()
     tracked: frozenset[str] = frozenset()
+    upstream: str | None = None
 
     def targets(self, name: str) -> dict[Path, str]:
         result = {}
@@ -213,8 +214,8 @@ def validate_sources(root: Path, modules: dict[str, str]) -> None:
             raise ReconcileError(f"source checkout is dirty: {path}")
 
 
-def read_variants(root: Path, modules: dict[str, str]) -> dict[str, dict[str, str]]:
-    """Read the required declaration of source-relative harness variant trees."""
+def read_sources(root: Path, modules: dict[str, str]) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+    """Read the required declaration of variant trees and fork upstream commits."""
     file = root / "sources.toml"
     if file.is_symlink() or not file.is_file():
         raise ReconcileError("sources.toml is missing or is not a regular file")
@@ -226,15 +227,21 @@ def read_variants(root: Path, modules: dict[str, str]) -> dict[str, dict[str, st
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
         raise ReconcileError(f"invalid sources.toml: {error}") from error
     result = {}
+    upstreams = {}
     for name, entry in config.items():
         module = f"sources/{name}"
         if module not in modules:
             raise ReconcileError(f"sources.toml names an unknown source: {name}")
         if not isinstance(entry, dict):
             raise ReconcileError(f"sources.toml source must be a table: {name}")
-        unknown = set(entry) - {"variants"}
+        unknown = set(entry) - {"variants", "upstream"}
         if unknown:
             raise ReconcileError(f"sources.toml source has unknown fields: {name}: {sorted(unknown)}")
+        if "upstream" in entry:
+            # A full SHA, so a moving ref like main cannot stand in for the fork point.
+            if not isinstance(entry["upstream"], str) or not re.fullmatch(r"[0-9a-f]{40}", entry["upstream"]):
+                raise ReconcileError(f"sources.toml upstream must be a full commit SHA: {name}")
+            upstreams[module] = entry["upstream"]
         variants = entry.get("variants", {})
         if not isinstance(variants, dict):
             raise ReconcileError(f"sources.toml variants must be a table: {name}")
@@ -250,7 +257,7 @@ def read_variants(root: Path, modules: dict[str, str]) -> dict[str, dict[str, st
             if not directory.is_dir() or directory.resolve() != directory.absolute():
                 raise ReconcileError(f"sources.toml variant tree is missing or traverses a symlink: {name}: {value}")
         result[module] = variants
-    return result
+    return result, upstreams
 
 
 def identity(file: Path) -> str:
@@ -353,7 +360,7 @@ def load_catalog(root: Path) -> Catalog:
 
 
 def discover_catalog(root: Path, modules: dict[str, str]) -> Catalog:
-    variants = read_variants(root, modules)
+    variants, upstreams = read_sources(root, modules)
     catalog = {}
     for module in sorted(modules):
         source = root / module
@@ -410,7 +417,7 @@ def discover_catalog(root: Path, modules: dict[str, str]) -> Catalog:
         catalog[module.removeprefix("sources/")] = SourceCatalog(
             {name: paths[0] for name, paths in candidates.items()}, invalid,
             {harness: variant_skills[tree] for harness, tree in trees.items()},
-            source.absolute(), frozenset(tracked),
+            source.absolute(), frozenset(tracked), upstreams.get(module),
         )
     return Catalog(catalog)
 
