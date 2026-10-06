@@ -545,14 +545,14 @@ class SelectorApp(App[bool]):
         # Mounting a long body takes over a second, so render only where the cursor rests.
         # Hidden, the stale body also stays out of every layout pass until then.
         body = self.query_one("#skill-body", SkillMarkdown)
-        self.workers.cancel_group(self, "body")
+        self.workers.cancel_group(body, "body")
         body.display = markdown == body.shown
         if not body.display:
-            self.run_worker(partial(self.render_body, markdown), group="body")
+            # Owned by the body, so the render is cancelled when the body unmounts at exit.
+            body.run_worker(partial(self.render_body, body, markdown), group="body")
 
-    async def render_body(self, markdown: str) -> None:
+    async def render_body(self, body: SkillMarkdown, markdown: str) -> None:
         await asyncio.sleep(0.08)
-        body = self.query_one("#skill-body", SkillMarkdown)
         await body.show(markdown)
         body.display = True
 
