@@ -23,6 +23,11 @@ _Avoid_: Inventory, available list
 The set of skills chosen to be installed.
 _Avoid_: Enabled skills, install list
 
+**Selection draft**:
+The selector's unsaved edits to the selection, compared against the file they
+were loaded from and against the committed selection.
+_Avoid_: Working selection, pending changes
+
 **Profile**:
 A named selection. Which machine, person, or harness uses a profile is a
 separate concern; v1 has exactly one profile, which is unnamed.
