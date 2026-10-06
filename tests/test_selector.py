@@ -167,15 +167,15 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(sources.current, "beta/tools")
             self.assertEqual(self.lines(app, "skills"), ["Maintenance", "○ gamma"])
             self.assertEqual(self.lines(app, "sources"), [
-                "0 matches · skills", "acme · 1/2", "1 match · tools", "beta · 0/2",
-                "1 match · more", "zebra · 0/1",
+                "0 matches · acme/skills", "1/2", "1 match · beta/tools", "0/2",
+                "1 match · zebra/more", "0/1",
             ])
             await pilot.press("down")
             self.assertIs(app.focused, skills)
             self.assertEqual(skills.current, "beta/tools:gamma")
             await pilot.press("space")
             self.assertIn("● selected\nbeta/tools:gamma", self.details(app))
-            self.assertIn("beta · 1/2", self.lines(app, "sources"))
+            self.assertEqual(self.lines(app, "sources")[2:4], ["1 match · beta/tools", "1/2"])
             await pilot.press("/")
             self.assertIs(app.focused, search)
             self.assertEqual(search.value, "GAMMA")
@@ -184,7 +184,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(search.value, "")
             await pilot.press(*"Maintenance")
             self.assertEqual(self.lines(app, "skills"), ["Maintenance", "● gamma", "○ omega"])
-            self.assertIn("2 matches · tools", self.lines(app, "sources"))
+            self.assertIn("2 matches · beta/tools", self.lines(app, "sources"))
             await pilot.press("enter")
             self.assertIs(app.focused, skills)
             self.assertIn("● selected\nbeta/tools:gamma", self.details(app))
@@ -263,7 +263,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
                 "alpha", "● selected", "acme/skills:alpha",
                 "Manual only: description not loaded into context",
                 "Same name in other sources: zebra/tools:alpha", "",
-                "Alpha description.", "", "alpha · 3 files",
+                "Alpha description.", "", "3 files · acme/skills/alpha",
             ])
             await pilot.press("down", "right", "space", "1", "left", "up")
             self.assertIn("○ not selected\nacme/skills:alpha", self.details(app))
@@ -271,7 +271,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(self.details(app).splitlines(), [
                 "alpha", "● selected", "zebra/tools:alpha",
                 "Same name in other sources: acme/skills:alpha", "",
-                "Other description.", "", "alpha · 1 file",
+                "Other description.", "", "1 file · zebra/tools/alpha",
             ])
             await pilot.press("right", "down")
             self.assertIn("○ not selected\nzebra/tools:broken\n\ndescription unreadable",
@@ -314,7 +314,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             file.write("\nlocal-file\n")
         app = selector.SelectorApp(root=worktree)
         async with app.run_test() as pilot:
-            self.assertEqual(self.lines(app, "sources"), ["skills", "acme · 0/2", "tools", "zebra · 1/2"])
+            self.assertEqual(self.lines(app, "sources"), ["acme/skills", "0/2", "zebra/tools", "1/2"])
             await pilot.press("down")
             self.assertEqual(self.lines(app, "skills"), ["○ gamma", "● omega"])
             await pilot.press("ctrl+s")

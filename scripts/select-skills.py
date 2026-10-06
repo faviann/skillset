@@ -390,15 +390,14 @@ class SelectorApp(App[bool]):
             count = sum(self.search_text in line.value.casefold() for line in off_catalog.values())
             matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
             rows.append(Row(NOT_IN_CATALOG, [Text(matches + NOT_IN_CATALOG),
-                                             Text(f"{selected}/{len(off_catalog)}", style=SECONDARY)]))
+                                             Text(f"  {selected}/{len(off_catalog)}", style=SECONDARY)]))
             if count:
                 matching_sources.append(NOT_IN_CATALOG)
         for source, skills in self.catalog.items():
-            owner, repo = source.split("/")
             selected = sum(f"{source}:{skill.name}" in self.draft for skill in skills)
             count = len(self.matching_skills(source))
             matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
-            rows.append(Row(source, [Text(matches + repo), Text(f"{owner} · {selected}/{len(skills)}", style=SECONDARY)]))
+            rows.append(Row(source, [Text(matches + source), Text(f"  {selected}/{len(skills)}", style=SECONDARY)]))
             if count:
                 matching_sources.append(source)
         sources = self.query_one("#sources", CatalogList)
@@ -480,12 +479,13 @@ class SelectorApp(App[bool]):
             await body.update("")
             return
         selected = key in self.draft
+        name_style = ACCENT if selected else SECONDARY
         self.query_one("#skill-state", Static).update(
             Text("● selected", style=ACCENT) if selected else Text("○ not selected", style=SECONDARY),
         )
         if key in self.draft.off_catalog:
             line = self.draft.off_catalog[key]
-            self.query_one("#skill-name", Static).update(Text(line.value))
+            self.query_one("#skill-name", Static).update(Text(line.value, style=name_style))
             metadata.update(Text.assemble(
                 (f"skills.txt:{line.number}", SECONDARY), "\n\n", line.error, "\n\n",
                 ("Can be deselected only.", SECONDARY),
@@ -503,11 +503,11 @@ class SelectorApp(App[bool]):
             notes.append("Same name in other sources: " + ", ".join(others))
         location = skill.path.relative_to(self.selection_catalog.sources[source].path).as_posix()
         files = f"{skill.file_count} {'file' if skill.file_count == 1 else 'files'}"
-        self.query_one("#skill-name", Static).update(Text(skill.name))
+        self.query_one("#skill-name", Static).update(Text(skill.name, style=name_style))
         metadata.update(Text.assemble(
             ("\n".join(notes), SECONDARY), "\n\n",
             ("description unreadable", SECONDARY) if skill.unreadable else skill.description, "\n\n",
-            (f"{'source root' if location == '.' else location} · {files}", SECONDARY),
+            (f"{files} · ", SECONDARY), source, ("" if location == "." else f"/{location}", SECONDARY),
         ))
         await body.update(skill.body)
 
