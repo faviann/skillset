@@ -33,6 +33,7 @@ from textual.widgets.markdown import MarkdownFence
 
 import reconcile_skills
 import skill_catalog
+from selection_draft import Blocked, Changes, CheckoutStore, Conflict, Refused, Replace, SelectionDraft
 
 ACCENT = "#D77757"
 SECONDARY = "#999999"
@@ -315,34 +316,14 @@ class SelectorApp(App[bool]):
         reconcile_skills.validate_sources(self.root, modules)
         self.selection_catalog = skill_catalog.discover_catalog(self.root, modules)
         self.catalog = display_catalog(self.root, self.selection_catalog)
-        self.load_selection()
+        self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
         self.not_installed = selection_differs_from_head(self.root)
         self.install_error: str | None = None
         self.install_check = None
-        self.source: str | None = NOT_IN_CATALOG if self.off_catalog else next(iter(self.catalog), None)
+        self.source: str | None = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
         self.search_text = ""
         self.theme = "textual-dark"
         self.ansi_color = True
-
-    def load_selection(self) -> None:
-        content = skill_catalog.read_selection_text(self.root)
-        committed = Counter(line.value for line in skill_catalog.parse_selection(
-            skill_catalog.git(["show", "HEAD:skills.txt"], cwd=self.root),
-        ))
-        selected: dict[str | int, str] = {}
-        off_catalog: dict[int, skill_catalog.SelectionLine] = {}
-        for line in skill_catalog.parse_selection(content):
-            error = line.error or skill_catalog.selection_error(line.value, self.selection_catalog)
-            if error:
-                off_catalog[line.number] = skill_catalog.SelectionLine(line.value, line.number, error, line.name)
-                selected[line.number] = line.value
-            else:
-                selected[line.value] = line.value
-        self.selected = selected
-        self.off_catalog = off_catalog
-        self.loaded_content = content
-        self.loaded = Counter(self.selected.values())
-        self.committed = committed
 
     def compose(self) -> ComposeResult:
         yield Static(id="title")
@@ -386,32 +367,28 @@ class SelectorApp(App[bool]):
         if error:
             self.query_one("#message", Static).update(Text(f"⎿ {error}"))
 
-    @property
-    def unsaved_count(self) -> int:
-        current = Counter(self.selected.values())
-        return (current - self.loaded).total() + (self.loaded - current).total()
-
     def refresh_title(self) -> None:
         self.query_one("#title", Static).update(Text.assemble(
             ("✻ ", ACCENT), ("Skill selector", "bold"),
-            (f"   {len(self.selected)} selected · {self.unsaved_count} unsaved", SECONDARY),
+            (f"   {len(self.draft)} selected · {self.draft.unsaved} unsaved", SECONDARY),
             (" · not installed" if self.not_installed else "", ACCENT),
         ))
 
     def fill_sources(self, *, keep_cursor: bool = False) -> None:
         rows = []
         matching_sources = []
-        if self.off_catalog:
-            selected = sum(key in self.selected for key in self.off_catalog)
-            count = sum(self.search_text in line.value.casefold() for line in self.off_catalog.values())
+        off_catalog = self.draft.off_catalog
+        if off_catalog:
+            selected = sum(key in self.draft for key in off_catalog)
+            count = sum(self.search_text in line.value.casefold() for line in off_catalog.values())
             matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
             rows.append(Row(NOT_IN_CATALOG, [Text(matches + NOT_IN_CATALOG),
-                                             Text(f"{selected}/{len(self.off_catalog)}", style=SECONDARY)]))
+                                             Text(f"{selected}/{len(off_catalog)}", style=SECONDARY)]))
             if count:
                 matching_sources.append(NOT_IN_CATALOG)
         for source, skills in self.catalog.items():
             owner, repo = source.split("/")
-            selected = sum(f"{source}:{skill.name}" in self.selected for skill in skills)
+            selected = sum(f"{source}:{skill.name}" in self.draft for skill in skills)
             count = len(self.matching_skills(source))
             matches = f"{count} match{'es' if count != 1 else ''} · " if self.search_text else ""
             rows.append(Row(source, [Text(matches + repo), Text(f"{owner} · {selected}/{len(skills)}", style=SECONDARY)]))
@@ -458,10 +435,10 @@ class SelectorApp(App[bool]):
     async def fill_skills(self, *, keep_cursor: bool = False) -> None:
         rows = []
         if self.source == NOT_IN_CATALOG:
-            for key, line in self.off_catalog.items():
+            for key, line in self.draft.off_catalog.items():
                 if self.search_text not in line.value.casefold():
                     continue
-                text = Text("● " if key in self.selected else "○ ", style=ACCENT if key in self.selected else SECONDARY)
+                text = Text("● " if key in self.draft else "○ ", style=ACCENT if key in self.draft else SECONDARY)
                 text.append(line.value, style="default")
                 rows.append(Row(key, [text, Text(line.error.replace("\n", " "), style=SECONDARY)]))
         group = ""
@@ -470,7 +447,7 @@ class SelectorApp(App[bool]):
                 group = skill.group
                 rows.append(Row(None, [Text(group, style=SECONDARY)]))
             key = f"{self.source}:{skill.name}"
-            selected = key in self.selected
+            selected = key in self.draft
             line = Text("● " if selected else "○ ", style=ACCENT if selected else SECONDARY)
             line.append(skill.name, style="default")
             if skill.manual_only:
@@ -492,17 +469,17 @@ class SelectorApp(App[bool]):
             metadata.update("")
             await body.update("")
             return
-        if key in self.off_catalog:
-            line = self.off_catalog[key]
+        if key in self.draft.off_catalog:
+            line = self.draft.off_catalog[key]
             metadata.update(Text("\n".join([
-                line.value, "Selected" if key in self.selected else "Not selected",
+                line.value, "Selected" if key in self.draft else "Not selected",
                 f"skills.txt:{line.number}: {line.error}", "Can be deselected only.",
             ])))
             await body.update("")
             return
         source, name = key.split(":")
         skill = next(skill for skill in self.catalog[source] if skill.name == name)
-        lines = [skill.name, key, "Selected" if key in self.selected else "Not selected"]
+        lines = [skill.name, key, "Selected" if key in self.draft else "Not selected"]
         if skill.manual_only:
             lines.append("Manual only: description not loaded into context")
         others = [f"{other}:{name}" for other, skills in self.catalog.items()
@@ -543,93 +520,78 @@ class SelectorApp(App[bool]):
         key = self.query_one("#skills", CatalogList).current
         if key is None:
             return
-        if key in self.selected:
-            del self.selected[key]
-        elif key in self.off_catalog:
-            self.query_one("#message", Static).update(Text(
-                "⎿ Cannot select: " + self.off_catalog[key].error,
-            ))
+        outcome = self.draft.toggle(key)
+        if isinstance(outcome, Refused):
+            self.query_one("#message", Static).update(Text("⎿ Cannot select: " + outcome.reason))
             return
-        else:
-            source, name = key.split(":")
-            other_key = next((selected_key for selected_key, value in self.selected.items()
-                              if value != key and value.partition(":")[2] == name), None)
-            if other_key is not None:
-                async def replace(choice: int | None) -> None:
-                    if choice == 1:
-                        del self.selected[other_key]
-                        self.selected[key] = key
-                        await self.refresh_selection()
+        if isinstance(outcome, Replace):
+            async def replace(choice: int | None) -> None:
+                if choice == 1:
+                    self.draft.toggle(key, replace=True)
+                    await self.refresh_selection()
 
-                self.push_screen(ChoiceDialog(f"Replace {name}?", [
-                    f"Yes, use {source}", f"No, keep {self.selected[other_key].split(':')[0]}",
-                ]), replace)
-                return
-            self.selected[key] = key
+            source, name = key.split(":")
+            self.push_screen(ChoiceDialog(f"Replace {name}?", [
+                f"Yes, use {source}", f"No, keep {outcome.current.split(':')[0]}",
+            ]), replace)
+            return
         await self.refresh_selection()
 
     async def action_save(self) -> None:
         if self.install_check is not None:
             await self.install_check.wait()
-        current = Counter(self.selected.values())
-        names = Counter(line.name
-                        for line in skill_catalog.parse_selection("\n".join(self.selected.values()))
-                        if line.name is not None)
-        duplicates = sorted(name for name, count in names.items() if count > 1)
-        if duplicates:
+        if duplicates := self.draft.duplicates:
             self.query_one("#message", Static).update(Text(
                 "⎿ Cannot save: same name selected more than once: " + ", ".join(duplicates),
             ))
             return
-        if current == self.committed and not self.unsaved_count and not self.not_installed:
+        changes = self.draft.changes
+        if not changes and not self.draft.unsaved and not self.not_installed:
             self.query_one("#message", Static).update("⎿ No changes to save.")
             return
-        details = [f"+ {value}" for value in sorted((current - self.committed).elements())]
-        details.extend(f"- {value}" for value in sorted((self.committed - current).elements()))
         reason = self.install_unavailable_reason()
-        install_label = "Save and install" if self.unsaved_count else "Install"
+        install_label = "Save and install" if self.draft.unsaved else "Install"
         self.push_screen(ChoiceDialog("Save these changes?", [install_label, "Save only", "Keep editing"],
-                                      "\n".join(details) or "No changes from the last commit.",
+                                      "\n".join(changes.lines()) or "No changes from the last commit.",
                                       disabled={1: reason} if reason else None),
                          self.save_choice)
 
     def install_unavailable_reason(self) -> str | None:
-        if any(key in self.selected for key in self.off_catalog):
-            return "deselect the skills under Not in catalog"
+        if blocker := self.draft.install_blocker:
+            return blocker
         try:
             require_install_checkout(self.root)
         except (reconcile_skills.ReconcileError, OSError) as error:
             return str(error)
-        return self.install_error if Counter(self.selected.values()) == self.committed else None
+        return self.install_error if not self.draft.changes else None
 
     def save_choice(self, choice: int | None) -> None:
         if choice in (1, 2):
             self.save_selection(install=choice == 1)
 
-    def save_selection(self, expected_content: str | None = None, *, install: bool = False) -> None:
-        """Every save action checks the disk content immediately before writing."""
+    def save_selection(self, overwrite: Conflict | None = None, *, install: bool = False) -> None:
         if install and (reason := self.install_unavailable_reason()):
             self.query_one("#message", Static).update(Text(f"⎿ Cannot install: {reason}"))
             return
         try:
-            content = skill_catalog.read_selection_text(self.root)
-            if content != (self.loaded_content if expected_content is None else expected_content):
-                async def conflict_choice(choice: int | None) -> None:
-                    if choice == 1:
-                        await self.reload_selection()
-                    elif choice == 2:
-                        self.save_selection(expected_content=content, install=install)
-
-                self.push_screen(ChoiceDialog("skills.txt changed on disk", ["Reload", "Overwrite"],
-                                              "Reload drops your unsaved changes. Overwrite replaces the file."),
-                                 conflict_choice)
-                return
-            if not install or self.unsaved_count or content != self.loaded_content:
-                self.loaded_content = skill_catalog.write_selection(self.root, self.selected.values())
+            outcome = self.draft.save(install=install, overwrite=overwrite)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not save: {error}"))
             return
-        self.loaded = Counter(self.selected.values())
+        if isinstance(outcome, Conflict):
+            async def conflict_choice(choice: int | None) -> None:
+                if choice == 1:
+                    await self.reload_selection()
+                elif choice == 2:
+                    self.save_selection(overwrite=outcome, install=install)
+
+            self.push_screen(ChoiceDialog("skills.txt changed on disk", ["Reload", "Overwrite"],
+                                          "Reload drops your unsaved changes. Overwrite replaces the file."),
+                             conflict_choice)
+            return
+        if isinstance(outcome, Blocked):
+            self.query_one("#message", Static).update(Text("⎿ Cannot save: " + outcome.reason))
+            return
         if install:
             self.exit(True)
             return
@@ -641,11 +603,11 @@ class SelectorApp(App[bool]):
 
     async def reload_selection(self) -> None:
         try:
-            self.load_selection()
+            self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
             return
-        self.source = NOT_IN_CATALOG if self.off_catalog else next(iter(self.catalog), None)
+        self.source = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
         self.not_installed = selection_differs_from_head(self.root)
         self.install_error = None
         self.install_check = None
@@ -664,7 +626,7 @@ class SelectorApp(App[bool]):
             else:
                 self.action_column("skills")
             return
-        if not self.unsaved_count:
+        if not self.draft.unsaved:
             self.exit()
             return
         self.push_screen(ChoiceDialog("Quit without saving?", [
@@ -713,22 +675,15 @@ def install_saved_selection(root: Path) -> int:
     """Run only after the TUI closes, with hooks and signing in the terminal."""
     try:
         require_install_checkout(root)
-        committed = Counter(line.value for line in skill_catalog.parse_selection(
-            skill_catalog.git(["show", "HEAD:skills.txt"], cwd=root),
-        ))
-        selected = Counter(line.value for line in skill_catalog.parse_selection(
-            skill_catalog.read_selection_text(root),
-        ))
-        added, removed = selected - committed, committed - selected
-        changes = [f"+ {value}" for value in sorted(added.elements())]
-        changes.extend(f"- {value}" for value in sorted(removed.elements()))
-        message = f"Update skill selection (+{added.total()} -{removed.total()})"
+        changes = Changes.between(skill_catalog.git(["show", "HEAD:skills.txt"], cwd=root),
+                                  skill_catalog.read_selection_text(root))
+        message = f"Update skill selection ({changes.summary})"
         # Match the checkout inspected by the catalog's Git reads, while
         # retaining terminal streams for hooks and interactive signing.
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         if selection_differs_from_head(root):
             commit = subprocess.run(
-                ["git", "commit", "-m", message, "-m", "\n".join(changes), "--only", "--", "skills.txt"],
+                ["git", "commit", "-m", message, "-m", "\n".join(changes.lines()), "--only", "--", "skills.txt"],
                 cwd=root, env=env, check=False,
             )
             if commit.returncode:

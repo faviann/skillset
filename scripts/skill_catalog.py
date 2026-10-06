@@ -370,9 +370,14 @@ def selection_error(value: str, catalog: dict[str, SourceCatalog]) -> str:
     return ""
 
 
+def format_selection(selection: Iterable[str]) -> str:
+    """Render selection lines in the selector's stable format."""
+    return "\n".join([SELECTION_HEADER, *sorted(selection)]) + "\n"
+
+
 def write_selection(root: Path, selection: Iterable[str]) -> str:
     """Write selection lines in the selector's stable format and return that text."""
-    content = "\n".join([SELECTION_HEADER, *sorted(selection)]) + "\n"
+    content = format_selection(selection)
     (root / SELECTION_PATH).write_text(content, encoding="utf-8")
     return content
 
