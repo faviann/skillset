@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import tomllib
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -308,8 +309,14 @@ def skill_name(skill_dir: Path) -> str:
     return name
 
 
+def path_prefixes(paths: Iterable[Path]) -> Counter[Path]:
+    """Count paths under each prefix: counts[p] == sum(path.is_relative_to(p) for path in paths)."""
+    return Counter(prefix for path in paths for prefix in (path, *path.parents))
+
+
 def validate_skill(
-    root: Path, module: str, value: str, tracked: set[str], extras: set[str],
+    root: Path, module: str, value: str, tracked: set[str],
+    descriptors: Counter[Path], extras: Counter[Path],
 ) -> tuple[str, str]:
     """Validate one skill directory under its configured source."""
     skill_dir = root / value
@@ -322,13 +329,12 @@ def validate_skill(
     if not skill_dir.is_dir():
         raise ReconcileError(f"selected skill directory is missing: {value}")
     # Reject any selected subtree content Git does not track, including ignored files.
-    if any(Path(path).is_relative_to(rel) for path in extras):
+    if extras[rel]:
         raise ReconcileError(f"selected skill contains untracked or ignored content: {value}")
     descriptor = str(rel / "SKILL.md")
     if descriptor not in tracked:
         raise ReconcileError(f"selected SKILL.md is not tracked: {value}")
-    if sum(Path(path).is_relative_to(rel) and Path(path).name == "SKILL.md"
-           for path in tracked) != 1:
+    if descriptors[rel] != 1:
         raise ReconcileError(f"selected directory contains additional SKILL.md files: {value}")
     for directory, children, _ in os.walk(skill_dir, followlinks=False):
         children.sort()
@@ -368,6 +374,9 @@ def discover_catalog(root: Path, modules: dict[str, str]) -> Catalog:
         invalid: dict[str, list[InvalidSkill]] = {}
         variant_skills: dict[str, dict[str, str]] = {tree: {} for tree in trees.values()}
         tracked_paths = set(tracked)
+        # Prefix counts keep per-skill subtree checks linear in the source size.
+        descriptors = path_prefixes(Path(path) for path in tracked if Path(path).name == "SKILL.md")
+        extra_prefixes = path_prefixes(map(Path, extras))
         for path in sorted(tracked):
             if Path(path).name != "SKILL.md":
                 continue
@@ -375,7 +384,8 @@ def discover_catalog(root: Path, modules: dict[str, str]) -> Catalog:
             directory = (source / path).parent
             value = directory.relative_to(root).as_posix()
             try:
-                name, target = validate_skill(root, module, value, tracked_paths, extras)
+                name, target = validate_skill(root, module, value, tracked_paths,
+                                              descriptors, extra_prefixes)
             except ReconcileError as error:
                 if matching_trees:
                     raise ReconcileError(f"invalid variant skill in {value}: {error}") from error

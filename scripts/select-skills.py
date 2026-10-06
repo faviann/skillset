@@ -79,10 +79,10 @@ def display_catalog(catalog: skill_catalog.Catalog) -> dict[str, list[Skill]]:
         paths = list(source.skills.values())
         common_root = Path(os.path.commonpath([Path(path).parent for path in paths])) if paths else source.path
         skills = [display_skill(name, path, common_root) for name, path in source.skills.items()]
-        tracked = [source.path / path for path in source.tracked]
+        files = skill_catalog.path_prefixes(source.path / path for path in source.tracked)
         groups = Counter(skill.group for skill in skills)
         for skill in skills:
-            skill.file_count = sum(path.is_relative_to(skill.path) for path in tracked)
+            skill.file_count = files[skill.path]
             if groups[skill.group] == 1:
                 skill.group = ""
         result[source_name] = sorted(
