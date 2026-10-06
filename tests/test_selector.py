@@ -10,7 +10,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from xml.etree import ElementTree
 
 from markdown_it import MarkdownIt
 
@@ -97,9 +96,6 @@ class DisplayCatalogTests(SkillsetCase):
 
 
 class SelectorTests(SkillsetCase, PilotTestCase):
-    def screen_text(self, app) -> str:
-        return "".join(ElementTree.fromstring(app.export_screenshot()).itertext())
-
     async def test_keyboard_navigation_skips_headings_and_leaves_selection_unchanged(self) -> None:
         fixture = self.fixture()
         for path in ("skills/alpha", "skills/beta"):
@@ -201,7 +197,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(search.value, "jkh")
             self.assertEqual(self.lines(app, "skills"), ["No matching skills."])
             self.assertEqual(self.text(app, "#skill-metadata"), "")
-            self.assertEqual(self.body_text(app), "")
+            self.assertEqual(await self.body_text(pilot), "")
             await pilot.press("escape", "escape", "escape")
             self.assertEqual(self.text(app, "#dialog-title"), "Quit without saving?")
             await pilot.press("z", "/")
@@ -290,19 +286,21 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         self.pin_changes(fixture, "acme/skills")
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
-            body = self.body_text(app)
+            body = await self.body_text(pilot)
             for text in ("BodyHeading", "A bold paragraph.", "ListEntry", "CodeExample", "EndOfSkill"):
                 self.assertIn(text, body)
             self.assertNotIn("MetadataOnly", body)
             self.assertNotIn("**bold**", body)
-            self.assertNotIn("EndOfSkill", self.screen_text(app))
+            self.assertNotIn("EndOfSkill", await self.screen_text(pilot))
             await pilot.press("right", "tab", "end")
-            await pilot.pause()
-            self.assertIn("EndOfSkill", self.screen_text(app))
+            self.assertIn("EndOfSkill", await self.screen_text(pilot))
             await pilot.press("right", "down")
-            self.assertIn("beta", self.body_text(app))
-            self.assertNotIn("EndOfSkill", self.body_text(app))
+            self.assertIn("beta", await self.body_text(pilot))
+            self.assertNotIn("EndOfSkill", await self.body_text(pilot))
             self.assertIn("acme/skills:beta", self.text(app, "#skill-metadata"))
+            await pilot.press("up", "space")
+            self.assertIn("BodyHeading", await self.body_text(pilot))
+            self.assertIn("BodyHeading", await self.screen_text(pilot))
 
     async def test_dirty_linked_worktree_can_browse_its_own_selection(self) -> None:
         fixture = self.fixture()
@@ -455,10 +453,9 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             await pilot.press("ctrl+s")
-            self.assertNotIn(values[-1], self.screen_text(app))
+            self.assertNotIn(values[-1], await self.screen_text(pilot))
             await pilot.press("tab", "end")
-            await pilot.pause()
-            self.assertIn(values[-1], self.screen_text(app))
+            self.assertIn(values[-1], await self.screen_text(pilot))
             await pilot.press("2")
             self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
             self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], values)
@@ -536,7 +533,7 @@ class SelectorRealDataTests(PilotTestCase):
                 self.assertEqual(sources.current, source)
                 self.assertEqual(skills.current, key)
                 self.assertIn(key, self.text(app, "#skill-metadata"))
-                self.assertTrue(self.body_text(app))
+                self.assertTrue(await self.body_text(pilot))
             await pilot.press("escape")
             self.assertFalse(app.is_running)
 

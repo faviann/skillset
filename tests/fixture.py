@@ -10,16 +10,20 @@ from pathlib import Path
 
 CHECKOUT = Path(__file__).resolve().parent.parent
 
+# A commit spawns a detached `git maintenance run --auto` that can still be
+# writing under .git while a test's temporary directory is being removed.
+QUIET_GIT = {"maintenance.auto": "false", "gc.auto": "0"}
+
 
 def git_environment() -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    env.update({
-        "GIT_OPTIONAL_LOCKS": "0",
-        # Submodule helpers inherit this, including later updates from a clone.
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "protocol.file.allow",
-        "GIT_CONFIG_VALUE_0": "always",
-    })
+    # Submodule helpers inherit these, including later updates from a clone.
+    config = {"protocol.file.allow": "always", **QUIET_GIT}
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_CONFIG_COUNT"] = str(len(config))
+    for index, (key, value) in enumerate(config.items()):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
     return env
 
 
@@ -36,6 +40,9 @@ def git(args: list[str], cwd: Path, *, ok: bool = True) -> str:
 def configure_git(repo: Path) -> None:
     git(["config", "user.name", "Skillset integration tests"], repo)
     git(["config", "user.email", "skillset-tests@example.invalid"], repo)
+    # The selector commits with the test process's environment, not git_environment().
+    for key, value in QUIET_GIT.items():
+        git(["config", key, value], repo)
 
 
 def write_skill(repo: Path, path: str, *, identity: str | None = None) -> Path:

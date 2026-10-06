@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import sys
 import unittest
+from xml.etree import ElementTree
 
 from fixture import CHECKOUT
 
@@ -32,5 +33,27 @@ class PilotTestCase(unittest.IsolatedAsyncioTestCase):
     def lines(self, app, column: str) -> list[str]:
         return [line.removeprefix("❯ ").strip() for line in self.text(app, f"#{column} RowsView").splitlines()]
 
-    def body_text(self, app) -> str:
-        return "\n".join(str(widget.content) for widget in app.query("#skill-body Static"))
+    async def settle(self, pilot) -> None:
+        """Return once every queued message is handled, no body render is pending, and the screen is repainted.
+
+        A highlight reaches the app through a chain of messages, and the body then
+        renders in a delayed worker, so neither one pause nor one worker wait suffices.
+        """
+        app = pilot.app
+        while True:
+            await pilot.pause()
+            rendering = [worker.wait() for worker in app.workers if worker.group == "body" and not worker.is_finished]
+            if rendering:
+                await asyncio.gather(*rendering, return_exceptions=True)
+            elif not any(node.message_queue_size for node in (app, *app.screen.walk_children(with_self=True))):
+                return
+
+    async def body_text(self, pilot) -> str:
+        """The rendered body of the current skill."""
+        await self.settle(pilot)
+        return "\n".join(str(widget.content) for widget in pilot.app.query("#skill-body Static"))
+
+    async def screen_text(self, pilot) -> str:
+        """Every character on screen, once pending renders have painted."""
+        await self.settle(pilot)
+        return "".join(ElementTree.fromstring(pilot.app.export_screenshot()).itertext())
