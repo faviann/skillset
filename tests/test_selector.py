@@ -201,7 +201,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(search.value, "jkh")
             self.assertEqual(self.lines(app, "skills"), ["No matching skills."])
             self.assertEqual(self.text(app, "#skill-metadata"), "")
-            self.assertEqual(self.body_text(app), "")
+            self.assertEqual(await self.body_text(app), "")
             await pilot.press("escape", "escape", "escape")
             self.assertEqual(self.text(app, "#dialog-title"), "Quit without saving?")
             await pilot.press("z", "/")
@@ -290,7 +290,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         self.pin_changes(fixture, "acme/skills")
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
-            body = self.body_text(app)
+            body = await self.body_text(app)
             for text in ("BodyHeading", "A bold paragraph.", "ListEntry", "CodeExample", "EndOfSkill"):
                 self.assertIn(text, body)
             self.assertNotIn("MetadataOnly", body)
@@ -300,9 +300,12 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             await pilot.pause()
             self.assertIn("EndOfSkill", self.screen_text(app))
             await pilot.press("right", "down")
-            self.assertIn("beta", self.body_text(app))
-            self.assertNotIn("EndOfSkill", self.body_text(app))
+            self.assertIn("beta", await self.body_text(app))
+            self.assertNotIn("EndOfSkill", await self.body_text(app))
             self.assertIn("acme/skills:beta", self.text(app, "#skill-metadata"))
+            await pilot.press("up", "space")
+            self.assertIn("BodyHeading", await self.body_text(app))
+            self.assertIn("BodyHeading", self.screen_text(app))
 
     async def test_dirty_linked_worktree_can_browse_its_own_selection(self) -> None:
         fixture = self.fixture()
@@ -536,7 +539,7 @@ class SelectorRealDataTests(PilotTestCase):
                 self.assertEqual(sources.current, source)
                 self.assertEqual(skills.current, key)
                 self.assertIn(key, self.text(app, "#skill-metadata"))
-                self.assertTrue(self.body_text(app))
+                self.assertTrue(await self.body_text(app))
             await pilot.press("escape")
             self.assertFalse(app.is_running)
 

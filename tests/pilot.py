@@ -32,5 +32,7 @@ class PilotTestCase(unittest.IsolatedAsyncioTestCase):
     def lines(self, app, column: str) -> list[str]:
         return [line.removeprefix("❯ ").strip() for line in self.text(app, f"#{column} RowsView").splitlines()]
 
-    def body_text(self, app) -> str:
+    async def body_text(self, app) -> str:
+        """The rendered body, once the debounced render for the current skill has mounted."""
+        await app.workers.wait_for_complete()
         return "\n".join(str(widget.content) for widget in app.query("#skill-body Static"))

@@ -7,17 +7,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 # A symlink in PATH must still import from the checkout containing this script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import yaml
+from markdown_it import MarkdownIt
 from rich.cells import cell_len
 from rich.text import Text
 from textual import on
@@ -145,9 +148,10 @@ class CatalogList(VerticalScroll, can_focus=True):
                            next((i for i, row in enumerate(rows) if row.key is not None), None))
         if not keep_cursor:
             self.scroll_home(animate=False)
-        self.redraw()
+        self.redraw(layout=True)
 
-    def redraw(self) -> None:
+    def redraw(self, *, layout: bool = False) -> None:
+        # Moving the pointer keeps every row's size, so it skips a layout pass over the whole screen.
         lines = []
         for i, row in enumerate(self.rows):
             for number, line in enumerate(row.lines):
@@ -155,7 +159,7 @@ class CatalogList(VerticalScroll, can_focus=True):
                 if row.key is not None and i == self.cursor and number == 0:
                     pointer = Text("❯ ", style=f"bold {ACCENT}" if self.has_focus else SECONDARY)
                 lines.append(pointer + line)
-        self.query_one(RowsView).update(Text("\n").join(lines))
+        self.query_one(RowsView).update(Text("\n").join(lines), layout=layout)
 
     def highlight(self, index: int) -> None:
         self.cursor = index
@@ -260,6 +264,19 @@ class SkillCodeBlock(MarkdownFence):
 class SkillMarkdown(Markdown):
     BLOCKS = {**Markdown.BLOCKS, "fence": SkillCodeBlock, "code_block": SkillCodeBlock}
 
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.shown: str | None = ""
+
+    async def show(self, markdown: str) -> None:
+        """Mount a few blocks at a time, so keys are handled while a long body mounts."""
+        self.shown = None
+        await self.remove_children()
+        blocks = list(self._parse_markdown(MarkdownIt("gfm-like").parse(markdown)))
+        for start in range(0, len(blocks), 8):
+            await self.mount_all(blocks[start:start + 8])
+        self.shown = markdown
+
 
 class SelectorApp(App[bool]):
     TITLE = "Skill selector"
@@ -276,6 +293,8 @@ class SelectorApp(App[bool]):
     #skill-column { width: 1fr; }
     #details { width: 2fr; }
     #details {
+        /* A body appearing must not narrow the pane and lay every block out twice. */
+        scrollbar-gutter: stable;
         scrollbar-size-vertical: 1;
         scrollbar-background: transparent;
         scrollbar-color: #999999;
@@ -360,13 +379,13 @@ class SelectorApp(App[bool]):
         yield Static(id="message")
         yield Static(id="hints")
 
-    async def on_mount(self) -> None:
+    def on_mount(self) -> None:
         # Pointer, scrollbar and padding take 5 cells; past the cap, rows truncate.
         names = [NOT_IN_CATALOG, *self.catalog]
         self.query_one("#source-column").styles.width = min(max(map(cell_len, names)) + 5, 48)
         self.refresh_title()
         self.fill_sources()
-        await self.fill_skills()
+        self.fill_skills()
         self.query_one("#sources", CatalogList).focus()
         if not self.not_installed:
             self.install_check = self.run_worker(self.check_install_status, thread=True)
@@ -420,10 +439,10 @@ class SelectorApp(App[bool]):
                        for field in (skill.name, source, skill.group, skill.description))]
 
     @on(Input.Changed, "#search")
-    async def search_changed(self, event: Input.Changed) -> None:
+    def search_changed(self, event: Input.Changed) -> None:
         self.search_text = event.value.strip().casefold()
         self.fill_sources(keep_cursor=True)
-        await self.fill_skills(keep_cursor=True)
+        self.fill_skills(keep_cursor=True)
 
     @on(Input.Submitted, "#search")
     def search_submitted(self) -> None:
@@ -446,7 +465,7 @@ class SelectorApp(App[bool]):
         event.stop()
         event.prevent_default()
 
-    async def fill_skills(self, *, keep_cursor: bool = False) -> None:
+    def fill_skills(self, *, keep_cursor: bool = False) -> None:
         rows = []
         if self.source == NOT_IN_CATALOG:
             for key, line in self.draft.off_catalog.items():
@@ -472,20 +491,19 @@ class SelectorApp(App[bool]):
             rows.append(Row(None, [Text(empty, style=SECONDARY)]))
         self.query_one("#skills", CatalogList).set_rows(rows, keep_cursor=keep_cursor)
         self.query_one("#skill-heading", Static).update(self.source or "Skills")
-        await self.refresh_details()
+        self.refresh_details()
 
-    async def refresh_details(self) -> None:
+    def refresh_details(self) -> None:
         key = self.query_one("#skills", CatalogList).current
         metadata = self.query_one("#skill-metadata", Static)
         foot = self.query_one("#skill-foot", Static)
-        body = self.query_one("#skill-body", Markdown)
         details = self.query_one("#details", VerticalScroll)
         details.scroll_home(animate=False)
         details.set_class(key is None, "-empty")
         if key is None:
             for part in ("#skill-name", "#skill-state", "#skill-metadata", "#skill-foot"):
                 self.query_one(part, Static).update("")
-            await body.update("")
+            self.show_body("")
             return
         selected = key in self.draft
         name_style = ACCENT if selected else SECONDARY
@@ -499,7 +517,7 @@ class SelectorApp(App[bool]):
                 (f"skills.txt:{line.number}", SECONDARY), "\n\n", line.error,
             ))
             foot.update(Text("Can be deselected only.", style=SECONDARY))
-            await body.update("")
+            self.show_body("")
             return
         source, name = key.split(":")
         skill = next(skill for skill in self.catalog[source] if skill.name == name)
@@ -521,31 +539,46 @@ class SelectorApp(App[bool]):
         foot.update(Text.assemble(
             (f"{files} · ", SECONDARY), source, ("" if location == "." else f"/{location}", SECONDARY),
         ))
-        await body.update(skill.body)
+        self.show_body(skill.body)
+
+    def show_body(self, markdown: str) -> None:
+        # Mounting a long body takes over a second, so render only where the cursor rests.
+        # Hidden, the stale body also stays out of every layout pass until then.
+        body = self.query_one("#skill-body", SkillMarkdown)
+        self.workers.cancel_group(self, "body")
+        body.display = markdown == body.shown
+        if not body.display:
+            self.run_worker(partial(self.render_body, markdown), group="body")
+
+    async def render_body(self, markdown: str) -> None:
+        await asyncio.sleep(0.08)
+        body = self.query_one("#skill-body", SkillMarkdown)
+        await body.show(markdown)
+        body.display = True
 
     @on(CatalogList.Highlighted, "#sources")
-    async def source_highlighted(self, event: CatalogList.Highlighted) -> None:
+    def source_highlighted(self, event: CatalogList.Highlighted) -> None:
         if event.control.current != self.source:
             self.source = event.control.current
-            await self.fill_skills()
+            self.fill_skills()
 
     @on(CatalogList.Highlighted, "#skills")
-    async def skill_highlighted(self) -> None:
-        await self.refresh_details()
+    def skill_highlighted(self) -> None:
+        self.refresh_details()
 
-    async def refresh_selection(self) -> None:
+    def refresh_selection(self) -> None:
         self.refresh_title()
         self.fill_sources(keep_cursor=True)
-        await self.fill_skills(keep_cursor=True)
+        self.fill_skills(keep_cursor=True)
 
-    async def action_enter(self) -> None:
+    def action_enter(self) -> None:
         if self.focused is self.query_one("#skills", CatalogList):
-            await self.action_toggle()
+            self.action_toggle()
         else:
             self.action_column("skills")
 
     @on(CatalogList.Activated, "#skills")
-    async def action_toggle(self) -> None:
+    def action_toggle(self) -> None:
         key = self.query_one("#skills", CatalogList).current
         if key is None:
             return
@@ -554,17 +587,17 @@ class SelectorApp(App[bool]):
             self.query_one("#message", Static).update(Text("⎿ Cannot select: " + outcome.reason))
             return
         if isinstance(outcome, Replace):
-            async def replace(choice: int | None) -> None:
+            def replace(choice: int | None) -> None:
                 if choice == 1:
                     self.draft.toggle(key, replace=True)
-                    await self.refresh_selection()
+                    self.refresh_selection()
 
             source, name = key.split(":")
             self.push_screen(ChoiceDialog(f"Replace {name}?", [
                 f"Yes, use {source}", f"No, keep {outcome.current.split(':')[0]}",
             ]), replace)
             return
-        await self.refresh_selection()
+        self.refresh_selection()
 
     async def action_save(self) -> None:
         if self.install_check is not None:
@@ -603,9 +636,9 @@ class SelectorApp(App[bool]):
             self.query_one("#message", Static).update(Text(f"⎿ Could not save: {error}"))
             return
         if isinstance(outcome, Conflict):
-            async def conflict_choice(choice: int | None) -> None:
+            def conflict_choice(choice: int | None) -> None:
                 if choice == 1:
-                    await self.reload_selection()
+                    self.reload_selection()
                 elif choice == 2:
                     self.save_selection(overwrite=outcome, install=install)
 
@@ -625,7 +658,7 @@ class SelectorApp(App[bool]):
         self.refresh_title()
         self.query_one("#message", Static).update("⎿ Saved. Not installed yet.")
 
-    async def reload_selection(self) -> None:
+    def reload_selection(self) -> None:
         try:
             self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
         except (reconcile_skills.ReconcileError, OSError) as error:
@@ -639,7 +672,7 @@ class SelectorApp(App[bool]):
             self.install_check = self.run_worker(self.check_install_status, thread=True)
         self.refresh_title()
         self.fill_sources()
-        await self.fill_skills()
+        self.fill_skills()
         self.query_one("#message", Static).update("⎿ Reloaded skills.txt. Unsaved changes discarded.")
 
     def action_quit(self) -> None:
