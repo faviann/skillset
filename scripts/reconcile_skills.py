@@ -18,12 +18,10 @@ from skill_catalog import (
     NAME_PATTERN,
     SELECTION_PATH,
     ReconcileError,
-    discover_catalog,
     git,
     identity,
-    parse_modules,
-    selected_skills,
-    validate_sources,
+    load_catalog,
+    read_selection_text,
 )
 
 INSTALL_DIRS = tuple(INSTALL_HARNESSES)
@@ -186,10 +184,9 @@ def local_collision(desired: set[str], retiring: set[Path]) -> None:
 
 def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str]]:
     head = require_primary_checkout(root)
-    modules = parse_modules(root)
-    validate_sources(root, modules)
+    catalog = load_catalog(root)
     ensure_skillset_committed(root)
-    return head, selected_skills(root, discover_catalog(root, modules))
+    return head, catalog.resolve(read_selection_text(root)).install_targets()
 
 
 def build_plan(root: Path) -> Plan:

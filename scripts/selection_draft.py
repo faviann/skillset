@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Protocol
 
 import skill_catalog
-from skill_catalog import SelectionLine, SourceCatalog
+from skill_catalog import Catalog, ResolvedLine
 
 # A catalog skill is keyed by its "owner/repo:name" value, an off-catalog line by its line number.
 Key = str | int
@@ -134,7 +134,7 @@ class SelectionDraft:
     Every save re-reads the store and refuses to write over a change it did not load.
     """
 
-    def __init__(self, store: Store, selected: dict[Key, str], off_catalog: dict[int, SelectionLine],
+    def __init__(self, store: Store, selected: dict[Key, str], off_catalog: dict[int, ResolvedLine],
                  content: str, head: Counter[str]) -> None:
         self._store = store
         self._selected = selected
@@ -144,15 +144,14 @@ class SelectionDraft:
         self._head = head
 
     @classmethod
-    def load(cls, store: Store, catalog: Mapping[str, SourceCatalog]) -> SelectionDraft:
+    def load(cls, store: Store, catalog: Catalog) -> SelectionDraft:
         content = store.read()
         head = _values(store.head())
         selected: dict[Key, str] = {}
-        off_catalog: dict[int, SelectionLine] = {}
-        for line in skill_catalog.parse_selection(content):
-            error = line.error or skill_catalog.selection_error(line.value, catalog)
-            if error:
-                off_catalog[line.number] = SelectionLine(line.value, line.number, error, line.name)
+        off_catalog: dict[int, ResolvedLine] = {}
+        for line in catalog.resolve(content).lines:
+            if line.error:
+                off_catalog[line.number] = line
                 selected[line.number] = line.value
             else:
                 selected[line.value] = line.value
@@ -166,7 +165,7 @@ class SelectionDraft:
         return len(self._selected)
 
     @property
-    def off_catalog(self) -> Mapping[int, SelectionLine]:
+    def off_catalog(self) -> Mapping[int, ResolvedLine]:
         """Every off-catalog line from the last load, in file order, with its error filled in."""
         return self._off_catalog
 

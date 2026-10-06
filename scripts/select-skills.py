@@ -73,20 +73,19 @@ def display_skill(name: str, path: str, common_root: Path) -> Skill:
     return skill
 
 
-def display_catalog(root: Path, catalog: dict[str, skill_catalog.SourceCatalog]) -> dict[str, list[Skill]]:
+def display_catalog(catalog: skill_catalog.Catalog) -> dict[str, list[Skill]]:
     result = {}
-    for module, source in catalog.items():
+    for source_name, source in catalog.sources.items():
         paths = list(source.skills.values())
-        common_root = Path(os.path.commonpath([Path(path).parent for path in paths])) if paths else root / module
+        common_root = Path(os.path.commonpath([Path(path).parent for path in paths])) if paths else source.path
         skills = [display_skill(name, path, common_root) for name, path in source.skills.items()]
-        tracked = [root / module / path for path in
-                   skill_catalog.git(["ls-files", "-z"], cwd=root / module).split("\0") if path]
+        tracked = [source.path / path for path in source.tracked]
         groups = Counter(skill.group for skill in skills)
         for skill in skills:
             skill.file_count = sum(path.is_relative_to(skill.path) for path in tracked)
             if groups[skill.group] == 1:
                 skill.group = ""
-        result[module.removeprefix("sources/")] = sorted(
+        result[source_name] = sorted(
             skills, key=lambda skill: (skill.group.casefold(), skill.group, skill.name),
         )
     return dict(sorted(result.items(), key=lambda item: (item[0].casefold(), item[0])))
@@ -312,10 +311,8 @@ class SelectorApp(App[bool]):
         super().__init__()
         self.root = (root or Path(__file__).resolve().parent.parent).resolve()
         # Browsing needs source validation, not the reconciler's deployment gate.
-        modules = reconcile_skills.parse_modules(self.root)
-        reconcile_skills.validate_sources(self.root, modules)
-        self.selection_catalog = skill_catalog.discover_catalog(self.root, modules)
-        self.catalog = display_catalog(self.root, self.selection_catalog)
+        self.selection_catalog = skill_catalog.load_catalog(self.root)
+        self.catalog = display_catalog(self.selection_catalog)
         self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
         self.not_installed = skill_catalog.selection_uncommitted(self.root)
         self.install_error: str | None = None

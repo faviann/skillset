@@ -7,7 +7,7 @@ import re
 import subprocess
 import tomllib
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z", re.ASCII)
@@ -39,6 +39,79 @@ class SourceCatalog:
     skills: dict[str, str]
     invalid: dict[str, list[InvalidSkill]]
     variants: dict[str, dict[str, str]]
+    path: Path = Path()
+    tracked: frozenset[str] = frozenset()
+
+    def targets(self, name: str) -> dict[Path, str]:
+        result = {}
+        for directory, harnesses in INSTALL_HARNESSES.items():
+            # Choose the tree first: a gap in it uses canonical, not a later tree.
+            copies = next((self.variants[harness] for harness in harnesses
+                           if harness in self.variants), {})
+            result[directory] = copies.get(name, self.skills[name])
+        return result
+
+
+@dataclass(frozen=True)
+class ResolvedLine:
+    value: str
+    number: int
+    name: str | None
+    error: str = ""
+    syntax_error: bool = False
+    targets: dict[Path, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Resolution:
+    lines: tuple[ResolvedLine, ...]
+
+    def install_targets(self) -> dict[tuple[Path, str], str]:
+        """Raise the first syntax error, else the first catalog or same-name error."""
+        for line in self.lines:
+            if line.syntax_error:
+                raise ReconcileError(f"{SELECTION_PATH}:{line.number}: {line.error}")
+        names: dict[str, str] = {}
+        result = {}
+        for line in self.lines:
+            location = f"{SELECTION_PATH}:{line.number}"
+            if line.error:
+                raise ReconcileError(f"{location}: {line.error}")
+            if line.name in names:
+                raise ReconcileError(f"{location}: same name selected from two sources: {line.name}\n"
+                                     f"  {names[line.name]}\n  {line.value}")
+            names[line.name] = line.value
+            for directory, target in line.targets.items():
+                result[directory, line.name] = target
+        return dict(sorted(result.items()))
+
+
+@dataclass(frozen=True)
+class Catalog:
+    sources: dict[str, SourceCatalog]
+
+    def resolve(self, text: str) -> Resolution:
+        """Resolve every selection line, each with its own error or install targets."""
+        lines = []
+        for line in parse_selection(text):
+            if line.error:
+                lines.append(ResolvedLine(line.value, line.number, line.name, line.error, syntax_error=True))
+                continue
+            source_name, name = line.value.split(":")
+            source = self.sources.get(source_name)
+            error = ""
+            if source is None:
+                error = f"unknown source: {source_name}"
+            elif name not in source.skills:
+                invalid = source.invalid.get(name, [])
+                if invalid:
+                    reasons = "\n  ".join(entry.error for entry in invalid)
+                    error = f"selected name is invalid: {line.value}\n  {reasons}"
+                else:
+                    error = f"name is missing at the pinned commit: {line.value}"
+            lines.append(ResolvedLine(line.value, line.number, name, error,
+                                      targets={} if error else source.targets(name)))
+        return Resolution(tuple(lines))
 
 
 @dataclass(frozen=True)
@@ -267,7 +340,13 @@ def validate_skill(
     return name, str(skill_dir.absolute())
 
 
-def discover_catalog(root: Path, modules: dict[str, str]) -> dict[str, SourceCatalog]:
+def load_catalog(root: Path) -> Catalog:
+    modules = parse_modules(root)
+    validate_sources(root, modules)
+    return discover_catalog(root, modules)
+
+
+def discover_catalog(root: Path, modules: dict[str, str]) -> Catalog:
     variants = read_variants(root, modules)
     catalog = {}
     for module in sorted(modules):
@@ -318,11 +397,12 @@ def discover_catalog(root: Path, modules: dict[str, str]) -> dict[str, SourceCat
             copies = "\n".join(f"  {name}:\n    " + "\n    ".join(paths)
                                for name, paths in repeats.items())
             raise ReconcileError(f"undeclared repeated canonical skill names in {module}:\n{copies}")
-        catalog[module] = SourceCatalog(
+        catalog[module.removeprefix("sources/")] = SourceCatalog(
             {name: paths[0] for name, paths in candidates.items()}, invalid,
             {harness: variant_skills[tree] for harness, tree in trees.items()},
+            source.absolute(), frozenset(tracked),
         )
-    return catalog
+    return Catalog(catalog)
 
 
 def read_selection_text(root: Path) -> str:
@@ -334,11 +414,6 @@ def read_selection_text(root: Path) -> str:
         return selection.read_bytes().decode("utf-8")
     except (OSError, UnicodeError) as error:
         raise ReconcileError(f"could not read {SELECTION_PATH} as UTF-8") from error
-
-
-def read_selection_lines(root: Path) -> list[SelectionLine]:
-    """Retain every selection entry so the selector can repair invalid lines."""
-    return parse_selection(read_selection_text(root))
 
 
 def parse_selection(content: str) -> list[SelectionLine]:
@@ -361,30 +436,6 @@ def parse_selection(content: str) -> list[SelectionLine]:
     return lines
 
 
-def read_selection(root: Path) -> dict[str, int]:
-    """Read validated name lines without requiring catalog resolution."""
-    lines = read_selection_lines(root)
-    for line in lines:
-        if line.error:
-            raise ReconcileError(f"{SELECTION_PATH}:{line.number}: {line.error}")
-    return {line.value: line.number for line in lines}
-
-
-def selection_error(value: str, catalog: dict[str, SourceCatalog]) -> str:
-    """Explain why a syntactically valid line does not resolve to a skill."""
-    source_name, name = value.split(":")
-    source = catalog.get(f"sources/{source_name}")
-    if source is None:
-        return f"unknown source: {source_name}"
-    if name not in source.skills:
-        invalid = source.invalid.get(name, [])
-        if invalid:
-            reasons = "\n  ".join(entry.error for entry in invalid)
-            return f"selected name is invalid: {value}\n  {reasons}"
-        return f"name is missing at the pinned commit: {value}"
-    return ""
-
-
 def format_selection(selection: Iterable[str]) -> str:
     """Render selection lines in the selector's stable format."""
     return "\n".join([SELECTION_HEADER, *sorted(selection)]) + "\n"
@@ -395,24 +446,3 @@ def write_selection(root: Path, selection: Iterable[str]) -> str:
     content = format_selection(selection)
     (root / SELECTION_PATH).write_text(content, encoding="utf-8")
     return content
-
-
-def selected_skills(root: Path, catalog: dict[str, SourceCatalog]) -> dict[tuple[Path, str], str]:
-    names: dict[str, str] = {}
-    result = {}
-    for value, number in read_selection(root).items():
-        source_name, name = value.split(":")
-        location = f"{SELECTION_PATH}:{number}"
-        error = selection_error(value, catalog)
-        if error:
-            raise ReconcileError(f"{location}: {error}")
-        source = catalog[f"sources/{source_name}"]
-        if name in names:
-            raise ReconcileError(f"{location}: same name selected from two sources: {name}\n  {names[name]}\n  {value}")
-        names[name] = value
-        for directory, harnesses in INSTALL_HARNESSES.items():
-            # Choose the tree first: a gap in it uses canonical, not a later tree.
-            copies = next((source.variants[harness] for harness in harnesses
-                           if harness in source.variants), {})
-            result[directory, name] = copies.get(name, source.skills[name])
-    return dict(sorted(result.items()))
