@@ -51,6 +51,16 @@ class Plan:
     creations: list[LinkRecord]
     receipt_cleanup: list[LinkRecord]
 
+    @property
+    def empty(self) -> bool:
+        return not self.removals and not self.creations and not self.receipt_cleanup
+
+
+@dataclass(frozen=True)
+class InstallStatus:
+    installed: bool
+    problem: str | None = None
+
 
 def home_path() -> Path:
     value = os.environ.get("HOME")
@@ -101,6 +111,22 @@ def ensure_skillset_committed(
             raise ReconcileError(f"required install input is not tracked: {item}")
     if git(["ls-files", "--others", "--exclude-standard", "--", "scripts"], cwd=root):
         raise ReconcileError("untracked install input is present")
+
+
+def selection_install_blocker(root: Path) -> str | None:
+    """Why the selector cannot commit skills.txt and install, or None."""
+    try:
+        require_primary_checkout(root)
+        for marker, operation in (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase")):
+            if (root / git(["rev-parse", "--git-path", marker], cwd=root)).exists():
+                return f"a {operation} is in progress; finish it before installing"
+        if not git(["symbolic-ref", "--quiet", "HEAD"], cwd=root, check=False):
+            return "checkout is on a detached HEAD; switch to a branch"
+        ensure_skillset_committed(root, exempt={"skills.txt"})
+    except (ReconcileError, OSError) as error:
+        return str(error)
+    return None
+
 
 def lstat(path: Path):
     try:
@@ -168,6 +194,14 @@ def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str]]:
 
 def build_plan(root: Path) -> Plan:
     return plan_links(*read_selection(root))
+
+
+def install_status(root: Path) -> InstallStatus:
+    """Plan read-only, without the lock, and report whether HEAD's selection is installed."""
+    try:
+        return InstallStatus(build_plan(root).empty)
+    except (ReconcileError, OSError) as error:
+        return InstallStatus(False, str(error))
 
 
 def plan_links(head: str, desired: dict[tuple[Path, str], str]) -> Plan:
@@ -240,7 +274,7 @@ def ensure_directory(path: Path) -> None:
 
 
 def apply_plan(plan: Plan) -> str:
-    if not plan.removals and not plan.creations and not plan.receipt_cleanup:
+    if plan.empty:
         return "skills are reconciled"
     for install_dir in INSTALL_DIRS:
         root = home_path() / install_dir.parent
@@ -298,7 +332,7 @@ def run(root: Path, check_only: bool) -> int:
         discrepancies = [f"missing: {r.path}" for r in plan.creations]
         discrepancies += [f"stale owned link: {r.path}" for r in plan.removals]
         discrepancies += [f"stale receipt: {r.receipt}" for r in plan.receipt_cleanup]
-        if discrepancies:
+        if not plan.empty:
             print("\n".join(discrepancies), file=sys.stderr)
             return 1
         print(f"skills are reconciled at skillset commit {plan.head}")

@@ -317,7 +317,7 @@ class SelectorApp(App[bool]):
         self.selection_catalog = skill_catalog.discover_catalog(self.root, modules)
         self.catalog = display_catalog(self.root, self.selection_catalog)
         self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
-        self.not_installed = selection_differs_from_head(self.root)
+        self.not_installed = skill_catalog.selection_uncommitted(self.root)
         self.install_error: str | None = None
         self.install_check = None
         self.source: str | None = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
@@ -352,13 +352,8 @@ class SelectorApp(App[bool]):
             self.install_check = self.run_worker(self.check_install_status, thread=True)
 
     def check_install_status(self) -> None:
-        try:
-            plan = reconcile_skills.build_plan(self.root)
-            not_installed = bool(plan.removals or plan.creations or plan.receipt_cleanup)
-            error = None
-        except (reconcile_skills.ReconcileError, OSError) as failure:
-            not_installed, error = True, str(failure)
-        self.call_from_thread(self.show_install_status, not_installed, error)
+        status = reconcile_skills.install_status(self.root)
+        self.call_from_thread(self.show_install_status, not status.installed, status.problem)
 
     def show_install_status(self, not_installed: bool, error: str | None) -> None:
         self.not_installed = not_installed
@@ -557,13 +552,8 @@ class SelectorApp(App[bool]):
                          self.save_choice)
 
     def install_unavailable_reason(self) -> str | None:
-        if blocker := self.draft.install_blocker:
-            return blocker
-        try:
-            require_install_checkout(self.root)
-        except (reconcile_skills.ReconcileError, OSError) as error:
-            return str(error)
-        return self.install_error if not self.draft.changes else None
+        return (self.draft.install_blocker or reconcile_skills.selection_install_blocker(self.root)
+                or (self.install_error if not self.draft.changes else None))
 
     def save_choice(self, choice: int | None) -> None:
         if choice in (1, 2):
@@ -595,7 +585,7 @@ class SelectorApp(App[bool]):
         if install:
             self.exit(True)
             return
-        self.not_installed = selection_differs_from_head(self.root)
+        self.not_installed = skill_catalog.selection_uncommitted(self.root)
         if not self.not_installed:
             self.install_check = self.run_worker(self.check_install_status, thread=True)
         self.refresh_title()
@@ -608,7 +598,7 @@ class SelectorApp(App[bool]):
             self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
             return
         self.source = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
-        self.not_installed = selection_differs_from_head(self.root)
+        self.not_installed = skill_catalog.selection_uncommitted(self.root)
         self.install_error = None
         self.install_check = None
         if not self.not_installed:
@@ -654,37 +644,21 @@ class SelectorApp(App[bool]):
         self.query_one("#hints", Static).update(hint)
 
 
-def require_install_checkout(root: Path) -> None:
-    reconcile_skills.require_primary_checkout(root)
-    for marker, operation in (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase")):
-        path = skill_catalog.git(["rev-parse", "--git-path", marker], cwd=root)
-        if (root / path).exists():
-            raise reconcile_skills.ReconcileError(f"a {operation} is in progress; finish it before installing")
-    if not skill_catalog.git(["symbolic-ref", "--quiet", "HEAD"], cwd=root, check=False):
-        raise reconcile_skills.ReconcileError("checkout is on a detached HEAD; switch to a branch")
-    reconcile_skills.ensure_skillset_committed(root, exempt={"skills.txt"})
-
-
-def selection_differs_from_head(root: Path) -> bool:
-    return bool(skill_catalog.git(
-        ["diff", "--name-only", "--no-ext-diff", "HEAD", "--", "skills.txt"], cwd=root,
-    ))
-
-
 def install_saved_selection(root: Path) -> int:
     """Run only after the TUI closes, with hooks and signing in the terminal."""
+    if reason := reconcile_skills.selection_install_blocker(root):
+        print(f"Could not commit: {reason}. skills.txt stays saved; nothing was committed or installed.")
+        return 1
     try:
-        require_install_checkout(root)
         changes = Changes.between(skill_catalog.git(["show", "HEAD:skills.txt"], cwd=root),
                                   skill_catalog.read_selection_text(root))
         message = f"Update skill selection ({changes.summary})"
         # Match the checkout inspected by the catalog's Git reads, while
         # retaining terminal streams for hooks and interactive signing.
-        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        if selection_differs_from_head(root):
+        if skill_catalog.selection_uncommitted(root):
             commit = subprocess.run(
                 ["git", "commit", "-m", message, "-m", "\n".join(changes.lines()), "--only", "--", "skills.txt"],
-                cwd=root, env=env, check=False,
+                cwd=root, env=skill_catalog.git_env(interactive=True), check=False,
             )
             if commit.returncode:
                 print("Commit failed. skills.txt stays saved; nothing was committed or installed.")

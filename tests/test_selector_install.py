@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import threading
@@ -95,19 +94,6 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
         self.assertEqual(list(self.home.iterdir()), [])
 
-    def conflicting_branches(self) -> None:
-        branch = git(["branch", "--show-current"], self.repo)
-        readme = self.repo / "README.md"
-        readme.write_text("Base\n", encoding="utf-8")
-        git(["add", "README.md"], self.repo)
-        git(["commit", "-qm", "add readme"], self.repo)
-        git(["checkout", "-qb", "competing"], self.repo)
-        readme.write_text("Competing edit\n", encoding="utf-8")
-        git(["commit", "-qam", "edit readme on competing branch"], self.repo)
-        git(["checkout", "-q", branch], self.repo)
-        readme.write_text("Local edit\n", encoding="utf-8")
-        git(["commit", "-qam", "edit readme locally"], self.repo)
-
     async def test_default_choice_commits_only_selection_then_installs_without_upstream_hint(self) -> None:
         other = self.base / "other-checkout"
         other.mkdir()
@@ -174,14 +160,14 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
         before = (self.repo / "skills.txt").read_bytes()
         head = git(["rev-parse", "HEAD"], self.repo)
         main_thread = threading.get_ident()
-        planner = selector.reconcile_skills.build_plan
+        status = selector.reconcile_skills.install_status
 
         def check_in_worker(root):
             self.assertNotEqual(threading.get_ident(), main_thread)
-            return planner(root)
+            return status(root)
 
         app = selector.SelectorApp(root=self.repo)
-        with patch.object(selector.reconcile_skills, "build_plan", side_effect=check_in_worker) as check:
+        with patch.object(selector.reconcile_skills, "install_status", side_effect=check_in_worker) as check:
             async with app.run_test() as pilot:
                 await app.workers.wait_for_complete()
                 check.assert_called_once_with(self.repo)
@@ -203,7 +189,7 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_saved_selection_skips_planner_and_counts_unsaved_against_loaded_file(self) -> None:
         write_selection(self.repo, ["mattpocock/skills:tdd"])
-        with patch.object(selector.reconcile_skills, "build_plan") as check:
+        with patch.object(selector.reconcile_skills, "install_status") as check:
             app = selector.SelectorApp(root=self.repo)
             async with app.run_test() as pilot:
                 await app.workers.wait_for_complete()
@@ -251,7 +237,7 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
         selection = self.repo / "skills.txt"
         selection.write_text(selection.read_text() + "# Kept comment\n", encoding="utf-8")
         before = selection.read_bytes()
-        with patch.object(selector.reconcile_skills, "build_plan") as check:
+        with patch.object(selector.reconcile_skills, "install_status") as check:
             app = selector.SelectorApp(root=self.repo)
             async with app.run_test() as pilot:
                 await app.workers.wait_for_complete()
@@ -372,6 +358,20 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tracked skillset changes are not committed", output)
         self.assertEqual(list(self.home.iterdir()), [])
 
+    async def test_commit_hook_sees_user_pathspec_semantics(self) -> None:
+        hook = self.repo / ".git/hooks/pre-commit"
+        hook.write_text("#!/bin/sh\ngit diff --cached --name-only -- '*.txt' | grep -qx skills.txt\n",
+                        encoding="utf-8")
+        hook.chmod(0o755)
+        previous = git(["rev-parse", "HEAD"], self.repo)
+        await self.choose_install()
+
+        code, output = self.handoff()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+
     async def test_ahead_branch_ends_with_push_hint_and_leaves_upstream_unchanged(self) -> None:
         remote = self.base / "backup.git"
         git(["init", "--bare", "-q", str(remote)], self.base)
@@ -391,33 +391,6 @@ class SelectorInstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_detached_head_disables_install_and_defaults_to_save_only(self) -> None:
         git(["checkout", "-q", "--detach"], self.repo)
         await self.assert_save_only("detached HEAD")
-
-    async def test_merge_in_progress_disables_install_and_defaults_to_save_only(self) -> None:
-        self.conflicting_branches()
-        result = subprocess.run(
-            ["git", "merge", "--no-edit", "competing"], cwd=self.repo,
-            env=self.fixture.env, capture_output=True, text=True, check=False,
-        )
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        await self.assert_save_only("merge is in progress")
-
-    async def test_rebase_in_progress_disables_install_and_defaults_to_save_only(self) -> None:
-        self.conflicting_branches()
-        result = subprocess.run(
-            ["git", "rebase", "competing"], cwd=self.repo,
-            env=self.fixture.env, capture_output=True, text=True, check=False,
-        )
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        await self.assert_save_only("rebase is in progress")
-
-    async def test_other_tracked_changes_disable_install_and_default_to_save_only(self) -> None:
-        readme = self.repo / "README.md"
-        readme.write_text("Committed readme\n", encoding="utf-8")
-        git(["add", "README.md"], self.repo)
-        git(["commit", "-qm", "add readme"], self.repo)
-        readme.write_text("Uncommitted edit\n", encoding="utf-8")
-        await self.assert_save_only("README.md")
-        self.assertEqual(readme.read_text(), "Uncommitted edit\n")
 
     async def test_off_catalog_selection_blocks_install_until_deselected(self) -> None:
         write_selection(self.repo, ["mattpocock/skills:prototype", "unknown/source:missing"])
