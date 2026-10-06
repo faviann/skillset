@@ -274,7 +274,7 @@ class SelectorApp(App[bool]):
     #columns { margin: 0 1 1 1; }
     .column { padding: 0 1; }
     #skill-column { width: 1fr; }
-    #details { width: 1.3fr; }
+    #details { width: 2fr; }
     #details {
         scrollbar-size-vertical: 1;
         scrollbar-background: transparent;
@@ -285,8 +285,12 @@ class SelectorApp(App[bool]):
     #skill-head { height: auto; }
     #skill-name { width: 1fr; text-style: bold; }
     #skill-state { width: auto; }
-    #skill-metadata { border-bottom: solid #999999; padding-bottom: 1; margin-bottom: 1; }
-    #details.-empty #skill-head, #details.-empty #skill-metadata { display: none; }
+    #skill-metadata { margin-bottom: 1; }
+    #skill-foot {
+        text-wrap: nowrap; text-overflow: fold;
+        border-bottom: solid #999999; padding-bottom: 1; margin-bottom: 1;
+    }
+    #details.-empty #skill-head, #details.-empty #skill-metadata, #details.-empty #skill-foot { display: none; }
     #skill-body { padding: 0; }
     #skill-body MarkdownH1 { content-align: left middle; margin: 0 0 1 0; }
     #skill-body, #skill-body * {
@@ -351,6 +355,7 @@ class SelectorApp(App[bool]):
                     yield Static(id="skill-name")
                     yield Static(id="skill-state")
                 yield Static(id="skill-metadata")
+                yield Static(id="skill-foot")
                 yield SkillMarkdown(id="skill-body")
         yield Static(id="message")
         yield Static(id="hints")
@@ -472,12 +477,13 @@ class SelectorApp(App[bool]):
     async def refresh_details(self) -> None:
         key = self.query_one("#skills", CatalogList).current
         metadata = self.query_one("#skill-metadata", Static)
+        foot = self.query_one("#skill-foot", Static)
         body = self.query_one("#skill-body", Markdown)
         details = self.query_one("#details", VerticalScroll)
         details.scroll_home(animate=False)
         details.set_class(key is None, "-empty")
         if key is None:
-            for part in ("#skill-name", "#skill-state", "#skill-metadata"):
+            for part in ("#skill-name", "#skill-state", "#skill-metadata", "#skill-foot"):
                 self.query_one(part, Static).update("")
             await body.update("")
             return
@@ -490,9 +496,9 @@ class SelectorApp(App[bool]):
             line = self.draft.off_catalog[key]
             self.query_one("#skill-name", Static).update(Text(line.value, style=name_style))
             metadata.update(Text.assemble(
-                (f"skills.txt:{line.number}", SECONDARY), "\n\n", line.error, "\n\n",
-                ("Can be deselected only.", SECONDARY),
+                (f"skills.txt:{line.number}", SECONDARY), "\n\n", line.error,
             ))
+            foot.update(Text("Can be deselected only.", style=SECONDARY))
             await body.update("")
             return
         source, name = key.split(":")
@@ -509,7 +515,10 @@ class SelectorApp(App[bool]):
         self.query_one("#skill-name", Static).update(Text(skill.name, style=name_style))
         metadata.update(Text.assemble(
             ("\n".join(notes), SECONDARY), "\n\n",
-            ("description unreadable", SECONDARY) if skill.unreadable else skill.description, "\n\n",
+            ("description unreadable", SECONDARY) if skill.unreadable else skill.description,
+        ))
+        # Folds inside the path instead of wrapping at a space and orphaning the file count.
+        foot.update(Text.assemble(
             (f"{files} · ", SECONDARY), source, ("" if location == "." else f"/{location}", SECONDARY),
         ))
         await body.update(skill.body)

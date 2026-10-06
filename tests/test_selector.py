@@ -263,7 +263,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
                 "alpha", "● selected", "acme/skills:alpha",
                 "Manual only: description not loaded into context",
                 "Same name in other sources: zebra/tools:alpha", "",
-                "Alpha description.", "", "3 files · acme/skills/alpha",
+                "Alpha description.", "3 files · acme/skills/alpha",
             ])
             await pilot.press("down", "right", "space", "1", "left", "up")
             self.assertIn("○ not selected\nacme/skills:alpha", self.details(app))
@@ -271,7 +271,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(self.details(app).splitlines(), [
                 "alpha", "● selected", "zebra/tools:alpha",
                 "Same name in other sources: acme/skills:alpha", "",
-                "Other description.", "", "1 file · zebra/tools/alpha",
+                "Other description.", "1 file · zebra/tools/alpha",
             ])
             await pilot.press("right", "down")
             self.assertIn("○ not selected\nzebra/tools:broken\n\ndescription unreadable",
