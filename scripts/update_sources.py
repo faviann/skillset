@@ -66,13 +66,12 @@ class Summary:
 
 
 def run_git(args: list[str], cwd: Path, *, interactive: bool = False) -> None:
-    """Run Git on the terminal; interactive also lets hooks, signing and credential prompts work."""
     if subprocess.run(["git", *args], cwd=cwd, env=git_env(interactive=interactive), check=False).returncode:
         raise ReconcileError(f"git {' '.join(args)} failed")
 
 
 def update_blocker(root: Path) -> str | None:
-    """Why the update cannot start, or None. Read-only, so the selector can show the reason."""
+    """Why the update cannot start, or None."""
     if reason := selection_install_blocker(root):
         return reason
     branch = git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=root, check=False)
@@ -84,7 +83,6 @@ def update_blocker(root: Path) -> str | None:
 
 
 def restore_sources(root: Path, *, force: bool = False) -> None:
-    """Put every source at its pin, as ./setup.sh does; force also discards changes inside them, quietly."""
     args = ["submodule", "update", "--init", "--recursive", "--checkout"]
     if force:
         git(["submodule", "foreach", "-q", "--recursive", "git reset -q --hard && git clean -qfdx"], cwd=root)
@@ -93,7 +91,6 @@ def restore_sources(root: Path, *, force: bool = False) -> None:
 
 
 def merge_origin(worktree: Path) -> bool:
-    """Fetch origin and merge origin/main when it moved; sources follow the merged pins."""
     run_git(["fetch", "-q", "origin"], worktree)
     if not int(git(["rev-list", "--count", "HEAD..origin/main"], cwd=worktree)):
         return False
@@ -103,7 +100,6 @@ def merge_origin(worktree: Path) -> bool:
 
 
 def prepare_worktree(root: Path) -> Path:
-    """Create or force-reset the kept worktree at the live HEAD, then bring origin/main in."""
     worktree = home_path() / "worktrees/skillset" / BRANCH
     head = git(["rev-parse", "HEAD"], cwd=root)
     registered = [Path(line.removeprefix("worktree ")).resolve()
@@ -132,7 +128,6 @@ def reset_worktree(worktree: Path, checkpoint: str) -> None:
 
 
 def inspect_source(name: str, source: SourceCatalog) -> SourceUpdate | str:
-    """Fetch the branch tips #74 compares, then say what to apply or report for this source."""
     tips: dict[str, str] = {}
 
     def tip(url: str, branch: str) -> str:
@@ -164,7 +159,6 @@ def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog) -
 
 
 def check_installable(worktree: Path, catalog: Catalog) -> None:
-    """The install's read-only checks after the catalog loads; the install itself refuses linked worktrees."""
     ensure_skillset_committed(worktree)
     catalog.resolve(read_selection_text(worktree)).install_targets()
     if stale := stale_upstreams(catalog):
@@ -172,7 +166,6 @@ def check_installable(worktree: Path, catalog: Catalog) -> None:
 
 
 def skill_directories(source: SourceCatalog, name: str) -> set[Path]:
-    """The skill's canonical directory and the variant copies installs use, relative to the source."""
     return {Path(target).relative_to(source.path) for target in (source.skills[name], *source.targets(name).values())}
 
 
@@ -211,7 +204,6 @@ def ask() -> str:
 
 
 def update_source(worktree: Path, name: str, before: Catalog) -> tuple[bool, Catalog]:
-    """Fetch, bump, review and publish one source; a skip or any failure resets to the checkpoint."""
     checkpoint = git(["rev-parse", "HEAD"], cwd=worktree)
     source = before.sources[name]
     added: list[str] = []
@@ -249,7 +241,6 @@ def update_source(worktree: Path, name: str, before: Catalog) -> tuple[bool, Cat
 
 
 def finish(root: Path, worktree: Path) -> None:
-    """Fast-forward the live checkout to the worktree, restore its sources and install."""
     try:
         run_git(["merge", "-q", "--ff-only", BRANCH], root, interactive=True)
     except ReconcileError:
@@ -262,7 +253,6 @@ def finish(root: Path, worktree: Path) -> None:
 
 def run(root: Path) -> int:
     require_primary_checkout(root)
-    # Finishes a run that was killed between the fast-forward and this restore.
     restore_sources(root)
     if reason := update_blocker(root):
         raise ReconcileError(reason)

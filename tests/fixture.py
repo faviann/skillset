@@ -48,7 +48,8 @@ def configure_git(repo: Path) -> None:
 def redirect_github(xdg_config_home: Path, directory: Path) -> None:
     config = xdg_config_home / "git/config"
     config.parent.mkdir(parents=True)
-    config.write_text(f'[url "{directory}/"]\n\tinsteadOf = https://github.com/\n', encoding="utf-8")
+    config.write_text(f'[url "{directory}/"]\n\tinsteadOf = https://github.com/\n'
+                      '[protocol "file"]\n\tallow = always\n', encoding="utf-8")
 
 
 def write_skill(repo: Path, path: str, *, identity: str | None = None) -> Path:

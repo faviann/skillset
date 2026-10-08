@@ -23,10 +23,6 @@ class UpdateCase(unittest.TestCase):
         self.repo = self.fixture.repo
         self.home = self.fixture.home
         self.env = self.fixture.env
-        # The command strips the fixture's GIT_CONFIG_* variables, so the
-        # worktree's source clones need the file protocol allowed in a config file.
-        with (self.base / "config/git/config").open("a", encoding="utf-8") as config:
-            config.write('[protocol "file"]\n\tallow = always\n')
         self.origin = self.base / "origin.git"
         git(["init", "-q", "--bare", "-b", "main", str(self.origin)], self.base)
         git(["branch", "-M", "main"], self.repo)
@@ -46,13 +42,11 @@ class UpdateCase(unittest.TestCase):
                               env=self.env, text=True, capture_output=True, timeout=60, check=False)
 
     def advance(self, source: str, message: str = "advance") -> str:
-        """Commit on the source's tracked branch at its origin and return the new tip."""
         origin = self.fixture.origins[source]
         git(["commit", "--allow-empty", "-qm", message], origin)
         return git(["rev-parse", "HEAD"], origin)
 
-    def publish_pin(self, source: str, tip: str) -> None:
-        """Bump the source's pin on origin from the live checkout, then undo the live checkout's part."""
+    def push_pin_elsewhere(self, source: str, tip: str) -> None:
         checkout = self.fixture.sources[source]
         git(["fetch", "-q", "origin"], checkout)
         git(["checkout", "-q", "--detach", tip], checkout)
@@ -68,7 +62,6 @@ class UpdateCase(unittest.TestCase):
         return git(["rev-parse", f"{ref}:sources/{source}"], repo or self.repo)
 
     def push_elsewhere(self, selection: str, subject: str) -> None:
-        """Commit a selection on another clone of origin and push it to main."""
         other = self.base / "other"
         git(["clone", "-q", str(self.origin), str(other)], self.base)
         configure_git(other)
@@ -77,7 +70,6 @@ class UpdateCase(unittest.TestCase):
         git(["push", "-q", "origin", "main"], other)
 
     def add_canonical(self, source: str) -> Path:
-        """Declare the source a fork: its canonical repository lives at the redirected GitHub URL."""
         canonical = self.fixture.github / f"{source}.git"
         git(["clone", "-q", str(self.fixture.origins[source]), str(canonical)], self.base)
         configure_git(canonical)
@@ -119,7 +111,7 @@ class UpdateStartTests(UpdateCase):
 class UpdateSyncTests(UpdateCase):
     def test_up_to_date_run_merges_origin_main_moves_sources_and_installs(self) -> None:
         tip = self.advance("zebra/tools")
-        self.publish_pin("zebra/tools", tip)
+        self.push_pin_elsewhere("zebra/tools", tip)
         self.assertNotEqual(self.pin("zebra/tools"), tip)
         output = self.update()
         self.assertIn("acme/skills: up to date\nzebra/tools: up to date\n", output)

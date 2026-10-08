@@ -436,7 +436,6 @@ def discover_catalog(root: Path, modules: dict[str, Module]) -> Catalog:
 
 
 def canonical_url(name: str) -> str:
-    """The repository a source's path names, which a fork's URL stands in for."""
     return f"https://github.com/{name}.git"
 
 
