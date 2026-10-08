@@ -44,6 +44,7 @@ from textual.worker import get_current_worker
 
 import reconcile_skills
 import skill_catalog
+import update_sources
 from selection_draft import Blocked, Changes, CheckoutStore, Conflict, Refused, Replace, SelectionDraft
 
 ACCENT = "#D77757"
@@ -428,6 +429,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         Binding("enter", "enter", show=False),
         Binding("space", "toggle", show=False),
         Binding("ctrl+s", "save", show=False),
+        Binding("ctrl+u", "update", show=False),
         Binding("escape", "quit", show=False),
     ]
 
@@ -774,6 +776,14 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.fill_skills()
         self.query_one("#message", Static).update("⎿ Reloaded skills.txt. Unsaved changes discarded.")
 
+    def action_update(self) -> None:
+        reason = ("the selection has unsaved changes; save and install first" if self.draft.unsaved
+                  else update_sources.update_blocker(self.root))
+        if reason:
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot update sources: {reason}"))
+        else:
+            self.exit(update_sources_in_terminal)
+
     def action_quit(self) -> None:
         search = self.query_one("#search", Input)
         if search.has_focus:
@@ -802,11 +812,12 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         if self.focused is self.query_one("#search"):
             hint = "↓ or enter skills · esc clear or leave search · ctrl+s save"
         elif self.focused is self.query_one("#details"):
-            hint = "↑↓ scroll · ← sources · → skills · ctrl+s save · esc quit"
+            hint = "↑↓ scroll · ← sources · → skills · ctrl+s save · ctrl+u update · esc quit"
         elif self.focused is self.query_one("#skills"):
-            hint = "↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save · esc quit"
+            hint = ("↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save"
+                    " · ctrl+u update · esc quit")
         else:
-            hint = "↑↓ move · → or enter skills · space toggle · ctrl+s save · esc quit"
+            hint = "↑↓ move · → skills · space toggle · ctrl+s save · ctrl+u update · esc quit"
         self.query_one("#hints", Static).update(hint)
 
 
@@ -851,6 +862,16 @@ def install_saved_selection(root: Path) -> int:
     if code:
         print("run the skill selector again and choose Install")
     return code
+
+
+def update_sources_in_terminal(root: Path) -> int:
+    """Become the update command, so it alone gets Ctrl+C and its exit status is the selector's."""
+    script = root / "scripts/update-sources.sh"
+    try:
+        os.execve(script, [str(script)], shell_path_env())
+    except OSError as error:
+        print(f"Could not start the update: {error}")
+        return 1
 
 
 def main() -> int:
