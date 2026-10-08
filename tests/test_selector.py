@@ -313,11 +313,13 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(self.text(app, "#message"), "")
 
     async def test_a_fork_follows_its_own_branch_then_its_canonical_branch(self) -> None:
-        forks = ["ahead/fork", "behind/fork", "gone/fork", "own/fork"]
+        forks = ["ahead/fork", "behind/fork", "gone/fork", "lost/fork", "own/fork"]
         fixture = self.fixture({name: {"skill": "skill"} for name in forks}, [])
         upstreams = {}
         for name in forks:
             upstreams[name] = git(["rev-parse", "HEAD"], fixture.sources[name])
+            if name == "lost/fork":
+                continue
             canonical = fixture.github / f"{name}.git"
             git(["clone", "-q", str(fixture.origins[name]), str(canonical)], self.base)
             if name != "own/fork":
@@ -337,7 +339,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             await app.workers.wait_for_complete()
             self.assertEqual(self.lines(app, "sources"), [
                 "ahead/fork", "0/1 · update available", "behind/fork", "0/1 · fork behind upstream",
-                "gone/fork", "0/1", "own/fork", "0/1",
+                "gone/fork", "0/1", "lost/fork", "0/1", "own/fork", "0/1",
             ])
 
     async def test_a_remote_that_never_answers_holds_up_neither_keys_nor_quitting(self) -> None:
