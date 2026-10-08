@@ -23,6 +23,8 @@ INSTALL_HARNESSES = {
 }
 SELECTION_PATH = "skills.txt"
 SELECTION_HEADER = "# Written by the skill selector. Comments and ordering are not kept."
+UPDATE_AVAILABLE = "update available"
+FORK_BEHIND_UPSTREAM = "fork behind upstream"
 
 
 class ReconcileError(Exception):
@@ -445,13 +447,13 @@ def update_marker(name: str, source: SourceCatalog, tip: Callable[[str, str], st
     if tracked is None:
         return None
     if tracked != module.pin:
-        return "update available"
+        return UPDATE_AVAILABLE
     if not source.upstream:
         return None
     canonical = tip(canonical_url(name), module.branch)
     if canonical is None or canonical == source.upstream:
         return None
-    return "fork behind upstream"
+    return FORK_BEHIND_UPSTREAM
 
 
 def read_selection_text(root: Path) -> str:

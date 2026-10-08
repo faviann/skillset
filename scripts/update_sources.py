@@ -28,6 +28,7 @@ from skill_catalog import (
     read_selection_text,
     selection_uncommitted,
     update_marker,
+    UPDATE_AVAILABLE,
 )
 
 BRANCH = "update-sources"
@@ -145,7 +146,7 @@ def inspect_source(name: str, source: SourceCatalog) -> SourceUpdate | str:
         return tips[url]
 
     marker = update_marker(name, source, tip)
-    if marker != "update available":
+    if marker != UPDATE_AVAILABLE:
         return marker or "up to date"
     update = SourceUpdate(name, source.module.pin, tips[source.module.url])
     if not source.upstream:
@@ -174,8 +175,9 @@ def check_installable(worktree: Path, catalog: Catalog) -> None:
         raise ReconcileError("\n".join(stale))
 
 
-def skill_directories(source: SourceCatalog, name: str) -> set[Path]:
-    return {Path(target).relative_to(source.path) for target in (source.skills[name], *source.targets(name).values())}
+def skill_directories(name: str, *sources: SourceCatalog) -> set[Path]:
+    return {Path(target).relative_to(source.path) for source in sources
+            for target in (source.skills[name], *source.targets(name).values())}
 
 
 def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after: SourceCatalog,
@@ -184,7 +186,7 @@ def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after
     touched = path_prefixes(map(Path, filter(None, changed_files.split("\0"))))
     changed = [name for name in sorted(set(before.skills) & set(after.skills))
                if any(touched[directory]
-                      for directory in skill_directories(before, name) | skill_directories(after, name))]
+                      for directory in skill_directories(name, before, after))]
     commits = int(git(["rev-list", "--count", f"{update.old}..{update.new}"], cwd=after.path))
     unpublished = git(["log", "--format=%h %s", "origin/main..HEAD^"], cwd=worktree).splitlines()
     return Summary(commits, sorted(set(after.skills) - set(before.skills)),
@@ -193,7 +195,7 @@ def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after
 
 def show_diff(update: SourceUpdate, before: SourceCatalog, after: SourceCatalog, summary: Summary) -> None:
     directories = sorted({str(directory) for name in summary.changed if name in summary.selected
-                          for directory in skill_directories(before, name) | skill_directories(after, name)})
+                          for directory in skill_directories(name, before, after)})
     if not directories:
         print("no selected skill changed")
         return
