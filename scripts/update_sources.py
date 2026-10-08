@@ -84,11 +84,11 @@ def update_blocker(root: Path) -> str | None:
 
 
 def restore_sources(root: Path, *, force: bool = False) -> None:
-    """Put every source at its pin, as ./setup.sh does; force also discards changes inside them."""
+    """Put every source at its pin, as ./setup.sh does; force also discards changes inside them, quietly."""
     args = ["submodule", "update", "--init", "--recursive", "--checkout"]
     if force:
         git(["submodule", "foreach", "-q", "--recursive", "git reset -q --hard && git clean -qfdx"], cwd=root)
-        args.append("--force")
+        args += ["--force", "-q"]
     run_git(args, root)
 
 
@@ -116,6 +116,7 @@ def prepare_worktree(root: Path) -> Path:
         git(["worktree", "prune"], cwd=root)
         worktree.parent.mkdir(parents=True, exist_ok=True)
         git(["worktree", "add", "-B", BRANCH, str(worktree), head], cwd=root)
+        print(f"cloning every source into {worktree}")
     git(["submodule", "sync", "-q", "--recursive"], cwd=worktree)
     restore_sources(worktree, force=True)
     try:
