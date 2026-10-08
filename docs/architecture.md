@@ -70,6 +70,18 @@ ancestor of the pin. Install and the selector ignore that, because only the
 marker depends on it. Today `upstream` equals the mattpocock pin, so nothing is
 marked.
 
+When the selector opens, it looks up each source's tracked branch with
+`git ls-remote`, without fetching. This is the selector's only network access;
+install and `--check` never contact a remote. A source shows `update available`
+when the branch tip at its `.gitmodules` URL differs from its pin. For a fork,
+that URL is the fork. When a fork's tip equals its pin, the selector also reads
+the same branch at the canonical repository, `https://github.com/<owner>/<repo>.git`
+from the source path, and shows `fork behind upstream` when that tip differs
+from `upstream`. Skillset never writes to a fork, so you sync it by hand. Each
+lookup runs in the background without a terminal and gives up after five
+seconds. It never prompts for credentials or for an ssh host key. A failed
+lookup shows no marker.
+
 The catalog uses this fixed harness order for each install directory:
 
 | Install directory | Harness precedence |
