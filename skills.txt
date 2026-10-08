@@ -1,5 +1,6 @@
 # Written by the skill selector. Comments and ordering are not kept.
 faviann/agent-skills:publish-artifact
+humanlayer/skills:improve-claude-md
 humanlayer/skills:show-me
 mattpocock/skills:ask-matt
 mattpocock/skills:code-review
