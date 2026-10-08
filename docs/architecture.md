@@ -78,8 +78,9 @@ that URL is the fork. When a fork's tip equals its pin, the selector also reads
 the same branch at the canonical repository, `https://github.com/<owner>/<repo>.git`
 from the source path, and shows `fork behind upstream` when that tip differs
 from `upstream`. Skillset never writes to a fork, so you sync it by hand. Each
-lookup runs in the background, gives up after five seconds and never prompts
-for credentials. A failed lookup shows no marker.
+lookup runs in the background without a terminal and gives up after five
+seconds. It never prompts for credentials or for an ssh host key. A failed
+lookup shows no marker.
 
 The catalog uses this fixed harness order for each install directory:
 

@@ -118,9 +118,9 @@ def display_catalog(catalog: skill_catalog.Catalog) -> dict[str, list[Skill]]:
 def branch_tip(root: Path, url: str, branch: str) -> str | None:
     ref = f"refs/heads/{branch}"
     try:
-        # A 401 runs credential helpers and askpass, which GIT_TERMINAL_PROMPT does not stop. ssh
-        # prompts on /dev/tty, so the lookup gets its own session without one, and without a tty
-        # ssh would fall back to a GUI askpass unless SSH_ASKPASS_REQUIRE forbids it.
+        # A 401 runs credential helpers and askpass, which GIT_TERMINAL_PROMPT does not stop.
+        # ssh prompts on /dev/tty, so the lookup runs in a new session with no terminal. With no
+        # terminal, ssh falls back to a GUI askpass unless SSH_ASKPASS_REQUIRE is never.
         result = subprocess.run(
             ["git", "-c", "credential.helper=", "-c", "core.askPass=", "ls-remote", "--", url, ref],
             cwd=root, env={**skill_catalog.git_env(), "SSH_ASKPASS_REQUIRE": "never"}, start_new_session=True,
