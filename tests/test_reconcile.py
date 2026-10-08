@@ -993,13 +993,13 @@ class InstallInterfaceTests(unittest.TestCase):
         self.conflicting_branches()
         git(["merge", "--no-edit", "competing"], self.repo, ok=False)
         self.assertEqual(selection_install_blocker(self.repo),
-                         "a merge is in progress; finish it before installing")
+                         "a merge is in progress; finish it first")
 
     def test_install_blocker_refuses_rebase_in_progress(self) -> None:
         self.conflicting_branches()
         git(["rebase", "competing"], self.repo, ok=False)
         self.assertEqual(selection_install_blocker(self.repo),
-                         "a rebase is in progress; finish it before installing")
+                         "a rebase is in progress; finish it first")
 
     def test_install_blocker_refuses_linked_worktree(self) -> None:
         worktree = self.base / "linked-worktree"
