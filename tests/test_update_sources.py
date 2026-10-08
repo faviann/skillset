@@ -1,13 +1,14 @@
-"""The update command refuses, syncs the live checkout with origin, reports each source and finishes."""
+"""The update command bumps sources one at a time and publishes only what you accept."""
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from fixture import SkillsetFixture, configure_git, git
+from fixture import SkillsetFixture, configure_git, git, write_skill
 
 
 class UpdateCase(unittest.TestCase):
@@ -65,6 +66,15 @@ class UpdateCase(unittest.TestCase):
 
     def pin(self, source: str, *, repo: Path | None = None, ref: str = "HEAD") -> str:
         return git(["rev-parse", f"{ref}:sources/{source}"], repo or self.repo)
+
+    def push_elsewhere(self, selection: str, subject: str) -> None:
+        """Commit a selection on another clone of origin and push it to main."""
+        other = self.base / "other"
+        git(["clone", "-q", str(self.origin), str(other)], self.base)
+        configure_git(other)
+        (other / "skills.txt").write_text(selection, encoding="utf-8")
+        git(["commit", "-qam", subject], other)
+        git(["push", "-q", "origin", "main"], other)
 
     def add_canonical(self, source: str) -> Path:
         """Declare the source a fork: its canonical repository lives at the redirected GitHub URL."""
@@ -124,12 +134,7 @@ class UpdateSyncTests(UpdateCase):
         self.update()
         (self.worktree / "skills.txt").write_text("# worktree\nacme/skills:alpha\n", encoding="utf-8")
         git(["commit", "-qam", "worktree selection"], self.worktree)
-        other = self.base / "other"
-        git(["clone", "-q", str(self.origin), str(other)], self.base)
-        configure_git(other)
-        (other / "skills.txt").write_text("# other machine\nacme/skills:alpha\n", encoding="utf-8")
-        git(["commit", "-qam", "other selection"], other)
-        git(["push", "-q", "origin", "main"], other)
+        self.push_elsewhere("# other machine\nacme/skills:alpha\n", "other selection")
         git(["fetch", "-q", "origin"], self.worktree)
         git(["merge", "-q", "origin/main"], self.worktree, ok=False)
         self.assertTrue((self.worktree / ".git").exists())
@@ -154,6 +159,173 @@ class UpdateSyncTests(UpdateCase):
         self.assertEqual(self.origin_subjects(), before)
         self.assertEqual(git(["for-each-ref"], self.fixture.origins["acme/skills"]), fork_refs)
         self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+
+
+class UpdateApplyTests(UpdateCase):
+    def start(self) -> subprocess.Popen[str]:
+        return subprocess.Popen([str(self.repo / "scripts/update-sources.sh")], cwd=self.repo, env=self.env,
+                                text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    def read_until(self, process: subprocess.Popen[str], marker: str) -> str:
+        output = ""
+        while marker not in output:
+            char = process.stdout.read(1)
+            self.assertTrue(char, f"the command ended before {marker!r}:\n{output}")
+            output += char
+        return output
+
+    def answer(self, process: subprocess.Popen[str], text: str, *, ok: bool = True) -> str:
+        output, _ = process.communicate(text, timeout=180)
+        self.assertEqual(process.returncode == 0, ok, output)
+        return output
+
+    def test_each_accepted_source_is_its_own_commit_on_main_and_the_live_checkout_follows(self) -> None:
+        write_skill(self.fixture.origins["acme/skills"], "skills/beta")
+        git(["add", "-A"], self.fixture.origins["acme/skills"])
+        old = self.pin("acme/skills")
+        acme = self.advance("acme/skills", "add beta")
+        zebra = self.advance("zebra/tools")
+        output = self.update("a\na\n")
+        self.assertIn(f"acme/skills {old[:7]} -> {acme[:7]}, 1 commit\n  added: beta\n", output)
+        self.assertEqual(self.origin_subjects(), [
+            f"Update zebra/tools to {zebra[:7]}", f"Update acme/skills to {acme[:7]}", "initial skillset",
+        ])
+        self.assertEqual(git(["show", "--format=", "--name-only", "main"], self.origin), "sources/zebra/tools")
+        self.assertEqual(git(["show", "--format=", "--name-only", "main~1"], self.origin), "sources/acme/skills")
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
+        for source, tip in (("acme/skills", acme), ("zebra/tools", zebra)):
+            self.assertEqual(git(["rev-parse", "HEAD"], self.fixture.sources[source]), tip)
+        self.assertEqual(self.check().returncode, 0)
+
+    def test_summary_flags_a_changed_selected_skill_and_its_diff_covers_the_directory(self) -> None:
+        origin = self.fixture.origins["acme/skills"]
+        with (origin / "skills/alpha/SKILL.md").open("a", encoding="utf-8") as skill:
+            skill.write("\nRewritten instructions.\n")
+        (origin / "skills/alpha/helper.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        with (origin / "skills/unselected/SKILL.md").open("a", encoding="utf-8") as skill:
+            skill.write("\nAlso changed.\n")
+        git(["add", "-A"], origin)
+        self.advance("acme/skills", "rewrite")
+        head, old = git(["rev-parse", "HEAD"], self.repo), self.pin("acme/skills")
+        output = self.update("d\ns\n")
+        summary, diff = output.split("[a]ccept", 1)
+        self.assertRegex(summary, r"changed: .*\balpha\*")
+        self.assertRegex(summary, r"changed: .*\bunselected(?!\*)")
+        self.assertIn("skills/alpha/SKILL.md", diff)
+        self.assertIn("skills/alpha/helper.sh", diff)
+        self.assertNotIn("skills/unselected", diff)
+        self.assertIn("acme/skills: skipped\n", output)
+        self.assertEqual(self.origin_subjects(), ["initial skillset"])
+        self.assertEqual((git(["rev-parse", "HEAD"], self.repo), self.pin("acme/skills")), (head, old))
+        self.assertEqual(git(["rev-parse", "HEAD"], self.worktree), head)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.worktree / "sources/acme/skills"), old)
+
+    def test_a_failed_source_leaves_the_others_processed_and_its_pin_unchanged(self) -> None:
+        self.fixture.add_source("mid/tools", {"delta": "delta"})
+        git(["commit", "-qm", "Add mid/tools"], self.repo)
+        git(["push", "-q", "origin", "main"], self.repo)
+        self.update()
+        shutil.rmtree(self.fixture.origins["zebra/tools"])
+        acme, mid = self.advance("acme/skills"), self.advance("mid/tools")
+        output = self.update("a\na\n", ok=False)
+        self.assertIn("zebra/tools: skipped: git fetch", output)
+        self.assertEqual(self.origin_subjects()[:2],
+                         [f"Update mid/tools to {mid[:7]}", f"Update acme/skills to {acme[:7]}"])
+        self.assertEqual(self.pin("zebra/tools", repo=self.origin, ref="main"), self.pin("zebra/tools"))
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
+        self.assertEqual(self.check().returncode, 0)
+
+    def test_an_unresolved_selection_skips_the_source_and_names_what_the_update_adds(self) -> None:
+        origin = self.fixture.origins["acme/skills"]
+        git(["mv", "skills/alpha", "skills/omega"], origin)
+        write_skill(origin, "skills/omega")
+        git(["add", "-A"], origin)
+        self.advance("acme/skills", "rename alpha")
+        output = self.update(ok=False)
+        self.assertIn("acme/skills: skipped: skills.txt:2: name is missing at the pinned commit: acme/skills:alpha",
+                      output)
+        self.assertIn("the update adds: omega", output)
+        self.assertEqual(self.origin_subjects(), ["initial skillset"])
+        self.assertEqual(self.check().returncode, 0)
+
+    def test_main_that_moves_during_the_run_is_merged_validated_and_pushed(self) -> None:
+        acme = self.advance("acme/skills")
+        process = self.start()
+        self.read_until(process, "[a]ccept")
+        self.push_elsewhere("# other machine\nacme/skills:alpha\n", "other selection")
+        output = self.answer(process, "a\n")
+        self.assertIn("acme/skills: pushed", output)
+        self.assertEqual(sorted(self.origin_subjects())[1:], sorted([
+            f"Update acme/skills to {acme[:7]}", "initial skillset", "other selection",
+        ]))
+        self.assertEqual(len(git(["log", "--format=%P", "-1", "main"], self.origin).split()), 2)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
+        self.assertIn("# other machine", (self.repo / "skills.txt").read_text(encoding="utf-8"))
+        self.assertEqual(git(["rev-parse", "HEAD"], self.fixture.sources["acme/skills"]), acme)
+        self.assertEqual(self.check().returncode, 0)
+
+    def test_a_moved_main_whose_selection_the_update_breaks_is_not_published(self) -> None:
+        git(["rm", "-rq", "skills/unselected"], self.fixture.origins["acme/skills"])
+        self.advance("acme/skills", "remove unselected")
+        head = git(["rev-parse", "HEAD"], self.repo)
+        process = self.start()
+        self.read_until(process, "[a]ccept")
+        self.push_elsewhere("acme/skills:alpha\nacme/skills:unselected\n", "select unselected elsewhere")
+        output = self.answer(process, "a\n", ok=False)
+        self.assertIn("acme/skills: skipped: skills.txt:2: name is missing at the pinned commit: "
+                      "acme/skills:unselected", output)
+        self.assertEqual(self.origin_subjects(), ["select unselected elsewhere", "initial skillset"])
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
+        self.assertEqual(self.check().returncode, 0)
+
+    def test_a_rejected_push_skips_the_source_and_the_next_one_starts_from_a_clean_base(self) -> None:
+        hook = self.origin / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\nwhile read old new ref; do\n"
+                        "  git log --format=%s \"$old..$new\" | grep -q '^Update acme/skills ' && exit 1\n"
+                        "done\nexit 0\n", encoding="utf-8")
+        hook.chmod(0o755)
+        acme, zebra = self.advance("acme/skills"), self.advance("zebra/tools")
+        output = self.update("a\na\n", ok=False)
+        self.assertIn("acme/skills: skipped: git push", output)
+        self.assertIn("zebra/tools: pushed", output)
+        self.assertEqual(self.origin_subjects(), [f"Update zebra/tools to {zebra[:7]}", "initial skillset"])
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
+        self.assertNotEqual(self.pin("acme/skills"), acme)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.fixture.sources["acme/skills"]), self.pin("acme/skills"))
+        self.assertEqual(self.check().returncode, 0)
+
+    def test_a_local_selection_commit_is_announced_and_published_with_the_first_accepted_source(self) -> None:
+        (self.repo / "skills.txt").write_text("# local\nacme/skills:alpha\n", encoding="utf-8")
+        git(["commit", "-qam", "Update skill selection (+0 -0)"], self.repo)
+        local = git(["rev-parse", "HEAD"], self.repo)
+        self.advance("acme/skills")
+        self.advance("zebra/tools")
+        output = self.update("a\ns\n")
+        first, second = output.split("[a]ccept")[:2]
+        self.assertIn(f"also publishes 1 local commit(s) with this push:\n    {local[:7]} Update skill selection (+0 -0)\n",
+                      first)
+        self.assertNotIn("also publishes", second)
+        self.assertEqual(git(["rev-parse", "main~1"], self.origin), local)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
+
+    def test_a_rerun_finishes_when_the_live_checkout_moved_after_the_push(self) -> None:
+        acme = self.advance("acme/skills")
+        process = self.start()
+        self.read_until(process, "[a]ccept")
+        git(["commit", "-q", "--allow-empty", "-m", "live change"], self.repo)
+        live = git(["rev-parse", "HEAD"], self.repo)
+        output = self.answer(process, "a\n", ok=False)
+        self.assertIn("acme/skills: pushed", output)
+        self.assertIn("cannot fast-forward", output)
+        self.assertIn("a rerun finishes", output)
+        self.assertEqual(self.pin("acme/skills", repo=self.origin, ref="main"), acme)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), live)
+        output = self.update()
+        self.assertIn("acme/skills: up to date", output)
+        self.assertEqual(self.pin("acme/skills"), acme)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.fixture.sources["acme/skills"]), acme)
+        git(["merge-base", "--is-ancestor", live, "HEAD"], self.repo)
+        self.assertEqual(self.check().returncode, 0)
 
 
 if __name__ == "__main__":

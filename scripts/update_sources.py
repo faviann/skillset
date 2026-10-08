@@ -5,21 +5,62 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-from reconcile_skills import home_path, require_primary_checkout, selection_install_blocker
+from reconcile_skills import (
+    ensure_skillset_committed,
+    home_path,
+    require_primary_checkout,
+    selection_install_blocker,
+    stale_upstreams,
+)
 from skill_catalog import (
+    Catalog,
     ReconcileError,
     SourceCatalog,
     git,
     git_env,
     load_catalog,
     parse_modules,
+    path_prefixes,
+    read_selection_text,
     selection_uncommitted,
     update_marker,
 )
 
 BRANCH = "update-sources"
+PROMPT = "[a]ccept and push, [s]kip, [d]iff of changed selected skills? "
+
+
+@dataclass(frozen=True)
+class SourceUpdate:
+    name: str
+    old: str
+    new: str
+
+
+@dataclass(frozen=True)
+class Summary:
+    commits: int
+    added: list[str]
+    removed: list[str]
+    changed: list[str]
+    selected: frozenset[str]
+    unpublished: list[str]
+
+    def lines(self, update: SourceUpdate) -> list[str]:
+        lines = [f"{update.name} {update.old[:7]} -> {update.new[:7]}, "
+                 f"{self.commits} commit{'s' if self.commits != 1 else ''}"]
+        for label, names in (("added", self.added), ("removed", self.removed), ("changed", self.changed)):
+            if names:
+                lines.append(f"  {label}: " + " ".join(name + "*" * (name in self.selected) for name in names))
+        if self.selected.intersection(self.changed):
+            lines.append("  * selected")
+        if self.unpublished:
+            lines.append(f"  also publishes {len(self.unpublished)} local commit(s) with this push:")
+            lines.extend(f"    {line}" for line in self.unpublished)
+        return lines
 
 
 def run_git(args: list[str], cwd: Path, *, interactive: bool = False) -> None:
@@ -82,13 +123,116 @@ def prepare_worktree(root: Path) -> Path:
     return worktree
 
 
-def inspect_source(name: str, source: SourceCatalog) -> str:
-    """Fetch the branch tips #74 compares and report what this run does with the source."""
+def reset_worktree(worktree: Path, checkpoint: str) -> None:
+    git(["reset", "-q", "--hard", checkpoint], cwd=worktree)
+    restore_sources(worktree, force=True)
+
+
+def inspect_source(name: str, source: SourceCatalog) -> SourceUpdate | str:
+    """Fetch the branch tips #74 compares, then say what to apply or report for this source."""
+    tips: dict[str, str] = {}
+
     def tip(url: str, branch: str) -> str:
         git(["fetch", "-q", url, f"refs/heads/{branch}"], cwd=source.path)
-        return git(["rev-parse", "FETCH_HEAD"], cwd=source.path)
+        tips[url] = git(["rev-parse", "FETCH_HEAD"], cwd=source.path)
+        return tips[url]
 
-    return update_marker(name, source, tip) or "up to date"
+    marker = update_marker(name, source, tip)
+    if marker != "update available":
+        return marker or "up to date"
+    return SourceUpdate(name, source.module.pin, tips[source.module.url])
+
+
+def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog) -> None:
+    git(["checkout", "-q", "--detach", update.new], cwd=source.path)
+    short = git(["rev-parse", "--short", update.new], cwd=source.path)
+    run_git(["commit", "-q", "--only", "-m", f"Update {update.name} to {short}", "--",
+             f"sources/{update.name}", "sources.toml"], worktree, interactive=True)
+
+
+def check_installable(worktree: Path, catalog: Catalog) -> None:
+    """The install's read-only checks after the catalog loads; the install itself refuses linked worktrees."""
+    ensure_skillset_committed(worktree)
+    catalog.resolve(read_selection_text(worktree)).install_targets()
+    if stale := stale_upstreams(catalog):
+        raise ReconcileError("\n".join(stale))
+
+
+def skill_directories(source: SourceCatalog, name: str) -> set[Path]:
+    """The skill's canonical directory and the variant copies installs use, relative to the source."""
+    return {Path(target).relative_to(source.path) for target in (source.skills[name], *source.targets(name).values())}
+
+
+def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after: SourceCatalog,
+              selected: frozenset[str]) -> Summary:
+    changed_files = git(["diff", "--name-only", "-z", "--no-renames", update.old, update.new], cwd=after.path)
+    touched = path_prefixes(map(Path, filter(None, changed_files.split("\0"))))
+    changed = [name for name in sorted(set(before.skills) & set(after.skills))
+               if any(touched[directory]
+                      for directory in skill_directories(before, name) | skill_directories(after, name))]
+    commits = int(git(["rev-list", "--count", f"{update.old}..{update.new}"], cwd=after.path))
+    unpublished = git(["log", "--format=%h %s", "origin/main..HEAD^"], cwd=worktree).splitlines()
+    return Summary(commits, sorted(set(after.skills) - set(before.skills)),
+                   sorted(set(before.skills) - set(after.skills)), changed, selected, unpublished)
+
+
+def show_diff(update: SourceUpdate, before: SourceCatalog, after: SourceCatalog, summary: Summary) -> None:
+    directories = sorted({str(directory) for name in summary.changed if name in summary.selected
+                          for directory in skill_directories(before, name) | skill_directories(after, name)})
+    if not directories:
+        print("no selected skill changed")
+        return
+    subprocess.run(["git", "diff", update.old, update.new, "--", *directories], cwd=after.path,
+                   env=git_env(interactive=True), check=False)
+
+
+def ask() -> str:
+    while True:
+        try:
+            answer = input(PROMPT).strip().lower()
+        except EOFError:
+            print()
+            return "s"
+        if answer in ("a", "s", "d"):
+            return answer
+
+
+def update_source(worktree: Path, name: str, before: Catalog) -> tuple[bool, Catalog]:
+    """Fetch, bump, review and publish one source; a skip or any failure resets to the checkpoint."""
+    checkpoint = git(["rev-parse", "HEAD"], cwd=worktree)
+    source = before.sources[name]
+    added: list[str] = []
+    try:
+        update = inspect_source(name, source)
+        if isinstance(update, str):
+            print(f"{name}: {update}")
+            return True, before
+        commit_update(worktree, update, source)
+        after = load_catalog(worktree)
+        selected = frozenset(line.name for line in after.resolve(read_selection_text(worktree)).lines
+                             if line.name and line.value.startswith(f"{name}:"))
+        summary = summarize(worktree, update, source, after.sources[name], selected)
+        added = summary.added
+        check_installable(worktree, after)
+        print("\n".join(summary.lines(update)))
+        while (answer := ask()) == "d":
+            show_diff(update, source, after.sources[name], summary)
+        if answer == "s":
+            print(f"{name}: skipped")
+            reset_worktree(worktree, checkpoint)
+            return True, before
+        if merge_origin(worktree):
+            after = load_catalog(worktree)
+            check_installable(worktree, after)
+        run_git(["push", "-q", "origin", "HEAD:main"], worktree, interactive=True)
+        print(f"{name}: pushed")
+        return True, after
+    except ReconcileError as error:
+        print(f"{name}: skipped: {error}")
+        if added:
+            print(f"  the update adds: {' '.join(added)}")
+        reset_worktree(worktree, checkpoint)
+        return False, before
 
 
 def finish(root: Path, worktree: Path) -> None:
@@ -113,12 +257,8 @@ def run(root: Path) -> int:
     catalog = load_catalog(worktree)
     failed = False
     for path in parse_modules(worktree):
-        name = path.removeprefix("sources/")
-        try:
-            print(f"{name}: {inspect_source(name, catalog.sources[name])}")
-        except ReconcileError as error:
-            print(f"{name}: failed: {error}")
-            failed = True
+        ok, catalog = update_source(worktree, path.removeprefix("sources/"), catalog)
+        failed |= not ok
     finish(root, worktree)
     return int(failed)
 
