@@ -194,6 +194,7 @@ class UpdateSyncTests(UpdateCase):
         git(["commit", "-qm", "upstream change"], canonical)
         git(["pull", "-q", "--no-rebase", "--no-edit", str(canonical), "main"], fork)
         tip, canonical_tip = git(["rev-parse", "HEAD"], fork), git(["rev-parse", "HEAD"], canonical)
+        git(["commit", "-q", "--allow-empty", "-m", "after the sync"], canonical)
         refs = {repo: git(["for-each-ref"], repo) for repo in (fork, canonical)}
         output = self.update("a\n")
         self.assertIn("acme/skills: pushed", output)
