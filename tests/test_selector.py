@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import CHECKOUT, SkillsetFixture, git, write_selection
+from fixture import CHECKOUT, SkillsetFixture, git, redirect_github, write_selection
 from pilot import PilotTestCase, selector
 
 
@@ -20,7 +20,8 @@ class SkillsetCase(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="skillset-selector-test-")
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
-        environment = patch.dict(os.environ, HOME=str(self.base / "home"))
+        environment = patch.dict(os.environ, HOME=str(self.base / "home"),
+                                 XDG_CONFIG_HOME=str(self.base / "config"))
         environment.start()
         self.addCleanup(environment.stop)
 
@@ -34,9 +35,10 @@ class SkillsetCase(unittest.TestCase):
         file = fixture.sources[source] / path / "SKILL.md"
         file.write_text(f"---\nname: {file.parent.name}\n{fields}\n---\n\n# Fixture\n", encoding="utf-8")
 
-    def pin_changes(self, fixture: SkillsetFixture, source: str) -> None:
+    def publish_and_pin(self, fixture: SkillsetFixture, source: str) -> None:
         git(["add", "-A"], fixture.sources[source])
         git(["commit", "-qm", "update skill content"], fixture.sources[source])
+        git(["pull", "-q", "--ff-only", str(fixture.sources[source]), "HEAD"], fixture.origins[source])
         git(["add", "sources"], fixture.repo)
         git(["commit", "-qm", "update source pin"], fixture.repo)
 
@@ -61,7 +63,7 @@ class DisplayCatalogTests(SkillsetCase):
         self.metadata(fixture, "acme/skills", "skills/other/zeta", "category: Assistants\ndisplay_order: -100")
         self.metadata(fixture, "acme/skills", "skills/elsewhere/delta", "category: Assistants")
         self.metadata(fixture, "acme/skills", "skills/singleton/solo", "category: Unique")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         catalog = self.display(fixture)
         self.assertEqual(list(catalog), ["acme/skills", "zebra/tools"])
         self.assertEqual([(skill.group, skill.name) for skill in catalog["acme/skills"]], [
@@ -77,7 +79,7 @@ class DisplayCatalogTests(SkillsetCase):
         self.metadata(fixture, "acme/skills", "skills/broken", "description: [")
         self.metadata(fixture, "acme/skills", "skills/manual",
                       "description: |\n  First line.\n  Second line.\ndisable-model-invocation: true")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         broken, manual = self.display(fixture)["acme/skills"]
         self.assertEqual((broken.name, broken.unreadable), ("broken", True))
         self.assertIn("# Fixture", broken.body)
@@ -98,7 +100,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         fixture = self.fixture()
         for path in ("skills/alpha", "skills/beta"):
             self.metadata(fixture, "acme/skills", path, "category: Workflow")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         before = (fixture.repo / "skills.txt").read_bytes()
         head = git(["rev-parse", "HEAD"], fixture.repo)
         subprocess.run([str(fixture.repo / "scripts/reconcile-skills.sh")],
@@ -148,7 +150,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         self.metadata(fixture, "beta/tools", "gamma",
                       "category: Maintenance\ndescription: Repair fragile builds")
         self.metadata(fixture, "beta/tools", "omega", "category: Maintenance")
-        self.pin_changes(fixture, "beta/tools")
+        self.publish_and_pin(fixture, "beta/tools")
         before = (fixture.repo / "skills.txt").read_bytes()
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
@@ -244,11 +246,11 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         (skill_dir / "nested").mkdir()
         (skill_dir / "nested/example.txt").write_text("Example\n", encoding="utf-8")
         (fixture.sources["acme/skills"] / "outside.txt").write_text("Outside\n", encoding="utf-8")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         self.metadata(fixture, "zebra/tools", "alpha",
                       "description: Other description.\nuser-invocable: false")
         self.metadata(fixture, "zebra/tools", "broken", "description: [")
-        self.pin_changes(fixture, "zebra/tools")
+        self.publish_and_pin(fixture, "zebra/tools")
 
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
@@ -277,7 +279,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         fixture = self.fixture()
         upstream = git(["rev-parse", "HEAD"], fixture.sources["acme/skills"])
         self.metadata(fixture, "acme/skills", "skills/alpha", "description: Changed in the fork.")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         # zebra/tools names an upstream object the clone does not have.
         (fixture.repo / "sources.toml").write_text(
             f'["acme/skills"]\nupstream = "{upstream}"\n["zebra/tools"]\nupstream = "{"1" * 40}"\n',
@@ -304,7 +306,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             + "\n\n".join(f"Paragraph{number}" for number in range(60))
             + "\n\nEndOfSkill\n", encoding="utf-8",
         )
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             body = await self.body_text(pilot)
@@ -332,7 +334,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         file = fixture.sources["acme/skills"] / "skills/alpha/SKILL.md"
         words = " ".join(f"word{number}" for number in range(12))
         file.write_text(f"---\nname: alpha\ndescription: fixture\n---\n\n{words} TailWord\n", encoding="utf-8")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test(size=(160, 40)) as pilot:
             # One line at this width.
@@ -552,7 +554,9 @@ class SelectorRealDataTests(PilotTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="skillset-selector-real-data-")
         self.addCleanup(temporary.cleanup)
-        environment = patch.dict(os.environ, HOME=temporary.name)
+        config_home = Path(temporary.name) / "config"
+        redirect_github(config_home, Path(temporary.name) / "github")
+        environment = patch.dict(os.environ, HOME=temporary.name, XDG_CONFIG_HOME=str(config_home))
         environment.start()
         self.addCleanup(environment.stop)
 
