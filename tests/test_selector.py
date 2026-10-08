@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import CHECKOUT, SkillsetFixture, git, redirect_github, write_selection
+from fixture import CHECKOUT, SkillsetFixture, configure_git, git, redirect_github, write_selection
 from pilot import PilotTestCase, selector
 
 
@@ -295,6 +297,65 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             await pilot.press("left", "down")
             self.assertEqual(app.query_one("#skills", selector.CatalogList).current, "zebra/tools:gamma")
             self.assertEqual(self.text(app, "#skill-name"), "gamma")
+
+    async def test_only_a_source_whose_branch_moved_shows_update_available(self) -> None:
+        fixture = self.fixture({
+            "acme/skills": {"alpha": "alpha"}, "gone/skills": {"beta": "beta"}, "zebra/tools": {"gamma": "gamma"},
+        }, [])
+        git(["commit", "--allow-empty", "-qm", "upstream change"], fixture.origins["acme/skills"])
+        shutil.rmtree(fixture.origins["gone/skills"])
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test():
+            await app.workers.wait_for_complete()
+            self.assertEqual(self.lines(app, "sources"), [
+                "acme/skills", "0/1 · update available", "gone/skills", "0/1", "zebra/tools", "0/1",
+            ])
+            self.assertEqual(self.text(app, "#message"), "")
+
+    async def test_a_fork_follows_its_own_branch_then_its_canonical_branch(self) -> None:
+        forks = ["ahead/fork", "behind/fork", "gone/fork", "own/fork"]
+        fixture = self.fixture({name: {"skill": "skill"} for name in forks}, [])
+        upstreams = {}
+        for name in forks:
+            upstreams[name] = git(["rev-parse", "HEAD"], fixture.sources[name])
+            canonical = fixture.github / f"{name}.git"
+            git(["clone", "-q", str(fixture.origins[name]), str(canonical)], self.base)
+            if name != "own/fork":
+                configure_git(canonical)
+                git(["commit", "--allow-empty", "-qm", "upstream change"], canonical)
+        git(["commit", "--allow-empty", "-qm", "fork change"], fixture.origins["ahead/fork"])
+        shutil.rmtree(fixture.origins["gone/fork"])
+        self.metadata(fixture, "own/fork", "skill", "description: Changed in the fork.")
+        self.publish_and_pin(fixture, "own/fork")
+        (fixture.repo / "sources.toml").write_text(
+            "".join(f'["{name}"]\nupstream = "{commit}"\n' for name, commit in upstreams.items()),
+            encoding="utf-8",
+        )
+        git(["commit", "-qam", "declare forks"], fixture.repo)
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test():
+            await app.workers.wait_for_complete()
+            self.assertEqual(self.lines(app, "sources"), [
+                "ahead/fork", "0/1 · update available", "behind/fork", "0/1 · fork behind upstream",
+                "gone/fork", "0/1", "own/fork", "0/1",
+            ])
+
+    async def test_a_remote_that_never_answers_holds_up_neither_keys_nor_quitting(self) -> None:
+        fixture = self.fixture()
+        with (self.base / "config/git/config").open("a", encoding="utf-8") as config:
+            config.write(f'[url "ssh://never.invalid/"]\n\tinsteadOf = {fixture.origins["acme/skills"]}\n'
+                         "[core]\n\tsshCommand = timeout 60 sh -c 'cat >/dev/null'\n")
+        app = selector.SelectorApp(root=fixture.repo)
+        started = time.monotonic()
+        async with app.run_test() as pilot:
+            await pilot.press("down")
+            self.assertEqual(app.query_one("#sources", selector.CatalogList).current, "zebra/tools")
+            self.assertLess(time.monotonic() - started, selector.LOOKUP_TIMEOUT_SECONDS)
+            await pilot.press("escape")
+        self.assertFalse(app.is_running)
+        # App.run ends in asyncio.run, which waits for these threads before the process exits.
+        await asyncio.get_running_loop().shutdown_default_executor()
+        self.assertLess(time.monotonic() - started, selector.LOOKUP_TIMEOUT_SECONDS + 20)
 
     async def test_full_markdown_body_can_be_scrolled_and_changes_with_highlight(self) -> None:
         fixture = self.fixture()

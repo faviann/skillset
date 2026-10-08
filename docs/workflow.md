@@ -36,6 +36,12 @@ the skills column. Clicking a circle toggles it, and clicking a name highlights
 it. Selecting a name from another source asks before replacing its current
 selection.
 
+In the Sources column, **update available** means the tip of a source's tracked
+branch differs from its pin; see [Update sources](#update-sources).
+**fork behind upstream** means a fork is at its pin while its canonical
+repository has moved past `upstream`. Sync the fork, and the source then shows
+**update available**. A lookup that fails shows no marker.
+
 Ctrl+S reviews additions and removals against the last commit. **Save and install**
 is the default: it writes `skills.txt`, closes the selector, commits only that
 file if needed, and installs in your terminal. When the branch is ahead of its

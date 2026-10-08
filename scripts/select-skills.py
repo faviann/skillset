@@ -51,6 +51,7 @@ SECONDARY = "#999999"
 MANUAL = "red"
 AUTOMATIC = "green"
 NOT_IN_CATALOG = "Not in catalog"
+LOOKUP_TIMEOUT_SECONDS = 5
 
 
 @dataclass
@@ -112,6 +113,21 @@ def display_catalog(catalog: skill_catalog.Catalog) -> dict[str, list[Skill]]:
             skills, key=lambda skill: (skill.group.casefold(), skill.group, skill.name),
         )
     return dict(sorted(result.items(), key=lambda item: (item[0].casefold(), item[0])))
+
+
+def branch_tip(root: Path, url: str, branch: str) -> str | None:
+    ref = f"refs/heads/{branch}"
+    try:
+        # A 401 runs credential helpers and askpass, which GIT_TERMINAL_PROMPT does not stop.
+        result = subprocess.run(
+            ["git", "-c", "credential.helper=", "-c", "core.askPass=", "ls-remote", "--", url, ref],
+            cwd=root, env=skill_catalog.git_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, errors="replace", timeout=LOOKUP_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    tips = {name: oid for oid, _, name in (line.partition("\t") for line in result.stdout.splitlines())}
+    return tips.get(ref)
 
 
 @dataclass
@@ -421,6 +437,7 @@ class SelectorApp(App[bool]):
         self.not_installed = skill_catalog.selection_uncommitted(self.root)
         self.install_error: str | None = None
         self.install_check = None
+        self.markers: dict[str, str] = {}
         self.source: str | None = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
         self.search_text = ""
         self.theme = "textual-dark"
@@ -458,6 +475,22 @@ class SelectorApp(App[bool]):
         self.query_one("#sources", CatalogList).focus()
         if not self.not_installed:
             self.install_check = self.run_worker(self.check_install_status, thread=True)
+        for name, source in self.selection_catalog.sources.items():
+            self.run_worker(partial(self.find_update, name, source), thread=True)
+
+    def find_update(self, name: str, source: skill_catalog.SourceCatalog) -> None:
+        worker = get_current_worker()
+
+        def tip_unless_cancelled(url: str, branch: str) -> str | None:
+            return None if worker.is_cancelled else branch_tip(self.root, url, branch)
+
+        marker = skill_catalog.update_marker(name, source, tip_unless_cancelled)
+        if marker and not worker.is_cancelled:
+            self.call_from_thread(self.show_update, name, marker)
+
+    def show_update(self, source: str, marker: str) -> None:
+        self.markers[source] = marker
+        self.fill_sources(keep_cursor=True)
 
     def check_install_status(self) -> None:
         status = reconcile_skills.install_status(self.root)
@@ -493,7 +526,10 @@ class SelectorApp(App[bool]):
             selected = sum(f"{source}:{skill.name}" in self.draft for skill in skills)
             count = len(self.matching_skills(source))
             matches = f" · {count} match{'es' if count != 1 else ''}" if self.search_text else ""
-            rows.append(Row(source, [Text(source), Text(f"  {selected}/{len(skills)}{matches}", style=SECONDARY)]))
+            marker = f" · {self.markers[source]}" if source in self.markers else ""
+            rows.append(Row(source, [Text(source), Text.assemble(
+                (f"  {selected}/{len(skills)}{matches}", SECONDARY), (marker, ACCENT),
+            )]))
             if count:
                 matching_sources.append(source)
         sources = self.query_one("#sources", CatalogList)

@@ -257,7 +257,8 @@ raise SystemExit(m.main(sys.argv[4:]))
             "#!/bin/sh\n"
             '[ "$GIT_NO_LAZY_FETCH" = 1 ] && [ "$GIT_OPTIONAL_LOCKS" = 0 ] || { echo missing-offline-guard >&2; exit 98; }\n'
             "case \" $* \" in\n"
-            "  *' submodule update '*|*' fetch '*|*' pull '*|*' clone '*) echo forbidden git network/init command >&2; exit 97;;\n"
+            "  *' submodule update '*|*' fetch '*|*' pull '*|*' clone '*|*' ls-remote '*)"
+            " echo forbidden git network/init command >&2; exit 97;;\n"
             f"esac\nexec {real_git} \"$@\"\n",
             encoding="utf-8",
         )
