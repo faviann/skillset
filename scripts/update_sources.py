@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from reconcile_skills import (
@@ -19,6 +19,7 @@ from skill_catalog import (
     Catalog,
     ReconcileError,
     SourceCatalog,
+    canonical_url,
     git,
     git_env,
     load_catalog,
@@ -38,6 +39,7 @@ class SourceUpdate:
     name: str
     old: str
     new: str
+    upstream: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,11 +142,21 @@ def inspect_source(name: str, source: SourceCatalog) -> SourceUpdate | str:
     marker = update_marker(name, source, tip)
     if marker != "update available":
         return marker or "up to date"
-    return SourceUpdate(name, source.module.pin, tips[source.module.url])
+    update = SourceUpdate(name, source.module.pin, tips[source.module.url])
+    if not source.upstream:
+        return update
+    canonical = tip(canonical_url(name), source.module.branch)
+    return replace(update, upstream=git(["merge-base", canonical, update.new], cwd=source.path))
 
 
 def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog) -> None:
     git(["checkout", "-q", "--detach", update.new], cwd=source.path)
+    if update.upstream and update.upstream != source.upstream:
+        file = worktree / "sources.toml"
+        text = file.read_text(encoding="utf-8")
+        if text.count(f'"{source.upstream}"') != 1:
+            raise ReconcileError(f'sources.toml must quote "{source.upstream}" exactly once to update {update.name}')
+        file.write_text(text.replace(f'"{source.upstream}"', f'"{update.upstream}"'), encoding="utf-8")
     short = git(["rev-parse", "--short", update.new], cwd=source.path)
     run_git(["commit", "-q", "--only", "-m", f"Update {update.name} to {short}", "--",
              f"sources/{update.name}", "sources.toml"], worktree, interactive=True)

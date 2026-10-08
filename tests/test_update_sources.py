@@ -160,6 +160,26 @@ class UpdateSyncTests(UpdateCase):
         self.assertEqual(git(["for-each-ref"], self.fixture.origins["acme/skills"]), fork_refs)
         self.assertEqual(git(["status", "--porcelain"], self.repo), "")
 
+    def test_a_synced_fork_moves_its_pin_and_upstream_to_the_merge_base(self) -> None:
+        canonical = self.add_canonical("acme/skills")
+        fork = self.fixture.origins["acme/skills"]
+        git(["commit", "-qam", "fork change", "--allow-empty"], fork)
+        write_skill(canonical, "skills/beta")
+        git(["add", "-A"], canonical)
+        git(["commit", "-qm", "upstream change"], canonical)
+        git(["pull", "-q", "--no-rebase", "--no-edit", str(canonical), "main"], fork)
+        tip, canonical_tip = git(["rev-parse", "HEAD"], fork), git(["rev-parse", "HEAD"], canonical)
+        refs = {repo: git(["for-each-ref"], repo) for repo in (fork, canonical)}
+        output = self.update("a\n")
+        self.assertIn("acme/skills: pushed", output)
+        self.assertEqual(self.origin_subjects()[0], f"Update acme/skills to {tip[:7]}")
+        self.assertEqual(git(["show", "--format=", "--name-only", "main"], self.origin),
+                         "sources.toml\nsources/acme/skills")
+        self.assertEqual((self.repo / "sources.toml").read_text(encoding="utf-8"),
+                         f'["acme/skills"]\nupstream = "{canonical_tip}"\n')
+        self.assertEqual({repo: git(["for-each-ref"], repo) for repo in (fork, canonical)}, refs)
+        self.assertEqual(self.check().returncode, 0)
+
 
 class UpdateApplyTests(UpdateCase):
     def start(self) -> subprocess.Popen[str]:

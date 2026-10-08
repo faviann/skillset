@@ -435,6 +435,11 @@ def discover_catalog(root: Path, modules: dict[str, Module]) -> Catalog:
     return Catalog(catalog)
 
 
+def canonical_url(name: str) -> str:
+    """The repository a source's path names, which a fork's URL stands in for."""
+    return f"https://github.com/{name}.git"
+
+
 def update_marker(name: str, source: SourceCatalog, tip: Callable[[str, str], str | None]) -> str | None:
     module = source.module
     tracked = tip(module.url, module.branch)
@@ -444,7 +449,7 @@ def update_marker(name: str, source: SourceCatalog, tip: Callable[[str, str], st
         return "update available"
     if not source.upstream:
         return None
-    canonical = tip(f"https://github.com/{name}.git", module.branch)
+    canonical = tip(canonical_url(name), module.branch)
     if canonical is None or canonical == source.upstream:
         return None
     return "fork behind upstream"
