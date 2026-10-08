@@ -85,6 +85,7 @@ def update_blocker(root: Path) -> str | None:
 
 
 def restore_sources(root: Path, *, force: bool = False) -> None:
+    git(["submodule", "sync", "-q", "--recursive"], cwd=root)
     args = ["submodule", "update", "--init", "--recursive", "--checkout"]
     if force:
         git(["submodule", "foreach", "-q", "--recursive", "git reset -q --hard && git clean -qfdx"], cwd=root)
@@ -93,7 +94,7 @@ def restore_sources(root: Path, *, force: bool = False) -> None:
 
 
 def merge_origin(worktree: Path) -> bool:
-    run_git(["fetch", "-q", "origin"], worktree)
+    run_git(["fetch", "-q", "--no-recurse-submodules", "origin"], worktree)
     if not int(git(["rev-list", "--count", "HEAD..origin/main"], cwd=worktree)):
         return False
     run_git(["merge", "-q", "--no-edit", "origin/main"], worktree, interactive=True)
@@ -115,7 +116,6 @@ def prepare_worktree(root: Path) -> Path:
         worktree.parent.mkdir(parents=True, exist_ok=True)
         git(["worktree", "add", "-B", BRANCH, str(worktree), head], cwd=root)
         print(f"cloning every source into {worktree}")
-    git(["submodule", "sync", "-q", "--recursive"], cwd=worktree)
     restore_sources(worktree, force=True)
     try:
         merge_origin(worktree)

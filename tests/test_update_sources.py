@@ -132,6 +132,29 @@ class UpdateSyncTests(UpdateCase):
         self.assertEqual(git(["symbolic-ref", "--short", "HEAD"], self.worktree), "update-sources")
         self.assertEqual(git(["rev-parse", "HEAD"], self.worktree), git(["rev-parse", "HEAD"], self.repo))
 
+    def test_a_source_url_moved_on_origin_main_is_followed_in_one_run(self) -> None:
+        moved = self.base / "moved.git"
+        git(["clone", "-q", "--bare", str(self.fixture.origins["acme/skills"]), str(moved)], self.base)
+        scratch = self.base / "scratch"
+        git(["clone", "-q", str(moved), str(scratch)], self.base)
+        configure_git(scratch)
+        git(["commit", "-q", "--allow-empty", "-m", "only at the new URL"], scratch)
+        git(["push", "-q", "origin", "main"], scratch)
+        tip = git(["rev-parse", "HEAD"], scratch)
+        other = self.base / "other"
+        git(["clone", "-q", str(self.origin), str(other)], self.base)
+        configure_git(other)
+        git(["config", "-f", ".gitmodules", "submodule.sources/acme/skills.url", str(moved)], other)
+        git(["update-index", "--cacheinfo", f"160000,{tip},sources/acme/skills"], other)
+        git(["commit", "-qam", "Move acme/skills to a new URL"], other)
+        git(["push", "-q", "origin", "main"], other)
+        output = self.update()
+        self.assertIn("acme/skills: up to date", output)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.fixture.sources["acme/skills"]), tip)
+        self.assertEqual(git(["config", "--get", "submodule.sources/acme/skills.url"], self.repo), str(moved))
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
+        self.assertEqual(self.check().returncode, 0)
+
     def test_rerun_recovers_a_conflicted_worktree_with_dirty_sources(self) -> None:
         self.update()
         (self.worktree / "skills.txt").write_text("# worktree\nacme/skills:alpha\n", encoding="utf-8")
