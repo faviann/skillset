@@ -130,8 +130,9 @@ Then it takes each source in `.gitmodules` order:
 At the end, the live checkout fast-forwards to the worktree, restores its
 sources to the new pins and installs. If it cannot fast-forward because the
 live checkout gained commits during the run, the command says so. The pushed
-commits are safe, and a rerun finishes. Rerunning after an interrupted run is
-always safe, because finished sources show nothing to do.
+commits are safe, and a rerun finishes. Ctrl+C at a prompt stops the run the
+same way. Rerunning after an interrupted run is always safe, because finished
+sources show nothing to do.
 
 The command refuses to start, with the reason, outside the primary checkout,
 off `main`, with uncommitted `skills.txt` changes, or wherever the selector

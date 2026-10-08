@@ -278,6 +278,10 @@ def main(argv: list[str]) -> int:
     root = Path(__file__).resolve().parent.parent
     try:
         return run(root)
+    except KeyboardInterrupt:
+        print("\ninterrupted; accepted sources are already on origin/main; rerun scripts/update-sources.sh to finish",
+              file=sys.stderr)
+        return 130
     except (ReconcileError, OSError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

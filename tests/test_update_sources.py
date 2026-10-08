@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -353,6 +354,17 @@ class UpdateApplyTests(UpdateCase):
         self.assertNotIn("also publishes", second)
         self.assertEqual(git(["rev-parse", "main~1"], self.origin), local)
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
+
+    def test_interrupting_at_the_prompt_says_how_to_finish(self) -> None:
+        self.advance("acme/skills")
+        process = self.start()
+        self.read_until(process, "[a]ccept")
+        process.send_signal(signal.SIGINT)
+        output = self.answer(process, "", ok=False)
+        self.assertEqual(process.returncode, 130)
+        self.assertIn("interrupted; accepted sources are already on origin/main; "
+                      "rerun scripts/update-sources.sh to finish", output)
+        self.assertNotIn("Traceback", output)
 
     def test_a_rerun_finishes_when_the_live_checkout_moved_after_the_push(self) -> None:
         acme = self.advance("acme/skills")
