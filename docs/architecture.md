@@ -20,8 +20,10 @@ Forks carry only maintained modifications of their upstream. Skills authored
 by faviann live in the first-party source `faviann/agent-skills`, at
 `sources/faviann/agent-skills`.
 
-`.gitmodules` records the fetch URL and canonical source path; the superproject
-gitlink is the only source-commit lock. `skills.txt` lists selected skills as
+`.gitmodules` records the fetch URL, the tracked branch and the canonical source
+path. Every entry must declare `branch`. The superproject gitlink is the only
+source-commit lock; the tracked branch never changes which commit is installed.
+`skills.txt` lists selected skills as
 `owner/repo:name`, where `owner/repo` is the source folder under `sources/` and
 `name` is the frontmatter identity. Path selections are rejected. The catalog
 resolves these identities at the pinned commit, so moving a skill within its
@@ -67,6 +69,36 @@ skill is marked. `--check` reports an `upstream` that is present but not an
 ancestor of the pin. Install and the selector ignore that, because only the
 marker depends on it. Today `upstream` equals the mattpocock pin, so nothing is
 marked.
+
+When the selector opens, it looks up each source's tracked branch with
+`git ls-remote`, without fetching. This is the selector's only network access;
+install and `--check` never contact a remote. A source shows `update available`
+when the branch tip at its `.gitmodules` URL differs from its pin. For a fork,
+that URL is the fork. When a fork's tip equals its pin, the selector also reads
+the same branch at the canonical repository, `https://github.com/<owner>/<repo>.git`
+from the source path, and shows `fork behind upstream` when that tip differs
+from `upstream`. Skillset never writes to a fork, so you sync it by hand. Each
+lookup runs in the background without a terminal and gives up after five
+seconds. It never prompts for credentials or for an ssh host key. A failed
+lookup shows no marker.
+
+`scripts/update-sources.sh` acts on those markers. It works in a kept linked
+worktree of the live checkout, `~/worktrees/skillset/update-sources`, which it
+forces back to the live `HEAD` and merges `origin/main` into on every run.
+There it fetches each source's tracked branch, commits one pin per source,
+validates the result with the install's read-only checks, and pushes each
+accepted commit to `main`. The worktree validates but never installs. An
+install rejects linked worktrees, and the links point into the live checkout.
+The live checkout changes only at the end of a run, by fast-forward, after
+which its sources are restored and the selection is installed. Because the
+worktree starts from the live checkout, a selection committed locally but not
+yet pushed is published with the first accepted source instead of being lost
+to a clone from `origin`.
+
+Ctrl+U in the selector runs the command only after the selector has closed, as
+Save and install commits only after closing. The lookup therefore stays the
+selector's only network access. The command has the terminal for its prompts,
+commits and pushes, and its exit status becomes the selector's.
 
 The catalog uses this fixed harness order for each install directory:
 
@@ -175,10 +207,11 @@ Nested source submodules are deliberately unsupported for now; rejecting them
 is smaller and safer than claiming incomplete recursive validation.
 
 Install into the real install directories only from the live checkout, a
-primary clone. Git worktrees remain useful for other development, but cannot
-install. Links remain live views of their source checkout: validation proves
-committed state at that moment, not immutable execution contents. Prepare source updates in a
-separate clone and pull the published skillset commit into the live checkout.
+primary clone. Git worktrees remain useful for other development and host the
+update command's work, but cannot install. Links remain live views of their
+source checkout: validation proves committed state at that moment, not
+immutable execution contents. Source updates are prepared and validated in the
+update worktree and reach the live checkout by fast-forward once published.
 Historical reconstruction also depends on the referenced Git objects remaining
 available; Git pointers cannot preserve a deleted remote repository by themselves.
 

@@ -1,8 +1,9 @@
 # Workflow and migration
 
 Two kinds of change reach the installed skills. Selection changes happen in the
-live checkout through `select-skills`. Source pin changes happen in a separate
-clone, are published, and are then pulled into the live checkout.
+live checkout through `select-skills`. Source pin changes happen through
+`scripts/update-sources.sh`, which publishes each update you accept and then
+brings it into the live checkout.
 
 ## Set up a machine
 
@@ -35,6 +36,13 @@ from any directory. Space toggles the highlighted skill; Enter does the same in
 the skills column. Clicking a circle toggles it, and clicking a name highlights
 it. Selecting a name from another source asks before replacing its current
 selection.
+
+In the Sources column, **update available** means the tip of a source's tracked
+branch differs from its pin; see [Update sources](#update-sources).
+**fork behind upstream** means a fork is at its pin while its canonical
+repository has moved past `upstream`. Sync the fork, and the source then shows
+**update available**. A lookup that fails shows no marker. Ctrl+U closes the
+selector and runs the [update command](#update-sources) in your terminal.
 
 Ctrl+S reviews additions and removals against the last commit. **Save and install**
 is the default: it writes `skills.txt`, closes the selector, commits only that
@@ -83,10 +91,83 @@ frontmatter or harness identity.
 
 ## Update sources
 
-Source pins change in a separate clone of skillset, never in the live checkout:
-installed links expose the live checkout's sources directly. Make, commit and
-publish skill edits in the source's own repository first. Then make the
-separate clone:
+Installed links expose the live checkout's sources directly, so a pin never
+changes there by hand. Make, commit and publish skill edits in the source's own
+repository first. Then run the update command from the live checkout, on
+`main`, with `skills.txt` committed:
+
+```bash
+scripts/update-sources.sh
+```
+
+It restores the live checkout's sources, keeps a worktree at
+`~/worktrees/skillset/update-sources`, forces that worktree back to the live
+`HEAD`, merges `origin/main` into it and moves its sources to the merged pins.
+Then it takes each source in `.gitmodules` order:
+
+1. It fetches the source's tracked branch from its `.gitmodules` URL. A source
+   whose pin is the branch tip is up to date. A fork at its pin whose canonical
+   branch moved past `upstream` is reported as **fork behind upstream** and
+   left alone: [sync the fork](#sync-a-fork), then rerun.
+2. It commits the new pin alone in the worktree as `Update owner/repo to
+   <short-sha>`. For a fork, the same commit sets `upstream` in `sources.toml`
+   to the merge-base of the canonical branch tip and the new pin.
+3. It validates the worktree with the install's read-only checks. The catalog
+   must load, every selection must resolve and no `upstream` may be stale. A
+   failure skips the source with its reason. When a selected skill no longer resolves, the
+   report names it and lists the skills the update adds. Deselect it, commit
+   and rerun.
+4. It shows the commits gained and the skills added, removed and changed, with
+   selected skills flagged `*`. Answer `d` to see the full diff of each changed
+   selected skill's directory, `a` to accept or `s` to skip. Review the content,
+   not just the names. A skill can keep its name while its instructions or
+   scripts change. When local `main` has commits that are not on `origin`, such
+   as a selection save, the summary says they will be published with this push.
+5. Accept merges `origin/main` again if it moved, validates again and pushes the
+   worktree to `main` on `origin`. A conflict, a failed validation or a rejected
+   push skips the source. A skip, or any failure, resets the worktree, sources
+   included, to where it was before this source.
+
+At the end, the live checkout fast-forwards to the worktree, restores its
+sources to the new pins and installs. If it cannot fast-forward because the
+live checkout gained commits during the run, the command says so. The pushed
+commits are safe, and a rerun finishes. Ctrl+C at a prompt stops the run the
+same way. Rerunning after an interrupted run is always safe, because finished
+sources show nothing to do.
+
+The command refuses to start, with the reason, outside the primary checkout,
+off `main`, on a detached `HEAD`, during a merge or rebase, with uncommitted
+tracked changes, with untracked files under `scripts/`, or with uncommitted
+`skills.txt` changes. It does not refuse a committed selection that is under
+**Not in catalog**, because the update may be what makes it resolve. It never
+pushes to a source repository. Ctrl+U in the selector closes it and runs the
+command. When the command would refuse, or the selection has unsaved changes,
+the selector stays open and shows why.
+
+### Sync a fork
+
+A source fetched from a fork holds the fork's commits, and the command never
+writes to the fork. When it reports **fork behind upstream**, merge the
+canonical branch into the fork, with GitHub's **Sync fork** or by hand:
+
+```bash
+git clone https://github.com/you/fork.git && cd fork
+git fetch https://github.com/owner/repo.git main
+git merge FETCH_HEAD
+git push origin main
+```
+
+Never rebase the fork and force-push it. That orphans the fork commits that
+older skillset commits pin, and GitHub does not reliably serve unreachable
+commits, so [historical reconstruction](#historical-reconstruction) would
+break. After the sync the fork shows **update available**, and the next run
+bumps its pin and `upstream`.
+
+### Change sources by hand
+
+The manual procedure remains for what the command does not do: adding or
+removing a source, and pinning a commit other than the tracked branch's tip.
+Use a separate clone of skillset, never the live checkout:
 
 ```bash
 git clone --recurse-submodules https://github.com/faviann/skillset.git ~/repos/skillset-update
@@ -100,11 +181,15 @@ skills into it. Add, advance or remove the source:
 
 ```bash
 # Add a source
-git submodule add https://github.com/owner/repo.git sources/owner/repo
+git submodule add -b main https://github.com/owner/repo.git sources/owner/repo
 # Or advance an existing one to a reviewed, published commit
 git -C sources/owner/repo fetch origin
 git -C sources/owner/repo checkout --detach <reviewed-commit>
 ```
+
+`-b` records the source's tracked branch in `.gitmodules`, and validation
+rejects a source without one. Pass the repository's default branch, which
+`git ls-remote --symref https://github.com/owner/repo.git HEAD` prints.
 
 To remove a source, remove its selected lines from `skills.txt` and its
 `sources.toml` entry, then remove the submodule.
@@ -121,8 +206,9 @@ receives through the
 A source with neither variants nor `upstream` needs no entry. Keep
 `sources.toml` tracked, even if it is empty.
 
-When you re-pin or rebase a source fetched from a fork, set its `upstream` in
-`sources.toml` to the full SHA of the fork's merge-base with upstream `main`:
+When you re-pin a source fetched from a fork by hand, set its `upstream` in
+`sources.toml` to the full SHA of the fork's merge-base with upstream `main`,
+as the update command does:
 
 ```bash
 git -C sources/owner/repo fetch https://github.com/owner/repo.git main
@@ -248,5 +334,6 @@ Python packages. The code requires Python 3.11 or newer and Git with
 hard links to symlink objects and directory `fsync`, so receipt and skill
 directories must support these operations. Backups must preserve the hard links
 between receipts and install directories (`cp -a` or equivalent). Since live
-symlinks expose source checkout edits immediately, edit sources only in a
-separate clone, as described in [Update sources](#update-sources).
+symlinks expose source checkout edits immediately, never edit sources in the
+live checkout. Publish changes in the source's own repository and bring them in
+as described in [Update sources](#update-sources).

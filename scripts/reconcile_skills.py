@@ -101,7 +101,7 @@ def ensure_skillset_committed(
     if changed:
         raise ReconcileError(
             "tracked skillset changes are not committed; commit selection, "
-            "source pins, and install code before installing:\n"
+            "source pins, and install code first:\n"
             + "\n".join(f"  {path}" for path in sorted(changed))
             + ("\nrun select-skills and choose Install" if "skills.txt" in changed else "")
         )
@@ -119,7 +119,7 @@ def selection_install_blocker(root: Path) -> str | None:
         require_primary_checkout(root)
         for marker, operation in (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase")):
             if (root / git(["rev-parse", "--git-path", marker], cwd=root)).exists():
-                return f"a {operation} is in progress; finish it before installing"
+                return f"a {operation} is in progress; finish it first"
         if not git(["symbolic-ref", "--quiet", "HEAD"], cwd=root, check=False):
             return "checkout is on a detached HEAD; switch to a branch"
         ensure_skillset_committed(root, exempt={"skills.txt"})

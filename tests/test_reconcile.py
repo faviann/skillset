@@ -257,7 +257,8 @@ raise SystemExit(m.main(sys.argv[4:]))
             "#!/bin/sh\n"
             '[ "$GIT_NO_LAZY_FETCH" = 1 ] && [ "$GIT_OPTIONAL_LOCKS" = 0 ] || { echo missing-offline-guard >&2; exit 98; }\n'
             "case \" $* \" in\n"
-            "  *' submodule update '*|*' fetch '*|*' pull '*|*' clone '*) echo forbidden git network/init command >&2; exit 97;;\n"
+            "  *' submodule update '*|*' fetch '*|*' pull '*|*' clone '*|*' ls-remote '*)"
+            " echo forbidden git network/init command >&2; exit 97;;\n"
             f"esac\nexec {real_git} \"$@\"\n",
             encoding="utf-8",
         )
@@ -897,6 +898,16 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assert_reconcile_fails(self.run_reconciler(), "no committed URL")
         self.assertFalse((self.home / ".agents").exists())
 
+    def test_missing_or_empty_tracked_branch_is_rejected(self) -> None:
+        entry = f'[submodule "sources/acme/skills"]\npath = sources/acme/skills\nurl = {self.origin}\n'
+        for branch in ("", "branch =\n"):
+            with self.subTest(branch=branch):
+                (self.repo / ".gitmodules").write_text(entry + branch)
+                self.commit_skillset()
+                self.assert_reconcile_fails(self.run_reconciler(),
+                                            "submodule has no tracked branch: sources/acme/skills")
+                self.assertFalse((self.home / ".agents").exists())
+
 
 
 class InstallInterfaceTests(unittest.TestCase):
@@ -982,13 +993,13 @@ class InstallInterfaceTests(unittest.TestCase):
         self.conflicting_branches()
         git(["merge", "--no-edit", "competing"], self.repo, ok=False)
         self.assertEqual(selection_install_blocker(self.repo),
-                         "a merge is in progress; finish it before installing")
+                         "a merge is in progress; finish it first")
 
     def test_install_blocker_refuses_rebase_in_progress(self) -> None:
         self.conflicting_branches()
         git(["rebase", "competing"], self.repo, ok=False)
         self.assertEqual(selection_install_blocker(self.repo),
-                         "a rebase is in progress; finish it before installing")
+                         "a rebase is in progress; finish it first")
 
     def test_install_blocker_refuses_linked_worktree(self) -> None:
         worktree = self.base / "linked-worktree"

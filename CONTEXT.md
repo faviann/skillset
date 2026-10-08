@@ -9,6 +9,11 @@ onto local harnesses.
 A pinned upstream repository under `sources/<owner>/<repo>` that owns skill contents.
 _Avoid_: Repo, upstream, submodule (when meaning the concept)
 
+**Tracked branch**:
+The branch a source follows, declared as `branch` in its `.gitmodules` entry.
+The pin is the commit you reviewed; newer commits appear on the tracked branch.
+_Avoid_: Upstream branch, default branch
+
 **Skill**:
 A directory containing exactly one `SKILL.md`. It is identified by its source and
 its frontmatter name, written `owner/repo:name`; the folder it sits in is not

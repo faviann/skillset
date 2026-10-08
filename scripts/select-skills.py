@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -43,6 +44,7 @@ from textual.worker import get_current_worker
 
 import reconcile_skills
 import skill_catalog
+import update_sources
 from selection_draft import Blocked, Changes, CheckoutStore, Conflict, Refused, Replace, SelectionDraft
 
 ACCENT = "#D77757"
@@ -51,6 +53,7 @@ SECONDARY = "#999999"
 MANUAL = "red"
 AUTOMATIC = "green"
 NOT_IN_CATALOG = "Not in catalog"
+LOOKUP_TIMEOUT_SECONDS = 5
 
 
 @dataclass
@@ -112,6 +115,24 @@ def display_catalog(catalog: skill_catalog.Catalog) -> dict[str, list[Skill]]:
             skills, key=lambda skill: (skill.group.casefold(), skill.group, skill.name),
         )
     return dict(sorted(result.items(), key=lambda item: (item[0].casefold(), item[0])))
+
+
+def branch_tip(root: Path, url: str, branch: str) -> str | None:
+    ref = f"refs/heads/{branch}"
+    try:
+        # A 401 runs credential helpers and askpass, which GIT_TERMINAL_PROMPT does not stop.
+        # ssh prompts on /dev/tty, so the lookup runs in a new session with no terminal. With no
+        # terminal, ssh falls back to a GUI askpass unless SSH_ASKPASS_REQUIRE is never.
+        result = subprocess.run(
+            ["git", "-c", "credential.helper=", "-c", "core.askPass=", "ls-remote", "--", url, ref],
+            cwd=root, env={**skill_catalog.git_env(), "SSH_ASKPASS_REQUIRE": "never"}, start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, errors="replace", timeout=LOOKUP_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    tips = {name: oid for oid, _, name in (line.partition("\t") for line in result.stdout.splitlines())}
+    return tips.get(ref)
 
 
 @dataclass
@@ -356,7 +377,7 @@ class SkillBody(Static):
         self.update(content)
 
 
-class SelectorApp(App[bool]):
+class SelectorApp(App[Callable[[Path], int] | None]):
     TITLE = "Skill selector"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
@@ -408,6 +429,7 @@ class SelectorApp(App[bool]):
         Binding("enter", "enter", show=False),
         Binding("space", "toggle", show=False),
         Binding("ctrl+s", "save", show=False),
+        Binding("ctrl+u", "update", show=False),
         Binding("escape", "quit", show=False),
     ]
 
@@ -421,6 +443,7 @@ class SelectorApp(App[bool]):
         self.not_installed = skill_catalog.selection_uncommitted(self.root)
         self.install_error: str | None = None
         self.install_check = None
+        self.markers: dict[str, str] = {}
         self.source: str | None = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
         self.search_text = ""
         self.theme = "textual-dark"
@@ -458,6 +481,22 @@ class SelectorApp(App[bool]):
         self.query_one("#sources", CatalogList).focus()
         if not self.not_installed:
             self.install_check = self.run_worker(self.check_install_status, thread=True)
+        for name, source in self.selection_catalog.sources.items():
+            self.run_worker(partial(self.find_update, name, source), thread=True)
+
+    def find_update(self, name: str, source: skill_catalog.SourceCatalog) -> None:
+        worker = get_current_worker()
+
+        def tip_unless_cancelled(url: str, branch: str) -> str | None:
+            return None if worker.is_cancelled else branch_tip(self.root, url, branch)
+
+        marker = skill_catalog.update_marker(name, source, tip_unless_cancelled)
+        if marker and not worker.is_cancelled:
+            self.call_from_thread(self.show_update, name, marker)
+
+    def show_update(self, source: str, marker: str) -> None:
+        self.markers[source] = marker
+        self.fill_sources(keep_cursor=True)
 
     def check_install_status(self) -> None:
         status = reconcile_skills.install_status(self.root)
@@ -493,7 +532,10 @@ class SelectorApp(App[bool]):
             selected = sum(f"{source}:{skill.name}" in self.draft for skill in skills)
             count = len(self.matching_skills(source))
             matches = f" · {count} match{'es' if count != 1 else ''}" if self.search_text else ""
-            rows.append(Row(source, [Text(source), Text(f"  {selected}/{len(skills)}{matches}", style=SECONDARY)]))
+            marker = f" · {self.markers[source]}" if source in self.markers else ""
+            rows.append(Row(source, [Text(source), Text.assemble(
+                (f"  {selected}/{len(skills)}{matches}", SECONDARY), (marker, ACCENT),
+            )]))
             if count:
                 matching_sources.append(source)
         sources = self.query_one("#sources", CatalogList)
@@ -709,7 +751,7 @@ class SelectorApp(App[bool]):
             self.query_one("#message", Static).update(Text("⎿ Cannot save: " + outcome.reason))
             return
         if install:
-            self.exit(True)
+            self.exit(install_saved_selection)
             return
         self.not_installed = skill_catalog.selection_uncommitted(self.root)
         if not self.not_installed:
@@ -733,6 +775,14 @@ class SelectorApp(App[bool]):
         self.fill_sources()
         self.fill_skills()
         self.query_one("#message", Static).update("⎿ Reloaded skills.txt. Unsaved changes discarded.")
+
+    def action_update(self) -> None:
+        reason = ("the selection has unsaved changes; save and install first" if self.draft.unsaved
+                  else update_sources.update_blocker(self.root))
+        if reason:
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot update sources: {reason}"))
+        else:
+            self.exit(update_sources_in_terminal)
 
     def action_quit(self) -> None:
         search = self.query_one("#search", Input)
@@ -762,12 +812,19 @@ class SelectorApp(App[bool]):
         if self.focused is self.query_one("#search"):
             hint = "↓ or enter skills · esc clear or leave search · ctrl+s save"
         elif self.focused is self.query_one("#details"):
-            hint = "↑↓ scroll · ← sources · → skills · ctrl+s save · esc quit"
+            hint = "↑↓ scroll · ← sources · → skills · ctrl+s save · ctrl+u update · esc quit"
         elif self.focused is self.query_one("#skills"):
-            hint = "↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save · esc quit"
+            hint = ("↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save"
+                    " · ctrl+u update · esc quit")
         else:
-            hint = "↑↓ move · → or enter skills · space toggle · ctrl+s save · esc quit"
+            hint = "↑↓ move · → skills · space toggle · ctrl+s save · ctrl+u update · esc quit"
         self.query_one("#hints", Static).update(hint)
+
+
+def shell_path_env() -> dict[str, str]:
+    selector_bin = Path(sys.prefix, "bin")
+    path = os.environ.get("PATH", os.defpath).split(os.pathsep)
+    return dict(os.environ, PATH=os.pathsep.join(entry for entry in path if Path(entry) != selector_bin))
 
 
 def install_saved_selection(root: Path) -> int:
@@ -792,11 +849,9 @@ def install_saved_selection(root: Path) -> int:
     except (reconcile_skills.ReconcileError, OSError) as error:
         print(f"Could not commit: {error}. skills.txt stays saved; nothing was committed or installed.")
         return 1
-    # uv puts the selector's environment first in PATH. The shell entrypoint
-    # must resolve python3 from the system, just as the manual installer does.
-    env = dict(os.environ, PATH=os.defpath)
     try:
-        result = subprocess.run([str(root / "scripts/reconcile-skills.sh")], cwd=root, env=env, check=False)
+        result = subprocess.run([str(root / "scripts/reconcile-skills.sh")], cwd=root,
+                                env=shell_path_env(), check=False)
         code = result.returncode
     except OSError as error:
         print(f"Could not install: {error}. The selection commit was kept.")
@@ -809,13 +864,24 @@ def install_saved_selection(root: Path) -> int:
     return code
 
 
+def update_sources_in_terminal(root: Path) -> int:
+    """Become the update command, so it alone gets Ctrl+C and its exit status is the selector's."""
+    script = root / "scripts/update-sources.sh"
+    try:
+        os.execve(script, [str(script)], shell_path_env())
+    except OSError as error:
+        print(f"Could not start the update: {error}")
+        return 1
+
+
 def main() -> int:
     try:
         app = SelectorApp()
     except (reconcile_skills.ReconcileError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    return install_saved_selection(app.root) if app.run() else 0
+    handoff = app.run()
+    return handoff(app.root) if handoff else 0
 
 
 if __name__ == "__main__":

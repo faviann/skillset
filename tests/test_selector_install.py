@@ -192,7 +192,7 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
                                  ["1. Save and install", "2. Save only", "3. Keep editing"])
                 await pilot.press("enter")
                 self.assertFalse(app.is_running)
-                self.assertIs(app.return_value, True)
+                self.assertIs(app.return_value, selector.install_saved_selection)
             self.assertEqual(git(["rev-parse", "HEAD"], self.repo), previous)
             self.assertEqual(list(self.home.iterdir()), [])
 
@@ -228,7 +228,7 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
             await pilot.press("ctrl+s")
             self.assertEqual(self.lines(app, "choices"), ["1. Install", "2. Save only", "3. Keep editing"])
             await pilot.press("1")
-            self.assertIs(app.return_value, True)
+            self.assertIs(app.return_value, selector.install_saved_selection)
         self.assertEqual((self.repo / "skills.txt").read_bytes(), before)
 
         code, output = self.handoff()
@@ -328,7 +328,7 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
             self.assertEqual(selection.read_text(), external)
             await pilot.press("2")
             self.assertFalse(app.is_running)
-            self.assertIs(app.return_value, True)
+            self.assertIs(app.return_value, selector.install_saved_selection)
         self.assertEqual(selection.read_text().splitlines()[1:], ["mattpocock/skills:tdd"])
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
 

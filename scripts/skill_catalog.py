@@ -7,7 +7,7 @@ import re
 import subprocess
 import tomllib
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,6 +23,8 @@ INSTALL_HARNESSES = {
 }
 SELECTION_PATH = "skills.txt"
 SELECTION_HEADER = "# Written by the skill selector. Comments and ordering are not kept."
+UPDATE_AVAILABLE = "update available"
+FORK_BEHIND_UPSTREAM = "fork behind upstream"
 
 
 class ReconcileError(Exception):
@@ -35,6 +37,13 @@ class InvalidSkill:
     error: str
 
 
+@dataclass(frozen=True)
+class Module:
+    url: str
+    branch: str
+    pin: str
+
+
 @dataclass
 class SourceCatalog:
     skills: dict[str, str]
@@ -43,6 +52,7 @@ class SourceCatalog:
     path: Path = Path()
     tracked: frozenset[str] = frozenset()
     upstream: str | None = None
+    module: Module | None = None
 
     def targets(self, name: str) -> dict[Path, str]:
         result = {}
@@ -151,7 +161,7 @@ def selection_uncommitted(root: Path) -> bool:
     return bool(git(["diff", "--name-only", "--no-ext-diff", "HEAD", "--", SELECTION_PATH], cwd=root))
 
 
-def parse_modules(root: Path) -> dict[str, str]:
+def parse_modules(root: Path) -> dict[str, Module]:
     modules_file = root / ".gitmodules"
     if not modules_file.is_file() or modules_file.is_symlink():
         raise ReconcileError(".gitmodules is missing or is not a regular file")
@@ -159,16 +169,17 @@ def parse_modules(root: Path) -> dict[str, str]:
     config = git(["config", "--null", "--file", str(modules_file), "--list"], cwd=root)
     paths: dict[str, str] = {}
     urls: dict[str, str] = {}
+    branches: dict[str, str] = {}
     for row in config.split("\0"):
         key, _, value = row.partition("\n")
-        if not re.fullmatch(r"submodule\..*\.(path|url)", key):
+        if not re.fullmatch(r"submodule\..*\.(path|url|branch)", key):
             continue
         section, field = key.rsplit(".", 1)
-        mapping = paths if field == "path" else urls
+        mapping = {"path": paths, "url": urls, "branch": branches}[field]
         if section in mapping:
             raise ReconcileError(f"duplicate submodule {field}: {section}")
         mapping[section] = value
-    modules: set[str] = set()
+    sections: dict[str, str] = {}
     for section, path in paths.items():
         parts = Path(path).parts
         if (len(parts) != 3 or parts[0] != "sources"
@@ -176,26 +187,30 @@ def parse_modules(root: Path) -> dict[str, str]:
                 or any(x in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9_.-]+", x)
                        for x in parts[1:])):
             raise ReconcileError(f"submodule path must follow sources/<owner>/<repo>: {path}")
-        if path in modules:
+        if path in sections:
             raise ReconcileError(f"duplicate submodule path: {path}")
         if not urls.get(section, "").strip():
             raise ReconcileError(f"submodule has no committed URL: {path}")
-        modules.add(path)
+        if not branches.get(section, "").strip():
+            raise ReconcileError(f"submodule has no tracked branch: {path}")
+        sections[path] = section
     pins: dict[str, str] = {}
     for row in git(["ls-tree", "-r", "--full-tree", "HEAD"], cwd=root).splitlines():
         metadata, path = row.split("\t", 1)
         mode, kind, oid = metadata.split()
         if mode == "160000" and kind == "commit":
             pins[path] = oid
+    modules = set(sections)
     if set(pins) != modules:
         raise ReconcileError(
             ".gitmodules and committed submodules differ "
             f"(unconfigured={sorted(set(pins)-modules)}, not-pinned={sorted(modules-set(pins))})"
         )
-    return pins
+    return {path: Module(urls[section], branches[section], pins[path]) for path, section in sections.items()}
 
-def validate_sources(root: Path, modules: dict[str, str]) -> None:
-    for path, expected in sorted(modules.items()):
+def validate_sources(root: Path, modules: dict[str, Module]) -> None:
+    for path, module in sorted(modules.items()):
+        expected = module.pin
         source = root / path
         if source.is_symlink() or not source.is_dir() or not (source / ".git").exists():
             raise ReconcileError(f"source is missing or uninitialized: {path}; run ./setup.sh")
@@ -214,7 +229,7 @@ def validate_sources(root: Path, modules: dict[str, str]) -> None:
             raise ReconcileError(f"source checkout is dirty: {path}")
 
 
-def read_sources(root: Path, modules: dict[str, str]) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+def read_sources(root: Path, modules: dict[str, Module]) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
     """Read the required declaration of variant trees and fork upstream commits."""
     file = root / "sources.toml"
     if file.is_symlink() or not file.is_file():
@@ -359,7 +374,7 @@ def load_catalog(root: Path) -> Catalog:
     return discover_catalog(root, modules)
 
 
-def discover_catalog(root: Path, modules: dict[str, str]) -> Catalog:
+def discover_catalog(root: Path, modules: dict[str, Module]) -> Catalog:
     variants, upstreams = read_sources(root, modules)
     catalog = {}
     for module in sorted(modules):
@@ -417,9 +432,28 @@ def discover_catalog(root: Path, modules: dict[str, str]) -> Catalog:
         catalog[module.removeprefix("sources/")] = SourceCatalog(
             {name: paths[0] for name, paths in candidates.items()}, invalid,
             {harness: variant_skills[tree] for harness, tree in trees.items()},
-            source.absolute(), frozenset(tracked), upstreams.get(module),
+            source.absolute(), frozenset(tracked), upstreams.get(module), modules[module],
         )
     return Catalog(catalog)
+
+
+def canonical_url(name: str) -> str:
+    return f"https://github.com/{name}.git"
+
+
+def update_marker(name: str, source: SourceCatalog, tip: Callable[[str, str], str | None]) -> str | None:
+    module = source.module
+    tracked = tip(module.url, module.branch)
+    if tracked is None:
+        return None
+    if tracked != module.pin:
+        return UPDATE_AVAILABLE
+    if not source.upstream:
+        return None
+    canonical = tip(canonical_url(name), module.branch)
+    if canonical is None or canonical == source.upstream:
+        return None
+    return FORK_BEHIND_UPSTREAM
 
 
 def read_selection_text(root: Path) -> str:

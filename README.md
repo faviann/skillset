@@ -13,37 +13,28 @@ Skill contents stay in independent source repositories. Git submodule pointers
 pin their exact commits; [skills.txt](skills.txt) explicitly selects the skills
 to expose. Adding a source or adding a skill upstream does not install it.
 
-The first source is the canonical upstream `mattpocock/skills`, represented
-under `sources/mattpocock/skills` and currently fetched from the maintained
-`faviann/skills-mattpocock` fork. The fork was reset to upstream `main` on
-2026-10-02; its earlier history is kept under the tag
-`archive/pre-reset-2026-10`.
+Each source lives under `sources/<owner>/<repo>`, named after its canonical
+repository, and its gitlink is its pin. `scripts/update-sources.sh` moves pins
+to the tip of each source's tracked branch, one source at a time, after you
+review the change; see [Update sources](docs/workflow.md#update-sources). The
+sources today:
 
-The second source is `b1rdmania/claude-plain-english-skill` under
-`sources/b1rdmania/claude-plain-english-skill`, pinned at v0.6.1.
-
-The third source is `rampstackco/claude-skills` under
-`sources/rampstackco/claude-skills`, pinned at commit 3d4510a from 2026-09-15.
-Its last release tag, v1.2.0, is 67 commits older, so the pin follows the
-default branch.
-
-The fourth source is `michael-denyer/pstack-claude` under
-`sources/michael-denyer/pstack-claude`, pinned at v0.9.45, with skills under
-`plugins/pstack/skills`.
-The same skills are installed on this workstation as the `pstack` Claude Code
-plugin, which also carries the agents and hook they depend on, so selecting
-them here would duplicate that plugin.
-
-The fifth source is `humanlayer/skills` under `sources/humanlayer/skills`,
-pinned at commit ca7c808 from 2026-09-17 and fetched directly from upstream.
-Its skills live under `plugins/*/skills`. Skill evaluation is tracked in
-[#11](https://github.com/faviann/skillset/issues/11).
-
-The sixth source is `faviann/agent-skills` under
-`sources/faviann/agent-skills`, the repository for first-party skills authored
-by faviann. It includes `publish-artifact`, which moved there with its history
-from the `mattpocock/skills` fork. Author new first-party skills in that
-repository, not in skillset.
+- `mattpocock/skills`, fetched from the maintained `faviann/skills-mattpocock`
+  fork. The fork was reset to upstream `main` on 2026-10-02; its earlier history
+  is kept under the tag `archive/pre-reset-2026-10`.
+- `b1rdmania/claude-plain-english-skill`.
+- `rampstackco/claude-skills`, whose release tags trail its default branch, so
+  the pin follows the branch.
+- `michael-denyer/pstack-claude`, with skills under `plugins/pstack/skills`.
+  The same skills are installed on this workstation as the `pstack` Claude Code
+  plugin, which also carries the agents and hook they depend on, so selecting
+  them here would duplicate that plugin.
+- `humanlayer/skills`, with skills under `plugins/*/skills`. Skill evaluation
+  is tracked in [#11](https://github.com/faviann/skillset/issues/11).
+- `faviann/agent-skills`, the repository for first-party skills authored by
+  faviann. It includes `publish-artifact`, which moved there with its history
+  from the `mattpocock/skills` fork. Author new first-party skills in that
+  repository, not in skillset.
 
 ## Get started
 
@@ -64,8 +55,9 @@ Rerun `./setup.sh` to restore missing or stale sources.
 In the selector, choose skills, then press Ctrl+S and choose **Save and
 install**. That commits `skills.txt` in the live checkout and links the selected
 skills into the install directories `~/.agents/skills` and `~/.claude/skills`.
-Source pin updates happen in a separate clone; see the [workflow
-guide](docs/workflow.md).
+To move source pins, press Ctrl+U in the selector or run
+`scripts/update-sources.sh` from the live checkout; see the
+[workflow guide](docs/workflow.md#update-sources).
 
 Installing is offline. It requires committed configuration and initialized,
 clean sources at their pinned commits, and keeps an ownership receipt for each

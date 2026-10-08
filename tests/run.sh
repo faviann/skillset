@@ -9,12 +9,13 @@ if (( $# > 1 )) || [[ ! "${1:-all}" =~ ^(all|stdlib|selector)$ ]]; then
 fi
 
 if [[ "${1:-all}" != selector ]]; then
-  PYTHONPATH=tests python3 -m unittest -v test_fixture test_catalog test_reconcile test_selection_draft
+  PYTHONPATH=tests python3 -m unittest -v test_fixture test_catalog test_reconcile test_selection_draft \
+    test_update_sources
 fi
 
 if [[ "${1:-all}" != stdlib ]]; then
   selector=scripts/select-skills.py
   uv sync --locked --script "$selector"
   PYTHONPATH=tests "$(uv python find --script "$selector")" -m unittest -v \
-    test_selector test_selector_install test_setup
+    test_selector test_selector_install test_selector_update test_setup
 fi

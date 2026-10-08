@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import CHECKOUT, SkillsetFixture, git, write_selection
+from fixture import CHECKOUT, SkillsetFixture, configure_git, git, redirect_github, write_selection
 from pilot import PilotTestCase, selector
 
 
@@ -20,7 +22,8 @@ class SkillsetCase(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="skillset-selector-test-")
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
-        environment = patch.dict(os.environ, HOME=str(self.base / "home"))
+        environment = patch.dict(os.environ, HOME=str(self.base / "home"),
+                                 XDG_CONFIG_HOME=str(self.base / "config"))
         environment.start()
         self.addCleanup(environment.stop)
 
@@ -34,9 +37,10 @@ class SkillsetCase(unittest.TestCase):
         file = fixture.sources[source] / path / "SKILL.md"
         file.write_text(f"---\nname: {file.parent.name}\n{fields}\n---\n\n# Fixture\n", encoding="utf-8")
 
-    def pin_changes(self, fixture: SkillsetFixture, source: str) -> None:
+    def publish_and_pin(self, fixture: SkillsetFixture, source: str) -> None:
         git(["add", "-A"], fixture.sources[source])
         git(["commit", "-qm", "update skill content"], fixture.sources[source])
+        git(["pull", "-q", "--ff-only", str(fixture.sources[source]), "HEAD"], fixture.origins[source])
         git(["add", "sources"], fixture.repo)
         git(["commit", "-qm", "update source pin"], fixture.repo)
 
@@ -61,7 +65,7 @@ class DisplayCatalogTests(SkillsetCase):
         self.metadata(fixture, "acme/skills", "skills/other/zeta", "category: Assistants\ndisplay_order: -100")
         self.metadata(fixture, "acme/skills", "skills/elsewhere/delta", "category: Assistants")
         self.metadata(fixture, "acme/skills", "skills/singleton/solo", "category: Unique")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         catalog = self.display(fixture)
         self.assertEqual(list(catalog), ["acme/skills", "zebra/tools"])
         self.assertEqual([(skill.group, skill.name) for skill in catalog["acme/skills"]], [
@@ -77,7 +81,7 @@ class DisplayCatalogTests(SkillsetCase):
         self.metadata(fixture, "acme/skills", "skills/broken", "description: [")
         self.metadata(fixture, "acme/skills", "skills/manual",
                       "description: |\n  First line.\n  Second line.\ndisable-model-invocation: true")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         broken, manual = self.display(fixture)["acme/skills"]
         self.assertEqual((broken.name, broken.unreadable), ("broken", True))
         self.assertIn("# Fixture", broken.body)
@@ -98,7 +102,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         fixture = self.fixture()
         for path in ("skills/alpha", "skills/beta"):
             self.metadata(fixture, "acme/skills", path, "category: Workflow")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         before = (fixture.repo / "skills.txt").read_bytes()
         head = git(["rev-parse", "HEAD"], fixture.repo)
         subprocess.run([str(fixture.repo / "scripts/reconcile-skills.sh")],
@@ -148,7 +152,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         self.metadata(fixture, "beta/tools", "gamma",
                       "category: Maintenance\ndescription: Repair fragile builds")
         self.metadata(fixture, "beta/tools", "omega", "category: Maintenance")
-        self.pin_changes(fixture, "beta/tools")
+        self.publish_and_pin(fixture, "beta/tools")
         before = (fixture.repo / "skills.txt").read_bytes()
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
@@ -244,11 +248,11 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         (skill_dir / "nested").mkdir()
         (skill_dir / "nested/example.txt").write_text("Example\n", encoding="utf-8")
         (fixture.sources["acme/skills"] / "outside.txt").write_text("Outside\n", encoding="utf-8")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         self.metadata(fixture, "zebra/tools", "alpha",
                       "description: Other description.\nuser-invocable: false")
         self.metadata(fixture, "zebra/tools", "broken", "description: [")
-        self.pin_changes(fixture, "zebra/tools")
+        self.publish_and_pin(fixture, "zebra/tools")
 
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
@@ -277,7 +281,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         fixture = self.fixture()
         upstream = git(["rev-parse", "HEAD"], fixture.sources["acme/skills"])
         self.metadata(fixture, "acme/skills", "skills/alpha", "description: Changed in the fork.")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         # zebra/tools names an upstream object the clone does not have.
         (fixture.repo / "sources.toml").write_text(
             f'["acme/skills"]\nupstream = "{upstream}"\n["zebra/tools"]\nupstream = "{"1" * 40}"\n',
@@ -294,6 +298,73 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(app.query_one("#skills", selector.CatalogList).current, "zebra/tools:gamma")
             self.assertEqual(self.text(app, "#skill-name"), "gamma")
 
+    async def test_only_a_source_whose_branch_moved_shows_update_available(self) -> None:
+        fixture = self.fixture({
+            "acme/skills": {"alpha": "alpha"}, "gone/skills": {"beta": "beta"},
+            "release/tools": {"delta": "delta"}, "zebra/tools": {"gamma": "gamma"},
+        }, [])
+        git(["commit", "--allow-empty", "-qm", "upstream change"], fixture.origins["acme/skills"])
+        shutil.rmtree(fixture.origins["gone/skills"])
+        git(["branch", "release"], fixture.origins["release/tools"])
+        git(["commit", "--allow-empty", "-qm", "upstream change"], fixture.origins["release/tools"])
+        git(["config", "--file", ".gitmodules", "submodule.sources/release/tools.branch", "release"], fixture.repo)
+        git(["commit", "-qam", "track release"], fixture.repo)
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test():
+            await app.workers.wait_for_complete()
+            self.assertEqual(self.lines(app, "sources"), [
+                "acme/skills", "0/1 · update available", "gone/skills", "0/1",
+                "release/tools", "0/1", "zebra/tools", "0/1",
+            ])
+            self.assertEqual(self.text(app, "#message"), "")
+
+    async def test_a_fork_follows_its_own_branch_then_its_canonical_branch(self) -> None:
+        forks = ["ahead/fork", "behind/fork", "gone/fork", "lost/fork", "own/fork"]
+        fixture = self.fixture({name: {"skill": "skill"} for name in forks}, [])
+        upstreams = {}
+        for name in forks:
+            upstreams[name] = git(["rev-parse", "HEAD"], fixture.sources[name])
+            if name == "lost/fork":
+                continue
+            canonical = fixture.github / f"{name}.git"
+            git(["clone", "-q", str(fixture.origins[name]), str(canonical)], self.base)
+            if name != "own/fork":
+                configure_git(canonical)
+                git(["commit", "--allow-empty", "-qm", "upstream change"], canonical)
+        git(["commit", "--allow-empty", "-qm", "fork change"], fixture.origins["ahead/fork"])
+        shutil.rmtree(fixture.origins["gone/fork"])
+        self.metadata(fixture, "own/fork", "skill", "description: Changed in the fork.")
+        self.publish_and_pin(fixture, "own/fork")
+        (fixture.repo / "sources.toml").write_text(
+            "".join(f'["{name}"]\nupstream = "{commit}"\n' for name, commit in upstreams.items()),
+            encoding="utf-8",
+        )
+        git(["commit", "-qam", "declare forks"], fixture.repo)
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test():
+            await app.workers.wait_for_complete()
+            self.assertEqual(self.lines(app, "sources"), [
+                "ahead/fork", "0/1 · update available", "behind/fork", "0/1 · fork behind upstream",
+                "gone/fork", "0/1", "lost/fork", "0/1", "own/fork", "0/1",
+            ])
+
+    async def test_a_remote_that_never_answers_holds_up_neither_keys_nor_quitting(self) -> None:
+        fixture = self.fixture()
+        with (self.base / "config/git/config").open("a", encoding="utf-8") as config:
+            config.write(f'[url "ssh://never.invalid/"]\n\tinsteadOf = {fixture.origins["acme/skills"]}\n'
+                         "[core]\n\tsshCommand = timeout 60 sh -c 'cat >/dev/null'\n")
+        app = selector.SelectorApp(root=fixture.repo)
+        started = time.monotonic()
+        async with app.run_test() as pilot:
+            await pilot.press("down")
+            self.assertEqual(app.query_one("#sources", selector.CatalogList).current, "zebra/tools")
+            self.assertLess(time.monotonic() - started, selector.LOOKUP_TIMEOUT_SECONDS)
+            await pilot.press("escape")
+        self.assertFalse(app.is_running)
+        # App.run ends in asyncio.run, which waits for these threads before the process exits.
+        await asyncio.get_running_loop().shutdown_default_executor()
+        self.assertLess(time.monotonic() - started, selector.LOOKUP_TIMEOUT_SECONDS + 20)
+
     async def test_full_markdown_body_can_be_scrolled_and_changes_with_highlight(self) -> None:
         fixture = self.fixture()
         file = fixture.sources["acme/skills"] / "skills/alpha/SKILL.md"
@@ -304,7 +375,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             + "\n\n".join(f"Paragraph{number}" for number in range(60))
             + "\n\nEndOfSkill\n", encoding="utf-8",
         )
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             body = await self.body_text(pilot)
@@ -332,7 +403,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         file = fixture.sources["acme/skills"] / "skills/alpha/SKILL.md"
         words = " ".join(f"word{number}" for number in range(12))
         file.write_text(f"---\nname: alpha\ndescription: fixture\n---\n\n{words} TailWord\n", encoding="utf-8")
-        self.pin_changes(fixture, "acme/skills")
+        self.publish_and_pin(fixture, "acme/skills")
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test(size=(160, 40)) as pilot:
             # One line at this width.
@@ -552,7 +623,9 @@ class SelectorRealDataTests(PilotTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="skillset-selector-real-data-")
         self.addCleanup(temporary.cleanup)
-        environment = patch.dict(os.environ, HOME=temporary.name)
+        config_home = Path(temporary.name) / "config"
+        redirect_github(config_home, Path(temporary.name) / "github")
+        environment = patch.dict(os.environ, HOME=temporary.name, XDG_CONFIG_HOME=str(config_home))
         environment.start()
         self.addCleanup(environment.stop)
 

@@ -45,6 +45,13 @@ def configure_git(repo: Path) -> None:
         git(["config", key, value], repo)
 
 
+def redirect_github(xdg_config_home: Path, directory: Path) -> None:
+    config = xdg_config_home / "git/config"
+    config.parent.mkdir(parents=True)
+    config.write_text(f'[url "{directory}/"]\n\tinsteadOf = https://github.com/\n'
+                      '[protocol "file"]\n\tallow = always\n', encoding="utf-8")
+
+
 def write_skill(repo: Path, path: str, *, identity: str | None = None) -> Path:
     skill_dir = repo / path
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -77,12 +84,15 @@ class SkillsetFixture:
         self.base = base
         self.home = base / "home"
         self.home.mkdir()
+        self.github = base / "github"
+        redirect_github(base / "config", self.github)
         self.env = git_environment()
         self.env["HOME"] = str(self.home)
+        self.env["XDG_CONFIG_HOME"] = str(base / "config")
         self.env["PYTHONDONTWRITEBYTECODE"] = "1"
         self.repo = base / "skillset"
         self.repo.mkdir()
-        git(["init", "-q"], self.repo)
+        git(["init", "-q", "-b", "main"], self.repo)
         configure_git(self.repo)
         shipped = git(["ls-files", "-z", "--", "scripts", "setup.sh", ".gitignore"], CHECKOUT)
         for name in filter(None, shipped.split("\0")):
@@ -101,14 +111,14 @@ class SkillsetFixture:
     def add_source(self, name: str, skills: dict[str, str]) -> None:
         origin = self.base / "source-origins" / name
         origin.mkdir(parents=True)
-        git(["init", "-q"], origin)
+        git(["init", "-q", "-b", "main"], origin)
         configure_git(origin)
         for path, identity in skills.items():
             write_skill(origin, path, identity=identity)
         git(["add", "-A"], origin)
         git(["commit", "--allow-empty", "-qm", "initial source"], origin)
         path = f"sources/{name}"
-        git(["submodule", "add", "-q", str(origin), path], self.repo)
+        git(["submodule", "add", "-q", "-b", "main", str(origin), path], self.repo)
         source = self.repo / path
         configure_git(source)
         self.origins[name] = origin
