@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -375,7 +376,7 @@ class SkillBody(Static):
         self.update(content)
 
 
-class SelectorApp(App[bool]):
+class SelectorApp(App[Callable[[Path], int] | None]):
     TITLE = "Skill selector"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
@@ -748,7 +749,7 @@ class SelectorApp(App[bool]):
             self.query_one("#message", Static).update(Text("⎿ Cannot save: " + outcome.reason))
             return
         if install:
-            self.exit(True)
+            self.exit(install_saved_selection)
             return
         self.not_installed = skill_catalog.selection_uncommitted(self.root)
         if not self.not_installed:
@@ -854,7 +855,8 @@ def main() -> int:
     except (reconcile_skills.ReconcileError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    return install_saved_selection(app.root) if app.run() else 0
+    handoff = app.run()
+    return handoff(app.root) if handoff else 0
 
 
 if __name__ == "__main__":
