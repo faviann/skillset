@@ -34,6 +34,10 @@ BRANCH = "update-sources"
 PROMPT = "[a]ccept and push, [s]kip, [d]iff of changed selected skills? "
 
 
+class MergeFailed(ReconcileError):
+    pass
+
+
 @dataclass(frozen=True)
 class SourceUpdate:
     name: str
@@ -97,7 +101,10 @@ def merge_origin(worktree: Path) -> bool:
     run_git(["fetch", "-q", "--no-recurse-submodules", "origin"], worktree)
     if not int(git(["rev-list", "--count", "HEAD..origin/main"], cwd=worktree)):
         return False
-    run_git(["merge", "-q", "--no-edit", "origin/main"], worktree, interactive=True)
+    try:
+        run_git(["merge", "-q", "--no-edit", "origin/main"], worktree, interactive=True)
+    except ReconcileError as error:
+        raise MergeFailed(str(error)) from None
     restore_sources(worktree)
     return True
 
@@ -119,8 +126,8 @@ def prepare_worktree(root: Path) -> Path:
     restore_sources(worktree, force=True)
     try:
         merge_origin(worktree)
-    except ReconcileError as error:
-        raise ReconcileError(f"{error}; merge origin/main into the live checkout by hand, then rerun") from None
+    except MergeFailed as error:
+        raise ReconcileError(f"{error}; merge origin/main into {root} by hand, then rerun") from None
     return worktree
 
 
