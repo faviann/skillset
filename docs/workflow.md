@@ -41,7 +41,8 @@ In the Sources column, **update available** means the tip of a source's tracked
 branch differs from its pin; see [Update sources](#update-sources).
 **fork behind upstream** means a fork is at its pin while its canonical
 repository has moved past `upstream`. Sync the fork, and the source then shows
-**update available**. A lookup that fails shows no marker.
+**update available**. A lookup that fails shows no marker. Ctrl+U closes the
+selector and runs the [update command](#update-sources) in your terminal.
 
 Ctrl+S reviews additions and removals against the last commit. **Save and install**
 is the default: it writes `skills.txt`, closes the selector, commits only that
@@ -136,7 +137,9 @@ sources show nothing to do.
 
 The command refuses to start, with the reason, outside the primary checkout,
 off `main`, with uncommitted `skills.txt` changes, or wherever the selector
-would block Install. It never pushes to a source repository.
+would block Install. It never pushes to a source repository. Ctrl+U in the
+selector closes it and runs the command. When the command would refuse, or the
+selection has unsaved changes, the selector stays open and shows why.
 
 ### Sync a fork
 

@@ -95,6 +95,11 @@ worktree starts from the live checkout, a selection committed locally but not
 yet pushed is published with the first accepted source instead of being lost
 to a clone from `origin`.
 
+Ctrl+U in the selector runs the command only after the selector has closed, as
+Save and install commits only after closing. The lookup therefore stays the
+selector's only network access. The command has the terminal for its prompts,
+commits and pushes, and its exit status becomes the selector's.
+
 The catalog uses this fixed harness order for each install directory:
 
 | Install directory | Harness precedence |
