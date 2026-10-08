@@ -300,15 +300,21 @@ class SelectorTests(SkillsetCase, PilotTestCase):
 
     async def test_only_a_source_whose_branch_moved_shows_update_available(self) -> None:
         fixture = self.fixture({
-            "acme/skills": {"alpha": "alpha"}, "gone/skills": {"beta": "beta"}, "zebra/tools": {"gamma": "gamma"},
+            "acme/skills": {"alpha": "alpha"}, "gone/skills": {"beta": "beta"},
+            "release/tools": {"delta": "delta"}, "zebra/tools": {"gamma": "gamma"},
         }, [])
         git(["commit", "--allow-empty", "-qm", "upstream change"], fixture.origins["acme/skills"])
         shutil.rmtree(fixture.origins["gone/skills"])
+        git(["branch", "release"], fixture.origins["release/tools"])
+        git(["commit", "--allow-empty", "-qm", "upstream change"], fixture.origins["release/tools"])
+        git(["config", "--file", ".gitmodules", "submodule.sources/release/tools.branch", "release"], fixture.repo)
+        git(["commit", "-qam", "track release"], fixture.repo)
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test():
             await app.workers.wait_for_complete()
             self.assertEqual(self.lines(app, "sources"), [
-                "acme/skills", "0/1 · update available", "gone/skills", "0/1", "zebra/tools", "0/1",
+                "acme/skills", "0/1 · update available", "gone/skills", "0/1",
+                "release/tools", "0/1", "zebra/tools", "0/1",
             ])
             self.assertEqual(self.text(app, "#message"), "")
 
