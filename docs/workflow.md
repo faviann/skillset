@@ -136,10 +136,13 @@ same way. Rerunning after an interrupted run is always safe, because finished
 sources show nothing to do.
 
 The command refuses to start, with the reason, outside the primary checkout,
-off `main`, with uncommitted `skills.txt` changes, or wherever the selector
-would block Install. It never pushes to a source repository. Ctrl+U in the
-selector closes it and runs the command. When the command would refuse, or the
-selection has unsaved changes, the selector stays open and shows why.
+off `main`, on a detached `HEAD`, during a merge or rebase, with uncommitted
+tracked changes, with untracked files under `scripts/`, or with uncommitted
+`skills.txt` changes. It does not refuse a committed selection that is under
+**Not in catalog**, because the update may be what makes it resolve. It never
+pushes to a source repository. Ctrl+U in the selector closes it and runs the
+command. When the command would refuse, or the selection has unsaved changes,
+the selector stays open and shows why.
 
 ### Sync a fork
 
