@@ -26,7 +26,6 @@ class UpdateCase(unittest.TestCase):
         self.env = self.fixture.env
         self.origin = self.base / "origin.git"
         git(["init", "-q", "--bare", "-b", "main", str(self.origin)], self.base)
-        git(["branch", "-M", "main"], self.repo)
         git(["remote", "add", "origin", str(self.origin)], self.repo)
         git(["push", "-q", "-u", "origin", "main"], self.repo)
         self.worktree = self.home / "worktrees/skillset/update-sources"
@@ -155,6 +154,19 @@ class UpdateSyncTests(UpdateCase):
         self.assertEqual(git(["config", "--get", "submodule.sources/acme/skills.url"], self.repo), str(moved))
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
         self.assertEqual(self.check().returncode, 0)
+
+    def test_a_failed_fetch_and_a_conflicting_merge_name_their_cause(self) -> None:
+        hidden = self.origin.with_name("hidden.git")
+        self.origin.rename(hidden)
+        output = self.update(ok=False)
+        self.assertIn("error: git fetch", output)
+        self.assertNotIn("by hand", output)
+        hidden.rename(self.origin)
+        (self.repo / "skills.txt").write_text("# local\nacme/skills:alpha\n", encoding="utf-8")
+        git(["commit", "-qam", "local selection"], self.repo)
+        self.push_elsewhere("# other machine\nacme/skills:alpha\n", "other selection")
+        output = self.update(ok=False)
+        self.assertIn(f"merge origin/main into {self.repo.resolve()} by hand, then rerun", output)
 
     def test_rerun_recovers_a_conflicted_worktree_with_dirty_sources(self) -> None:
         self.update()

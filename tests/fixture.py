@@ -92,7 +92,7 @@ class SkillsetFixture:
         self.env["PYTHONDONTWRITEBYTECODE"] = "1"
         self.repo = base / "skillset"
         self.repo.mkdir()
-        git(["init", "-q"], self.repo)
+        git(["init", "-q", "-b", "main"], self.repo)
         configure_git(self.repo)
         shipped = git(["ls-files", "-z", "--", "scripts", "setup.sh", ".gitignore"], CHECKOUT)
         for name in filter(None, shipped.split("\0")):

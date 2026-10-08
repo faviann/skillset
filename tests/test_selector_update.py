@@ -21,7 +21,6 @@ class UpdateKeyTests(PilotTestCase):
         self.base = Path(temporary.name)
         fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}}, [])
         self.repo = fixture.repo
-        git(["branch", "-M", "main"], self.repo)
         environment = patch.dict(os.environ, fixture.env, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
