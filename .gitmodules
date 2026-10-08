@@ -1,18 +1,24 @@
 [submodule "sources/mattpocock/skills"]
 	path = sources/mattpocock/skills
 	url = https://github.com/faviann/skills-mattpocock.git
+	branch = main
 [submodule "sources/b1rdmania/claude-plain-english-skill"]
 	path = sources/b1rdmania/claude-plain-english-skill
 	url = https://github.com/b1rdmania/claude-plain-english-skill.git
+	branch = main
 [submodule "sources/rampstackco/claude-skills"]
 	path = sources/rampstackco/claude-skills
 	url = https://github.com/rampstackco/claude-skills.git
+	branch = main
 [submodule "sources/michael-denyer/pstack-claude"]
 	path = sources/michael-denyer/pstack-claude
 	url = https://github.com/michael-denyer/pstack-claude.git
+	branch = main
 [submodule "sources/humanlayer/skills"]
 	path = sources/humanlayer/skills
 	url = https://github.com/humanlayer/skills.git
+	branch = main
 [submodule "sources/faviann/agent-skills"]
 	path = sources/faviann/agent-skills
 	url = https://github.com/faviann/agent-skills.git
+	branch = main

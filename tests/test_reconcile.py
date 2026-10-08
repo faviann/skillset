@@ -897,6 +897,16 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assert_reconcile_fails(self.run_reconciler(), "no committed URL")
         self.assertFalse((self.home / ".agents").exists())
 
+    def test_missing_or_empty_tracked_branch_is_rejected(self) -> None:
+        entry = f'[submodule "sources/acme/skills"]\npath = sources/acme/skills\nurl = {self.origin}\n'
+        for branch in ("", "branch =\n"):
+            with self.subTest(branch=branch):
+                (self.repo / ".gitmodules").write_text(entry + branch)
+                self.commit_skillset()
+                self.assert_reconcile_fails(self.run_reconciler(),
+                                            "submodule has no tracked branch: sources/acme/skills")
+                self.assertFalse((self.home / ".agents").exists())
+
 
 
 class InstallInterfaceTests(unittest.TestCase):

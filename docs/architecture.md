@@ -20,8 +20,10 @@ Forks carry only maintained modifications of their upstream. Skills authored
 by faviann live in the first-party source `faviann/agent-skills`, at
 `sources/faviann/agent-skills`.
 
-`.gitmodules` records the fetch URL and canonical source path; the superproject
-gitlink is the only source-commit lock. `skills.txt` lists selected skills as
+`.gitmodules` records the fetch URL, the tracked branch and the canonical source
+path. Every entry must declare `branch`. The superproject gitlink is the only
+source-commit lock; the tracked branch never changes which commit is installed.
+`skills.txt` lists selected skills as
 `owner/repo:name`, where `owner/repo` is the source folder under `sources/` and
 `name` is the frontmatter identity. Path selections are rejected. The catalog
 resolves these identities at the pinned commit, so moving a skill within its

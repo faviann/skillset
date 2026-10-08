@@ -101,14 +101,14 @@ class SkillsetFixture:
     def add_source(self, name: str, skills: dict[str, str]) -> None:
         origin = self.base / "source-origins" / name
         origin.mkdir(parents=True)
-        git(["init", "-q"], origin)
+        git(["init", "-q", "-b", "main"], origin)
         configure_git(origin)
         for path, identity in skills.items():
             write_skill(origin, path, identity=identity)
         git(["add", "-A"], origin)
         git(["commit", "--allow-empty", "-qm", "initial source"], origin)
         path = f"sources/{name}"
-        git(["submodule", "add", "-q", str(origin), path], self.repo)
+        git(["submodule", "add", "-q", "-b", "main", str(origin), path], self.repo)
         source = self.repo / path
         configure_git(source)
         self.origins[name] = origin

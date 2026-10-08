@@ -159,12 +159,13 @@ def parse_modules(root: Path) -> dict[str, str]:
     config = git(["config", "--null", "--file", str(modules_file), "--list"], cwd=root)
     paths: dict[str, str] = {}
     urls: dict[str, str] = {}
+    branches: dict[str, str] = {}
     for row in config.split("\0"):
         key, _, value = row.partition("\n")
-        if not re.fullmatch(r"submodule\..*\.(path|url)", key):
+        if not re.fullmatch(r"submodule\..*\.(path|url|branch)", key):
             continue
         section, field = key.rsplit(".", 1)
-        mapping = paths if field == "path" else urls
+        mapping = {"path": paths, "url": urls, "branch": branches}[field]
         if section in mapping:
             raise ReconcileError(f"duplicate submodule {field}: {section}")
         mapping[section] = value
@@ -180,6 +181,8 @@ def parse_modules(root: Path) -> dict[str, str]:
             raise ReconcileError(f"duplicate submodule path: {path}")
         if not urls.get(section, "").strip():
             raise ReconcileError(f"submodule has no committed URL: {path}")
+        if not branches.get(section, "").strip():
+            raise ReconcileError(f"submodule has no tracked branch: {path}")
         modules.add(path)
     pins: dict[str, str] = {}
     for row in git(["ls-tree", "-r", "--full-tree", "HEAD"], cwd=root).splitlines():

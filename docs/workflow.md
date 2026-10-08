@@ -100,11 +100,15 @@ skills into it. Add, advance or remove the source:
 
 ```bash
 # Add a source
-git submodule add https://github.com/owner/repo.git sources/owner/repo
+git submodule add -b main https://github.com/owner/repo.git sources/owner/repo
 # Or advance an existing one to a reviewed, published commit
 git -C sources/owner/repo fetch origin
 git -C sources/owner/repo checkout --detach <reviewed-commit>
 ```
+
+`-b` records the source's tracked branch in `.gitmodules`, and validation
+rejects a source without one. Pass the repository's default branch, which
+`git ls-remote --symref https://github.com/owner/repo.git HEAD` prints.
 
 To remove a source, remove its selected lines from `skills.txt` and its
 `sources.toml` entry, then remove the submodule.
