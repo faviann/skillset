@@ -88,12 +88,22 @@ class UpdateStartTests(UpdateCase):
         self.assertEqual(self.origin_subjects(), ["initial skillset"])
 
     def test_refuses_off_main_with_unsaved_selection_or_blocked_install(self) -> None:
+        old, checkout = self.pin("acme/skills"), self.fixture.sources["acme/skills"]
         git(["checkout", "-q", "-b", "topic"], self.repo)
+        tip = self.advance("acme/skills")
+        git(["fetch", "-q", "origin"], checkout)
+        git(["checkout", "-q", "--detach", tip], checkout)
+        git(["commit", "-qm", "topic pin", "--", "sources/acme/skills"], self.repo)
+        git(["checkout", "-q", "--detach", old], checkout)
         self.assert_refused("is on topic, not main")
+        self.assertEqual(git(["rev-parse", "HEAD"], checkout), old)
         git(["checkout", "-q", "main"], self.repo)
         (self.repo / "skills.txt").write_text("# unsaved\nacme/skills:alpha\n", encoding="utf-8")
         self.assert_refused("skills.txt has uncommitted changes")
         git(["checkout", "-q", "--", "skills.txt"], self.repo)
+        (self.repo / "sources.toml").write_text("# dirty\n", encoding="utf-8")
+        self.assert_refused("tracked skillset changes are not committed")
+        git(["checkout", "-q", "--", "sources.toml"], self.repo)
         linked = self.base / "linked"
         git(["worktree", "add", "-q", str(linked)], self.repo)
         self.assert_refused("belong to the primary checkout", linked / "scripts/update-sources.sh")

@@ -70,13 +70,15 @@ def run_git(args: list[str], cwd: Path, *, interactive: bool = False) -> None:
         raise ReconcileError(f"git {' '.join(args)} failed")
 
 
+def off_main(root: Path) -> str | None:
+    branch = git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=root, check=False)
+    return None if branch == "main" else f"the live checkout is on {branch or 'a detached HEAD'}, not main"
+
+
 def update_blocker(root: Path) -> str | None:
     """Why the update cannot start, or None."""
-    if reason := selection_install_blocker(root):
+    if reason := off_main(root) or selection_install_blocker(root):
         return reason
-    branch = git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=root, check=False)
-    if branch != "main":
-        return f"the live checkout is on {branch or 'a detached HEAD'}, not main"
     if selection_uncommitted(root):
         return "skills.txt has uncommitted changes; save and install first"
     return None
@@ -253,6 +255,8 @@ def finish(root: Path, worktree: Path) -> None:
 
 def run(root: Path) -> int:
     require_primary_checkout(root)
+    if reason := off_main(root):
+        raise ReconcileError(reason)
     restore_sources(root)
     if reason := update_blocker(root):
         raise ReconcileError(reason)
