@@ -810,6 +810,12 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.query_one("#hints", Static).update(hint)
 
 
+def shell_path_env() -> dict[str, str]:
+    selector_bin = Path(sys.prefix, "bin")
+    path = os.environ.get("PATH", os.defpath).split(os.pathsep)
+    return dict(os.environ, PATH=os.pathsep.join(entry for entry in path if Path(entry) != selector_bin))
+
+
 def install_saved_selection(root: Path) -> int:
     """Run only after the TUI closes, with hooks and signing in the terminal."""
     if reason := reconcile_skills.selection_install_blocker(root):
@@ -832,11 +838,9 @@ def install_saved_selection(root: Path) -> int:
     except (reconcile_skills.ReconcileError, OSError) as error:
         print(f"Could not commit: {error}. skills.txt stays saved; nothing was committed or installed.")
         return 1
-    # uv puts the selector's environment first in PATH. The shell entrypoint
-    # must resolve python3 from the system, just as the manual installer does.
-    env = dict(os.environ, PATH=os.defpath)
     try:
-        result = subprocess.run([str(root / "scripts/reconcile-skills.sh")], cwd=root, env=env, check=False)
+        result = subprocess.run([str(root / "scripts/reconcile-skills.sh")], cwd=root,
+                                env=shell_path_env(), check=False)
         code = result.returncode
     except OSError as error:
         print(f"Could not install: {error}. The selection commit was kept.")
