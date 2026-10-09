@@ -41,8 +41,10 @@ In the Sources column, **update available** means the tip of a source's tracked
 branch differs from its pin; see [Update sources](#update-sources).
 **fork behind upstream** means a fork is at its pin while its canonical
 repository has moved past `upstream`. Sync the fork, and the source then shows
-**update available**. A lookup that fails shows no marker. Ctrl+U closes the
-selector and runs the [update command](#update-sources) in your terminal.
+**update available**. A lookup that fails shows no marker. Ctrl+U
+[updates the highlighted source](#update-from-the-selector) without leaving the
+selector. The `ctrl+u update` hint is in the accent color when the highlighted
+source has an update.
 
 Ctrl+S reviews additions and removals against the last commit. **Save and install**
 is the default: it writes `skills.txt`, closes the selector, commits only that
@@ -140,9 +142,23 @@ off `main`, on a detached `HEAD`, during a merge or rebase, with uncommitted
 tracked changes, with untracked files under `scripts/`, or with uncommitted
 `skills.txt` changes. It does not refuse a committed selection that is under
 **Not in catalog**, because the update may be what makes it resolve. It never
-pushes to a source repository. Ctrl+U in the selector closes it and runs the
-command. When the command would refuse, or the selection has unsaved changes,
-the selector stays open and shows why.
+pushes to a source repository.
+
+### Update from the selector
+
+Ctrl+U in the selector runs the same steps for the highlighted source only, in
+an overlay, without closing the selector. It opens only on a source marked
+**update available**. Otherwise the selector shows why there is nothing to do.
+When the command would refuse, or the selection has unsaved changes, the
+selector shows the reason instead.
+
+The overlay shows the progress, then the summary. Press `a` to accept and push,
+`d` to switch between the summary and the diff of each changed selected skill,
+or Esc to discard the update. After a push, the live checkout fast-forwards and
+installs, and the overlay says what happened. Esc then closes it, and the
+selector reloads in place. The overlay runs Git and the install without a
+terminal, so a credential or passphrase prompt fails instead of waiting. Run the
+command when a push needs a prompt.
 
 ### Sync a fork
 

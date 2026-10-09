@@ -71,8 +71,8 @@ marker depends on it. Today `upstream` equals the mattpocock pin, so nothing is
 marked.
 
 When the selector opens, it looks up each source's tracked branch with
-`git ls-remote`, without fetching. This is the selector's only network access;
-install and `--check` never contact a remote. A source shows `update available`
+`git ls-remote`, without fetching. Apart from Ctrl+U, this is the selector's
+only network access; install and `--check` never contact a remote. A source shows `update available`
 when the branch tip at its `.gitmodules` URL differs from its pin. For a fork,
 that URL is the fork. When a fork's tip equals its pin, the selector also reads
 the same branch at the canonical repository, `https://github.com/<owner>/<repo>.git`
@@ -95,10 +95,11 @@ worktree starts from the live checkout, a selection committed locally but not
 yet pushed is published with the first accepted source instead of being lost
 to a clone from `origin`.
 
-Ctrl+U in the selector runs the command only after the selector has closed, as
-Save and install commits only after closing. The lookup therefore stays the
-selector's only network access. The command has the terminal for its prompts,
-commits and pushes, and its exit status becomes the selector's.
+Ctrl+U in the selector runs the same steps for the highlighted source in an
+overlay, on background threads, and reloads the selector after a push. Its Git
+commands and the install run in a new session with no terminal, and their
+output goes to the overlay. A credential or passphrase prompt therefore fails
+instead of reading the selector's keys.
 
 The catalog uses this fixed harness order for each install directory:
 

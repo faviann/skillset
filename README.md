@@ -56,8 +56,8 @@ Rerun `./setup.sh` to restore missing or stale sources.
 In the selector, choose skills, then press Ctrl+S and choose **Save and
 install**. That commits `skills.txt` in the live checkout and links the selected
 skills into the install directories `~/.agents/skills` and `~/.claude/skills`.
-To move source pins, press Ctrl+U in the selector or run
-`scripts/update-sources.sh` from the live checkout; see the
+To move one source's pin, highlight it in the selector and press Ctrl+U. To
+move every pin, run `scripts/update-sources.sh` from the live checkout. See the
 [workflow guide](docs/workflow.md#update-sources).
 
 Installing is offline. It requires committed configuration and initialized,
