@@ -1,4 +1,5 @@
 # Written by the skill selector. Comments and ordering are not kept.
+faviann/agent-skills:herdr-playbook
 faviann/agent-skills:publish-artifact
 humanlayer/skills:improve-claude-md
 humanlayer/skills:show-me
