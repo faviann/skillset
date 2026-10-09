@@ -15,6 +15,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum, auto
 from functools import partial
 from pathlib import Path
 
@@ -39,7 +40,7 @@ from textual.events import Click, Key
 from textual.geometry import Region
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Input, RichLog, Static
 from textual.worker import get_current_worker
 
 import reconcile_skills
@@ -294,6 +295,159 @@ class ChoiceDialog(ModalScreen[int | None]):
         self.dismiss(None)
 
 
+class Phase(Enum):
+    PREPARING = auto()
+    REVIEW = auto()
+    PUBLISHING = auto()
+    DISCARDING = auto()
+    DONE = auto()
+    FAILED = auto()
+
+
+class UpdateDialog(ModalScreen[bool]):
+    """Update one source: prepare it in a thread, review it, then publish and install it or discard it.
+
+    Dismisses with whether the update reached origin/main, so the selector knows to reload.
+    """
+
+    DEFAULT_CSS = """
+    UpdateDialog { align: center bottom; background: transparent; }
+    #update-dialog { height: 85%; margin: 0 2 2 2; padding: 1 2; border: round #D77757; }
+    #update-title { height: auto; color: #D77757; margin-bottom: 1; }
+    #update-log {
+        height: 1fr; background: transparent;
+        scrollbar-size-vertical: 1;
+        scrollbar-background: transparent;
+        scrollbar-color: #999999;
+        scrollbar-color-active: #D77757;
+    }
+    #update-status { height: auto; margin-top: 1; }
+    #update-hint { height: 1; margin-top: 1; color: #999999; }
+    """
+    BINDINGS = [
+        Binding("a", "accept", show=False),
+        Binding("d", "diff", show=False),
+        Binding("escape", "close", show=False),
+    ]
+
+    def __init__(self, root: Path, source: str) -> None:
+        super().__init__()
+        self.root = root
+        self.source = source
+        self.phase = Phase.PREPARING
+        self.prepared: update_sources.Prepared | None = None
+        self.showing_diff = False
+        self.pushed = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="update-dialog"):
+            yield Static(Text(f"Update {self.source}"), id="update-title")
+            yield RichLog(wrap=True, id="update-log")
+            yield Static(id="update-status")
+            yield Static(id="update-hint")
+
+    def on_mount(self) -> None:
+        self.enter(Phase.PREPARING)
+        self.run_worker(self.prepare, thread=True)
+
+    def enter(self, phase: Phase, status: str = "") -> None:
+        self.phase = phase
+        self.query_one("#update-status", Static).update(
+            Text(status, style=ACCENT if phase is Phase.DONE else MANUAL if phase is Phase.FAILED else ""))
+        self.query_one("#update-hint", Static).update({
+            Phase.PREPARING: "Preparing the update…",
+            Phase.REVIEW: f"a accept and push · d {'summary' if self.showing_diff else 'diff'} · esc discard",
+            Phase.PUBLISHING: "Publishing and installing…",
+            Phase.DISCARDING: "Discarding the update…",
+            Phase.DONE: "Esc to close",
+            Phase.FAILED: "Esc to close",
+        }[phase])
+
+    def progress(self, line: str) -> None:
+        self.app.call_from_thread(self.query_one(RichLog).write, Text(line))
+
+    def finished(self, phase: Phase, status: str) -> None:
+        self.app.call_from_thread(self.enter, phase, status)
+
+    def prepare(self) -> None:
+        try:
+            worktree = update_sources.start(self.root, self.progress)
+            catalog = skill_catalog.load_catalog(worktree)
+        except (reconcile_skills.ReconcileError, OSError, subprocess.SubprocessError) as error:
+            self.finished(Phase.FAILED, f"error: {error}")
+            return
+        if self.source not in catalog.sources:
+            self.finished(Phase.DONE, f"{self.source} is no longer a source")
+            return
+        try:
+            prepared = update_sources.prepare(worktree, self.source, catalog, self.progress)
+        except (reconcile_skills.ReconcileError, OSError, subprocess.SubprocessError) as error:
+            self.finished(Phase.FAILED, f"{self.source}: skipped: {error}")
+            return
+        if isinstance(prepared, str):
+            self.finished(Phase.DONE, f"{self.source}: {prepared}")
+        else:
+            self.app.call_from_thread(self.review, prepared)
+
+    def review(self, prepared: update_sources.Prepared) -> None:
+        self.prepared = prepared
+        self.show_review()
+        self.enter(Phase.REVIEW)
+
+    def show_review(self) -> None:
+        log = self.query_one(RichLog)
+        log.clear()
+        if not self.showing_diff:
+            log.write(Text("\n".join(self.prepared.summary.lines(self.prepared.update))))
+            return
+        for line in update_sources.diff_text(self.prepared).splitlines():
+            log.write(Text(line, style=AUTOMATIC if line.startswith("+") else MANUAL if line.startswith("-")
+                           else SECONDARY if line.startswith("@@") else ""))
+
+    def action_diff(self) -> None:
+        if self.phase is Phase.REVIEW:
+            self.showing_diff = not self.showing_diff
+            self.show_review()
+            self.enter(Phase.REVIEW)
+
+    def action_accept(self) -> None:
+        if self.phase is Phase.REVIEW:
+            self.showing_diff = False
+            self.show_review()
+            self.enter(Phase.PUBLISHING)
+            self.run_worker(self.publish, thread=True)
+
+    def publish(self) -> None:
+        try:
+            update_sources.publish(self.prepared, self.progress)
+        except (reconcile_skills.ReconcileError, OSError, subprocess.SubprocessError) as error:
+            self.finished(Phase.FAILED, f"{self.source}: skipped: {error}")
+            return
+        self.pushed = True
+        self.progress(f"{self.source}: pushed")
+        try:
+            update_sources.finish(self.root, self.progress, shell_path_env())
+        except (reconcile_skills.ReconcileError, OSError, subprocess.SubprocessError) as error:
+            self.finished(Phase.FAILED, f"{self.source}: pushed, but {error}")
+            return
+        self.finished(Phase.DONE, f"{self.source}: pushed and installed")
+
+    def discard(self) -> None:
+        try:
+            update_sources.reset_worktree(self.prepared.worktree, self.prepared.checkpoint, self.progress)
+        except (reconcile_skills.ReconcileError, OSError, subprocess.SubprocessError) as error:
+            self.finished(Phase.FAILED, f"{self.source}: could not discard the update: {error}")
+            return
+        self.app.call_from_thread(self.dismiss, False)
+
+    def action_close(self) -> None:
+        if self.phase is Phase.REVIEW:
+            self.enter(Phase.DISCARDING)
+            self.run_worker(self.discard, thread=True)
+        elif self.phase in (Phase.DONE, Phase.FAILED):
+            self.dismiss(self.pushed)
+
+
 class SkillHeading(rich_markdown.Heading):
     LEVEL_ALIGN = {**rich_markdown.Heading.LEVEL_ALIGN, "h1": "left"}
 
@@ -497,6 +651,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
     def show_update(self, source: str, marker: str) -> None:
         self.markers[source] = marker
         self.fill_sources(keep_cursor=True)
+        self.refresh_hints()
 
     def check_install_status(self) -> None:
         status = reconcile_skills.install_status(self.root)
@@ -662,6 +817,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         if event.control.current != self.source:
             self.source = event.control.current
             self.fill_skills()
+            self.refresh_hints()
 
     @on(CatalogList.Highlighted, "#skills")
     def skill_highlighted(self) -> None:
@@ -779,10 +935,37 @@ class SelectorApp(App[Callable[[Path], int] | None]):
     def action_update(self) -> None:
         reason = ("the selection has unsaved changes; save and install first" if self.draft.unsaved
                   else update_sources.update_blocker(self.root))
+        message = self.query_one("#message", Static)
         if reason:
-            self.query_one("#message", Static).update(Text(f"⎿ Cannot update sources: {reason}"))
+            message.update(Text(f"⎿ Cannot update sources: {reason}"))
+        elif self.source not in self.selection_catalog.sources:
+            message.update("⎿ Highlight a source to update it.")
+        elif (marker := self.markers.get(self.source)) != skill_catalog.UPDATE_AVAILABLE:
+            message.update(Text(f"⎿ {self.source}: {marker}" if marker else f"⎿ No update found for {self.source}"))
         else:
-            self.exit(update_sources_in_terminal)
+            self.push_screen(UpdateDialog(self.root, self.source), self.update_closed)
+
+    def update_closed(self, pushed: bool | None) -> None:
+        if not pushed:
+            return
+        self.markers.pop(self.source, None)
+        try:
+            self.selection_catalog = skill_catalog.load_catalog(self.root)
+            self.catalog = display_catalog(self.selection_catalog)
+            self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
+        except (reconcile_skills.ReconcileError, OSError) as error:
+            self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
+            return
+        self.not_installed = skill_catalog.selection_uncommitted(self.root)
+        self.install_error = None
+        self.install_check = None
+        if not self.not_installed:
+            self.install_check = self.run_worker(self.check_install_status, thread=True)
+        self.refresh_title()
+        self.fill_sources(keep_cursor=True)
+        self.source = self.query_one("#sources", CatalogList).current
+        self.fill_skills(keep_cursor=True)
+        self.refresh_hints()
 
     def action_quit(self) -> None:
         search = self.query_one("#search", Input)
@@ -809,15 +992,20 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.query_one(f"#{column}", CatalogList).focus()
 
     def on_descendant_focus(self) -> None:
+        self.refresh_hints()
+
+    def refresh_hints(self) -> None:
+        update = Text("ctrl+u update",
+                      style=ACCENT if self.markers.get(self.source) == skill_catalog.UPDATE_AVAILABLE else SECONDARY)
         if self.focused is self.query_one("#search"):
-            hint = "↓ or enter skills · esc clear or leave search · ctrl+s save"
+            hint = Text("↓ or enter skills · esc clear or leave search · ctrl+s save")
         elif self.focused is self.query_one("#details"):
-            hint = "↑↓ scroll · ← sources · → skills · ctrl+s save · ctrl+u update · esc quit"
+            hint = Text.assemble("↑↓ scroll · ← sources · → skills · ctrl+s save · ", update, " · esc quit")
         elif self.focused is self.query_one("#skills"):
-            hint = ("↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save"
-                    " · ctrl+u update · esc quit")
+            hint = Text.assemble("↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save · ",
+                                 update, " · esc quit")
         else:
-            hint = "↑↓ move · → skills · space toggle · ctrl+s save · ctrl+u update · esc quit"
+            hint = Text.assemble("↑↓ move · → skills · space toggle · ctrl+s save · ", update, " · esc quit")
         self.query_one("#hints", Static).update(hint)
 
 
@@ -862,16 +1050,6 @@ def install_saved_selection(root: Path) -> int:
     if code:
         print("run the skill selector again and choose Install")
     return code
-
-
-def update_sources_in_terminal(root: Path) -> int:
-    """Become the update command, so it alone gets Ctrl+C and its exit status is the selector's."""
-    script = root / "scripts/update-sources.sh"
-    try:
-        os.execve(script, [str(script)], shell_path_env())
-    except OSError as error:
-        print(f"Could not start the update: {error}")
-        return 1
 
 
 def main() -> int:
