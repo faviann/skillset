@@ -35,6 +35,7 @@ sources today:
   faviann. It includes `publish-artifact`, which moved there with its history
   from the `mattpocock/skills` fork. Author new first-party skills in that
   repository, not in skillset.
+- `uditakhourii/adhd`, a single prompt-only skill, `adhd`, at `skills/adhd`.
 
 ## Get started
 

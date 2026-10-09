@@ -22,3 +22,7 @@
 	path = sources/faviann/agent-skills
 	url = https://github.com/faviann/agent-skills.git
 	branch = main
+[submodule "sources/uditakhourii/adhd"]
+	path = sources/uditakhourii/adhd
+	url = https://github.com/uditakhourii/adhd.git
+	branch = main
