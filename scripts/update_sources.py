@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -33,6 +35,7 @@ from skill_catalog import (
 
 BRANCH = "update-sources"
 PROMPT = "[a]ccept and push, [s]kip, [d]iff of changed selected skills? "
+Log = Callable[[str], None]
 
 
 class MergeFailed(ReconcileError):
@@ -70,8 +73,21 @@ class Summary:
         return lines
 
 
-def run_git(args: list[str], cwd: Path, *, interactive: bool = False) -> None:
-    if subprocess.run(["git", *args], cwd=cwd, env=git_env(interactive=interactive), check=False).returncode:
+def run_command(command: list[str], cwd: Path, env: dict[str, str], log: Log) -> int:
+    """Run on the terminal when log is print; otherwise send every output line to log."""
+    if log is print:
+        return subprocess.run(command, cwd=cwd, env=env, check=False).returncode
+    # With no terminal, a credential or passphrase prompt fails instead of reading the caller's keys.
+    with subprocess.Popen(command, cwd=cwd, env={**env, "SSH_ASKPASS_REQUIRE": "never"},
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, errors="replace", start_new_session=True) as process:
+        for line in process.stdout:
+            log(line.rstrip("\n"))
+    return process.returncode
+
+
+def run_git(args: list[str], cwd: Path, log: Log, *, interactive: bool = False) -> None:
+    if run_command(["git", *args], cwd, git_env(interactive=interactive), log):
         raise ReconcileError(f"git {' '.join(args)} failed")
 
 
@@ -89,28 +105,28 @@ def update_blocker(root: Path) -> str | None:
     return None
 
 
-def restore_sources(root: Path, *, force: bool = False) -> None:
+def restore_sources(root: Path, log: Log, *, force: bool = False) -> None:
     git(["submodule", "sync", "-q", "--recursive"], cwd=root)
     args = ["submodule", "update", "--init", "--recursive", "--checkout"]
     if force:
         git(["submodule", "foreach", "-q", "--recursive", "git reset -q --hard && git clean -qfdx"], cwd=root)
         args += ["--force", "-q"]
-    run_git(args, root)
+    run_git(args, root, log)
 
 
-def merge_origin(worktree: Path) -> bool:
-    run_git(["fetch", "-q", "--no-recurse-submodules", "origin"], worktree)
+def merge_origin(worktree: Path, log: Log) -> bool:
+    run_git(["fetch", "-q", "--no-recurse-submodules", "origin"], worktree, log)
     if not int(git(["rev-list", "--count", "HEAD..origin/main"], cwd=worktree)):
         return False
     try:
-        run_git(["merge", "-q", "--no-edit", "origin/main"], worktree, interactive=True)
+        run_git(["merge", "-q", "--no-edit", "origin/main"], worktree, log, interactive=True)
     except ReconcileError as error:
         raise MergeFailed(str(error)) from None
-    restore_sources(worktree)
+    restore_sources(worktree, log)
     return True
 
 
-def prepare_worktree(root: Path) -> Path:
+def prepare_worktree(root: Path, log: Log) -> Path:
     worktree = home_path() / "worktrees/skillset" / BRANCH
     head = git(["rev-parse", "HEAD"], cwd=root)
     registered = [Path(line.removeprefix("worktree ")).resolve()
@@ -123,18 +139,29 @@ def prepare_worktree(root: Path) -> Path:
         git(["worktree", "prune"], cwd=root)
         worktree.parent.mkdir(parents=True, exist_ok=True)
         git(["worktree", "add", "-B", BRANCH, str(worktree), head], cwd=root)
-        print(f"cloning every source into {worktree}")
-    restore_sources(worktree, force=True)
+        log(f"cloning every source into {worktree}")
+    restore_sources(worktree, log, force=True)
     try:
-        merge_origin(worktree)
+        merge_origin(worktree, log)
     except MergeFailed as error:
         raise ReconcileError(f"{error}; merge origin/main into {root} by hand, then rerun") from None
     return worktree
 
 
-def reset_worktree(worktree: Path, checkpoint: str) -> None:
+def start(root: Path, log: Log) -> Path:
+    """Check the live checkout, restore its sources, and return the update worktree at origin/main."""
+    require_primary_checkout(root)
+    if reason := off_main(root):
+        raise ReconcileError(reason)
+    restore_sources(root, log)
+    if reason := update_blocker(root):
+        raise ReconcileError(reason)
+    return prepare_worktree(root, log)
+
+
+def reset_worktree(worktree: Path, checkpoint: str, log: Log) -> None:
     git(["reset", "-q", "--hard", checkpoint], cwd=worktree)
-    restore_sources(worktree, force=True)
+    restore_sources(worktree, log, force=True)
 
 
 def inspect_source(name: str, source: SourceCatalog) -> SourceUpdate | str:
@@ -155,7 +182,7 @@ def inspect_source(name: str, source: SourceCatalog) -> SourceUpdate | str:
     return replace(update, upstream=git(["merge-base", canonical, update.new], cwd=source.path))
 
 
-def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog) -> None:
+def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog, log: Log) -> None:
     git(["checkout", "-q", "--detach", update.new], cwd=source.path)
     if update.upstream and update.upstream != source.upstream:
         file = worktree / "sources.toml"
@@ -165,7 +192,7 @@ def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog) -
         file.write_text(text.replace(f'"{source.upstream}"', f'"{update.upstream}"'), encoding="utf-8")
     short = git(["rev-parse", "--short", update.new], cwd=source.path)
     run_git(["commit", "-q", "--only", "-m", f"Update {update.name} to {short}", "--",
-             f"sources/{update.name}", "sources.toml"], worktree, interactive=True)
+             f"sources/{update.name}", "sources.toml"], worktree, log, interactive=True)
 
 
 def check_installable(worktree: Path, catalog: Catalog) -> None:
@@ -193,14 +220,77 @@ def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after
                    sorted(set(before.skills) - set(after.skills)), changed, selected, unpublished)
 
 
-def show_diff(update: SourceUpdate, before: SourceCatalog, after: SourceCatalog, summary: Summary) -> None:
-    directories = sorted({str(directory) for name in summary.changed if name in summary.selected
-                          for directory in skill_directories(name, before, after)})
-    if not directories:
+@dataclass(frozen=True)
+class Prepared:
+    """One source's update, committed and validated in the worktree, waiting for accept or discard."""
+
+    worktree: Path
+    checkpoint: str
+    update: SourceUpdate
+    before: SourceCatalog
+    after: Catalog
+    summary: Summary
+
+    @property
+    def source(self) -> SourceCatalog:
+        return self.after.sources[self.update.name]
+
+    def diff_args(self) -> list[str] | None:
+        """The git diff arguments covering the changed selected skills, or None when none changed."""
+        directories = sorted({str(directory) for name in self.summary.changed if name in self.summary.selected
+                              for directory in skill_directories(name, self.before, self.source)})
+        return ["diff", self.update.old, self.update.new, "--", *directories] if directories else None
+
+
+def discard(worktree: Path, checkpoint: str, error: ReconcileError, added: list[str], log: Log) -> ReconcileError:
+    reset_worktree(worktree, checkpoint, log)
+    return ReconcileError(f"{error}\n  the update adds: {' '.join(added)}" if added else str(error))
+
+
+def prepare(worktree: Path, name: str, before: Catalog, log: Log) -> Prepared | str:
+    """Commit the update of one source, or say why there is none. A failure resets the worktree."""
+    checkpoint = git(["rev-parse", "HEAD"], cwd=worktree)
+    source = before.sources[name]
+    added: list[str] = []
+    try:
+        update = inspect_source(name, source)
+        if isinstance(update, str):
+            return update
+        commit_update(worktree, update, source, log)
+        after = load_catalog(worktree)
+        selected = frozenset(line.name for line in after.resolve(read_selection_text(worktree)).lines
+                             if line.name and line.value.startswith(f"{name}:"))
+        summary = summarize(worktree, update, source, after.sources[name], selected)
+        added = summary.added
+        check_installable(worktree, after)
+        return Prepared(worktree, checkpoint, update, source, after, summary)
+    except ReconcileError as error:
+        raise discard(worktree, checkpoint, error, added, log) from None
+
+
+def diff_text(prepared: Prepared) -> str:
+    args = prepared.diff_args()
+    return git(args, cwd=prepared.source.path) if args else "no selected skill changed"
+
+
+def show_diff(prepared: Prepared) -> None:
+    if not (args := prepared.diff_args()):
         print("no selected skill changed")
         return
-    subprocess.run(["git", "diff", update.old, update.new, "--", *directories], cwd=after.path,
-                   env=git_env(interactive=True), check=False)
+    subprocess.run(["git", *args], cwd=prepared.source.path, env=git_env(interactive=True), check=False)
+
+
+def publish(prepared: Prepared, log: Log) -> Catalog:
+    """Merge origin/main if it moved, check again, and push. A failure resets the worktree."""
+    worktree, after = prepared.worktree, prepared.after
+    try:
+        if merge_origin(worktree, log):
+            after = load_catalog(worktree)
+            check_installable(worktree, after)
+        run_git(["push", "-q", "origin", "HEAD:main"], worktree, log, interactive=True)
+        return after
+    except ReconcileError as error:
+        raise discard(worktree, prepared.checkpoint, error, prepared.summary.added, log) from None
 
 
 def ask() -> str:
@@ -215,67 +305,46 @@ def ask() -> str:
 
 
 def update_source(worktree: Path, name: str, before: Catalog) -> tuple[bool, Catalog]:
-    checkpoint = git(["rev-parse", "HEAD"], cwd=worktree)
-    source = before.sources[name]
-    added: list[str] = []
     try:
-        update = inspect_source(name, source)
-        if isinstance(update, str):
-            print(f"{name}: {update}")
+        prepared = prepare(worktree, name, before, print)
+        if isinstance(prepared, str):
+            print(f"{name}: {prepared}")
             return True, before
-        commit_update(worktree, update, source)
-        after = load_catalog(worktree)
-        selected = frozenset(line.name for line in after.resolve(read_selection_text(worktree)).lines
-                             if line.name and line.value.startswith(f"{name}:"))
-        summary = summarize(worktree, update, source, after.sources[name], selected)
-        added = summary.added
-        check_installable(worktree, after)
-        print("\n".join(summary.lines(update)))
+        print("\n".join(prepared.summary.lines(prepared.update)))
         while (answer := ask()) == "d":
-            show_diff(update, source, after.sources[name], summary)
+            show_diff(prepared)
         if answer == "s":
             print(f"{name}: skipped")
-            reset_worktree(worktree, checkpoint)
+            reset_worktree(worktree, prepared.checkpoint, print)
             return True, before
-        if merge_origin(worktree):
-            after = load_catalog(worktree)
-            check_installable(worktree, after)
-        run_git(["push", "-q", "origin", "HEAD:main"], worktree, interactive=True)
+        after = publish(prepared, print)
         print(f"{name}: pushed")
         return True, after
     except ReconcileError as error:
         print(f"{name}: skipped: {error}")
-        if added:
-            print(f"  the update adds: {' '.join(added)}")
-        reset_worktree(worktree, checkpoint)
         return False, before
 
 
-def finish(root: Path, worktree: Path) -> None:
+def finish(root: Path, log: Log, env: dict[str, str] | None = None) -> None:
+    """Fast-forward the live checkout to the update branch and install with env, or the inherited one."""
     try:
-        run_git(["merge", "-q", "--ff-only", BRANCH], root, interactive=True)
+        run_git(["merge", "-q", "--ff-only", BRANCH], root, log, interactive=True)
     except ReconcileError:
         raise ReconcileError("the live checkout gained commits during the run and cannot fast-forward; "
                              "pushed updates are safe on origin, and a rerun finishes") from None
-    restore_sources(root)
-    if subprocess.run([str(root / "scripts/reconcile-skills.sh")], cwd=root, check=False).returncode:
+    restore_sources(root, log)
+    if run_command([str(root / "scripts/reconcile-skills.sh")], root, dict(os.environ) if env is None else env, log):
         raise ReconcileError("install failed; run the skill selector and choose Install")
 
 
 def run(root: Path) -> int:
-    require_primary_checkout(root)
-    if reason := off_main(root):
-        raise ReconcileError(reason)
-    restore_sources(root)
-    if reason := update_blocker(root):
-        raise ReconcileError(reason)
-    worktree = prepare_worktree(root)
+    worktree = start(root, print)
     catalog = load_catalog(worktree)
     failed = False
     for path in parse_modules(worktree):
         ok, catalog = update_source(worktree, path.removeprefix("sources/"), catalog)
         failed |= not ok
-    finish(root, worktree)
+    finish(root, print)
     return int(failed)
 
 
