@@ -276,7 +276,10 @@ when nothing is unsaved.
 ## Install and provenance
 
 Run `scripts/reconcile-skills.sh` to install and
-`scripts/reconcile-skills.sh --check` for a read-only check. The skillset
+`scripts/reconcile-skills.sh --check` for a read-only check. After a
+successful install, the script also links `select-skills` and its lockfile in
+`~/.local/bin` to the live checkout, as setup does, so a machine whose dotfiles
+hook installs skills also gets the selector command. The skillset
 commit SHA identifies the selection and source pins used for the install.
 It does not make linked source contents immutable: another process can modify
 a checkout after the clean-state check, changing what the symlink exposes. Run

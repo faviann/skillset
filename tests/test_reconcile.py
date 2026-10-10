@@ -153,6 +153,20 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertEqual(check.returncode, 0, check.stderr)
         self.assertIn(git(["rev-parse", "HEAD"], self.repo), check.stdout)
 
+    def test_install_links_the_selector_command_to_the_live_checkout(self) -> None:
+        command = self.home / ".local/bin/select-skills"
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        self.assertEqual(command.resolve(), self.repo / "scripts/select-skills.py")
+        self.assertEqual(Path(f"{command}.lock").resolve(), self.repo / "scripts/select-skills.py.lock")
+
+        command.unlink()
+        self.assertEqual(self.run_reconciler("--check").returncode, 0)
+        self.assertFalse(command.is_symlink())
+        result = self.run_reconciler()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "skills are reconciled")
+        self.assertEqual(command.resolve(), self.repo / "scripts/select-skills.py")
+
     def test_plan_reads_the_explicit_checkout_root(self) -> None:
         with patch.dict(os.environ, {"HOME": str(self.home)}):
             plan = build_plan(self.repo)
@@ -711,6 +725,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         )
         self.assert_reconcile_fails(result, "skill links belong to the primary checkout")
         self.assertFalse((self.home / ".agents").exists())
+        self.assertFalse((self.home / ".local").exists())
 
     def test_historical_commit_reconstructs_its_source_gitlink_and_selection(self) -> None:
         original_selection = (self.repo / "skills.txt").read_text(encoding="utf-8")
