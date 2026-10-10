@@ -30,4 +30,3 @@ mattpocock/skills:wait-what
 mattpocock/skills:wayfinder
 mattpocock/skills:wizard
 mattpocock/skills:writing-for-agents
-uditakhourii/adhd:adhd
