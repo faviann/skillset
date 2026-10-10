@@ -52,24 +52,36 @@ class SourceUpdate:
 
 @dataclass(frozen=True)
 class Summary:
-    commits: int
+    commits: list[str]
     added: list[str]
     removed: list[str]
-    changed: list[str]
+    changed: dict[str, str]
     selected: frozenset[str]
     unpublished: list[str]
 
-    def lines(self, update: SourceUpdate) -> list[str]:
-        lines = [f"{update.name} {update.old[:7]} -> {update.new[:7]}, "
-                 f"{self.commits} commit{'s' if self.commits != 1 else ''}"]
-        for label, names in (("added", self.added), ("removed", self.removed), ("changed", self.changed)):
-            if names:
-                lines.append(f"  {label}: " + " ".join(name + "*" * (name in self.selected) for name in names))
-        if self.selected.intersection(self.changed):
-            lines.append("  * selected")
+    def lines(self, update: SourceUpdate, *, named: bool = True) -> list[str]:
+        count = len(self.commits)
+        overview = f"{count} commit{'s' if count != 1 else ''} · {update.old[:7]} → {update.new[:7]}"
+        lines = [f"{update.name} · {overview}" if named else overview]
+        rows = [(name, f"updated · {stat}") for name, stat in self.changed.items()]
+        rows += [(name, "removed") for name in self.removed]
+        rows += [(name, "added") for name in self.added]
+        width = max((len(name) for name, _ in rows), default=0)
+        for title, section in (
+            ("Skills you use", [row for row in rows if row[0] in self.selected]),
+            ("New skills", [row for row in rows if row[1] == "added"]),
+            ("Skills you don't use", [row for row in rows if row[0] not in self.selected and row[1] != "added"]),
+        ):
+            if section:
+                lines += ["", title, *(f"  {name:<{width}}  {what}" for name, what in sorted(section))]
+        if not self.added and not self.removed:
+            lines += ["", "No skills added or removed." if self.changed else "No skill files changed."]
+        if self.commits:
+            lines += ["", "Commits", *(f"  {line}" for line in self.commits)]
         if self.unpublished:
-            lines.append(f"  also publishes {len(self.unpublished)} local commit(s) with this push:")
-            lines.extend(f"    {line}" for line in self.unpublished)
+            count = len(self.unpublished)
+            lines += ["", f"Also pushes {count} earlier commit{'s' if count != 1 else ''} not yet on GitHub",
+                      *(f"  {line}" for line in self.unpublished)]
         return lines
 
 
@@ -207,14 +219,27 @@ def skill_directories(name: str, *sources: SourceCatalog) -> set[Path]:
             for target in (source.skills[name], *source.targets(name).values())}
 
 
+def diffstat(path: Path, old: str, new: str, directories: set[Path]) -> str:
+    rows = [line.split("\t", 2) for line in git(
+        ["diff", "--numstat", "--no-renames", old, new, "--", *map(str, sorted(directories))],
+        cwd=path).splitlines()]
+    # Binary files report "-" for both counts.
+    added = sum(int(row[0]) for row in rows if row[0] != "-")
+    deleted = sum(int(row[1]) for row in rows if row[1] != "-")
+    return f"{len(rows)} file{'s' if len(rows) != 1 else ''} +{added} −{deleted}"
+
+
 def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after: SourceCatalog,
               selected: frozenset[str]) -> Summary:
     changed_files = git(["diff", "--name-only", "-z", "--no-renames", update.old, update.new], cwd=after.path)
     touched = path_prefixes(map(Path, filter(None, changed_files.split("\0"))))
-    changed = [name for name in sorted(set(before.skills) & set(after.skills))
-               if any(touched[directory]
-                      for directory in skill_directories(name, before, after))]
-    commits = int(git(["rev-list", "--count", f"{update.old}..{update.new}"], cwd=after.path))
+    changed = {}
+    for name in sorted(set(before.skills) & set(after.skills)):
+        directories = skill_directories(name, before, after)
+        if any(touched[directory] for directory in directories):
+            changed[name] = diffstat(after.path, update.old, update.new, directories)
+    commits = git(["log", "--no-merges", "--reverse", "--format=%h %s", f"{update.old}..{update.new}"],
+                  cwd=after.path).splitlines()
     unpublished = git(["log", "--format=%h %s", "origin/main..HEAD^"], cwd=worktree).splitlines()
     return Summary(commits, sorted(set(after.skills) - set(before.skills)),
                    sorted(set(before.skills) - set(after.skills)), changed, selected, unpublished)
@@ -310,7 +335,7 @@ def update_source(worktree: Path, name: str, before: Catalog) -> tuple[bool, Cat
         if isinstance(prepared, str):
             print(f"{name}: {prepared}")
             return True, before
-        print("\n".join(prepared.summary.lines(prepared.update)))
+        print("\n".join(prepared.summary.lines(prepared.update)) + "\n")
         while (answer := ask()) == "d":
             show_diff(prepared)
         if answer == "s":

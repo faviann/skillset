@@ -98,7 +98,8 @@ class UpdateKeyTests(PilotTestCase):
             await self.started(pilot)
             await pilot.press("ctrl+u")
             dialog = await self.until(pilot, selector.Phase.REVIEW)
-            self.assertIn(f"acme/skills {old[:7]} -> {new[:7]}, 1 commit\n  changed: alpha*", self.log(app))
+            self.assertRegex(self.log(app), f"^1 commit · {old[:7]} → {new[:7]}\n\n"
+                          "Skills you use\n  alpha  updated · 1 file")
             await pilot.press("d")
             self.assertIs(app.screen, dialog)
             self.assertIn("+Rewritten instructions.", self.log(app))
