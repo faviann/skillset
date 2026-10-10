@@ -245,7 +245,7 @@ class UpdateApplyTests(UpdateCase):
         acme = self.advance("acme/skills", "add beta")
         zebra = self.advance("zebra/tools")
         output = self.update("a\na\n")
-        self.assertIn(f"acme/skills {old[:7]} -> {acme[:7]}, 1 commit\n  added: beta\n", output)
+        self.assertIn(f"acme/skills · 1 commit · {old[:7]} → {acme[:7]}\n\nNew skills\n  beta  added\n", output)
         self.assertEqual(self.origin_subjects(), [
             f"Update zebra/tools to {zebra[:7]}", f"Update acme/skills to {acme[:7]}", "initial skillset",
         ])
@@ -268,8 +268,12 @@ class UpdateApplyTests(UpdateCase):
         head, old = git(["rev-parse", "HEAD"], self.repo), self.pin("acme/skills")
         output = self.update("d\ns\n")
         summary, diff = output.split("[a]ccept", 1)
-        self.assertRegex(summary, r"changed: .*\balpha\*")
-        self.assertRegex(summary, r"changed: .*\bunselected(?!\*)")
+        mine, others = summary.split("Skills you don't use", 1)
+        self.assertRegex(mine, r"Skills you use\n  alpha +updated · 2 files \+3 −0\n")
+        self.assertNotIn("unselected", mine)
+        self.assertRegex(others, r"^\n  unselected +updated · 1 file \+2 −0\n")
+        self.assertIn("No skills added or removed.", summary)
+        self.assertRegex(summary, r"Commits\n  [0-9a-f]{7} rewrite\n")
         self.assertIn("skills/alpha/SKILL.md", diff)
         self.assertIn("skills/alpha/helper.sh", diff)
         self.assertNotIn("skills/unselected", diff)
@@ -361,9 +365,9 @@ class UpdateApplyTests(UpdateCase):
         self.advance("zebra/tools")
         output = self.update("a\ns\n")
         first, second = output.split("[a]ccept")[:2]
-        self.assertIn(f"also publishes 1 local commit(s) with this push:\n    {local[:7]} Update skill selection (+0 -0)\n",
+        self.assertIn(f"Also pushes 1 earlier commit not yet on GitHub\n  {local[:7]} Update skill selection (+0 -0)\n",
                       first)
-        self.assertNotIn("also publishes", second)
+        self.assertNotIn("Also pushes", second)
         self.assertEqual(git(["rev-parse", "main~1"], self.origin), local)
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
 

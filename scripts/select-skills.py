@@ -398,7 +398,7 @@ class UpdateDialog(ModalScreen[bool]):
         log = self.query_one(RichLog)
         log.clear()
         if not self.showing_diff:
-            log.write(Text("\n".join(self.prepared.summary.lines(self.prepared.update))))
+            log.write(Text("\n".join(self.prepared.summary.lines(self.prepared.update, named=False))))
             return
         for line in update_sources.diff_text(self.prepared).splitlines():
             log.write(Text(line, style=AUTOMATIC if line.startswith("+") else MANUAL if line.startswith("-")
