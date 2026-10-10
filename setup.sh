@@ -30,19 +30,9 @@ selector="$PWD/scripts/select-skills.py"
 git submodule update --init --recursive --checkout
 uv sync --locked --script "$selector"
 
-local_bin="$HOME/.local/bin"
-mkdir -p -- "$local_bin"
-for path in "$local_bin/select-skills" "$local_bin/select-skills.lock"; do
-  if [[ -e "$path" && ! -L "$path" ]]; then
-    printf 'error: refusing to replace existing file or directory: %s\n' "$path" >&2
-    exit 1
-  fi
-done
-ln -sfn -- "$selector" "$local_bin/select-skills"
-# uv looks beside the invoked path for its lock. The earlier sync also caches
-# every package needed by the installed command's separate environment.
-ln -sfn -- "$selector.lock" "$local_bin/select-skills.lock"
+"$PWD/scripts/link-selector.sh"
 
+local_bin="$HOME/.local/bin"
 case ":$initial_path:" in
   *":$local_bin:"*) ;;
   *) printf 'Warning: %s is not on PATH. Add it to PATH to use select-skills.\n' "$local_bin" >&2 ;;
