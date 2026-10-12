@@ -686,13 +686,15 @@ class SelectorStartupTests(unittest.TestCase):
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
         )
 
-    def test_home_without_a_valid_record_refuses_to_open(self) -> None:
+    def test_home_without_a_record_refuses_to_open_when_there_is_no_profile_to_choose(self) -> None:
         (self.fixture.home / ".agents/.skillset/profile").unlink()
+        git(["rm", "-q", "profiles/workstation.txt"], self.fixture.repo)
+        git(["commit", "-qm", "remove the only profile"], self.fixture.repo)
         result = self.launch()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stderr,
                          f"error: this home has no profile: {self.fixture.home}/.agents/.skillset/profile is missing\n"
-                         "profiles at HEAD: workstation\n"
+                         "profiles at HEAD: none\n"
                          "choose one with: scripts/reconcile-skills.sh --profile <name>\n")
         self.assertEqual(result.stdout, "")
 

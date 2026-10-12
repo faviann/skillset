@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from fixture import git, write_profile
+from fixture import git, write_profile, write_record
 from pilot import PilotTestCase, selector
 from test_selector_install import InstallCase
 
@@ -396,6 +396,186 @@ class NewProfileTests(ProfileCase):
 
         self.assertEqual(code, 0, output)
         self.assert_laptop_committed(previous)
+
+
+class UseHereTests(ProfileCase):
+    """u makes a committed profile this home's choice, through reconcile-skills.sh --profile."""
+
+    async def test_u_asks_then_closes_and_the_handoff_records_and_installs_the_profile(self) -> None:
+        head = git(["rev-parse", "HEAD"], self.repo)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p")
+            self.assertIn("u use here", self.text(app, "#dialog-hint"))
+            await pilot.press("up", "u")
+            self.assertEqual(self.text(app, "#dialog-title"), "Use llm in this home?")
+            self.assertEqual(self.lines(app, "choices"), ["1. Use llm and install", "2. Cancel"])
+            self.assertEqual(self.text(app, "#dialog-details"),
+                             "This home uses workstation; skills only it selects are uninstalled here.\n"
+                             "Other homes are not affected.")
+            await pilot.press("2")
+            self.assertFalse(app.screen.is_modal)
+            await pilot.press("ctrl+p", "up", "u", "1")
+            await self.started(pilot)
+            self.assertFalse(app.is_running)
+        self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "workstation\n")
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
+        self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "llm\n")
+        for directory in (".agents/skills", ".claude/skills"):
+            self.assertTrue((self.home / directory / "tdd").is_symlink())
+            self.assertFalse((self.home / directory / "prototype").exists())
+
+
+    async def test_u_refuses_an_uncommitted_file_unsaved_changes_and_the_profile_already_used(self) -> None:
+        write_profile(self.repo, "llm", [])
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "up", "u")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot use llm here: profiles/llm.txt is not committed. Save and commit it first.")
+            await pilot.press("ctrl+p", "u")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"), "⎿ This home already uses workstation.")
+            await pilot.press("right", "down", "space", "ctrl+p", "down", "u")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot use zeroshot-review here: save or discard the unsaved changes first.")
+            await pilot.press("ctrl+p", "n")
+            await pilot.press(*"laptop", "enter", "3")
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "u")
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot use laptop here: profiles/laptop.txt is not committed. "
+                             "Save and commit it first.")
+            self.assertTrue(app.is_running)
+        self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "workstation\n")
+
+    async def test_u_cannot_install_where_the_checkout_cannot_install(self) -> None:
+        git(["checkout", "-q", "--detach"], self.repo)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "up", "u")
+            self.assertTrue(self.text(app, "#dialog-details").endswith(
+                "Use llm and install unavailable: checkout is on a detached HEAD; switch to a branch"))
+            await pilot.press("1")
+            self.assertTrue(app.screen.is_modal)
+            await pilot.press("escape")
+            self.assertTrue(app.is_running)
+
+
+class FreshHomeTests(ProfileCase):
+    """A home with no valid record opens the selector and is asked which profile to use."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.record = self.home / ".agents/.skillset/profile"
+        self.record.unlink()
+
+    async def test_the_selector_asks_which_profile_and_the_handoff_records_and_installs_it(self) -> None:
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            self.assertEqual(self.text(app, "#dialog-title"),
+                             "This home has no profile yet. Which one should it use?")
+            self.assertEqual(self.lines(app, "choices"),
+                             ["1. llm", "2. workstation", "3. zeroshot-review", "4. New profile"])
+            self.assertEqual(self.text(app, "#dialog-details"),
+                             "The choice is saved in ~/.agents/.skillset/profile on this machine only, "
+                             "then that profile is installed.\nEsc to browse first and decide when you save.")
+            self.assertEqual(app.screen_stack[0].query_one("#title", selector.Static).content.plain,
+                             "✻ Skill selector  llm  · this home has no profile   1 selected · 0 unsaved")
+            await pilot.press("2")
+            await self.started(pilot)
+            self.assertFalse(app.is_running)
+        self.assertFalse(self.record.exists())
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.record.read_text(), "workstation\n")
+        for directory in (".agents/skills", ".claude/skills"):
+            self.assertTrue((self.home / directory / "prototype").is_symlink())
+
+
+    async def test_escape_browses_and_save_then_offers_to_commit_and_use_the_profile_here(self) -> None:
+        previous = git(["rev-parse", "HEAD"], self.repo)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("escape")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"), "⎿ Browsing without a profile for this home. "
+                                                         "Saving offers to use the edited one here.")
+            await pilot.press("ctrl+p")
+            self.assertEqual(self.lines(app, "choices")[0], "llm               1 skill")
+            await pilot.press("escape", "right", "space", "ctrl+s")
+            self.assertEqual(self.text(app, "#dialog-title"), "Save llm?")
+            self.assertEqual(self.lines(app, "choices"),
+                             ["1. Save and commit", "2. Save, commit and use it here", "3. Save only"])
+            self.assertEqual(self.text(app, "#dialog-details"),
+                             "+ mattpocock/skills:prototype\n\nThis home has no profile yet.")
+            await pilot.press("2")
+            await self.started(pilot)
+            self.assertFalse(app.is_running)
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
+        self.assertEqual(git(["log", "-1", "--format=%s"], self.repo), "Update llm profile (+1 -0)")
+        self.assertEqual(self.record.read_text(), "llm\n")
+        for directory in (".agents/skills", ".claude/skills"):
+            for name in ("prototype", "tdd"):
+                self.assertTrue((self.home / directory / name).is_symlink())
+
+    async def test_new_profile_names_one_whose_save_offers_to_commit_and_use_it_here(self) -> None:
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("4")
+            self.assertEqual(self.text(app, "#dialog-title"), "New profile")
+            await pilot.press(*"laptop", "enter")
+            await self.started(pilot)
+            self.assertEqual(self.text(app, "#title"),
+                             "✻ Skill selector  laptop  · this home has no profile   0 selected · 1 unsaved")
+            await pilot.press("right", "space", "ctrl+s")
+            self.assertEqual(self.lines(app, "choices")[1], "2. Save, commit and use it here")
+            await pilot.press("2")
+            await self.started(pilot)
+            self.assertFalse(app.is_running)
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["log", "-1", "--format=%s"], self.repo), "Add laptop profile (+1 -0)")
+        self.assertEqual(self.record.read_text(), "laptop\n")
+        self.assertTrue((self.home / ".claude/skills/prototype").is_symlink())
+
+    async def test_an_uncommitted_profile_cannot_be_chosen_and_a_stale_record_says_why(self) -> None:
+        write_profile(self.repo, "zeroshot-review", ["mattpocock/skills:tdd"])
+        write_record(self.home, "gone")
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            self.assertEqual(self.lines(app, "choices")[2], "3. zeroshot-review")
+            self.assertEqual(self.text(app, "#dialog-details"),
+                             "this home's profile gone is not a profile at HEAD\n\n"
+                             "The choice is saved in ~/.agents/.skillset/profile on this machine only, "
+                             "then that profile is installed.\nEsc to browse first and decide when you save.\n\n"
+                             "zeroshot-review unavailable: profiles/zeroshot-review.txt is not committed")
+            await pilot.press("3")
+            self.assertTrue(app.screen.is_modal)
+            await pilot.press("escape")
+            self.assertIn("llm  · this home has no profile", self.text(app, "#title"))
+        self.assertEqual(self.record.read_text(), "gone\n")
 
 
 if __name__ == "__main__":

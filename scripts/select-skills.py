@@ -250,9 +250,7 @@ class ChoiceDialog(ModalScreen[int | None]):
     BINDINGS = [
         Binding("enter", "confirm", show=False),
         Binding("escape", "cancel", show=False),
-        Binding("1", "choose(1)", show=False),
-        Binding("2", "choose(2)", show=False),
-        Binding("3", "choose(3)", show=False),
+        *(Binding(str(number), f"choose({number})", show=False) for number in range(1, 10)),
     ]
 
     def __init__(self, title: str, choices: list[str], details: str = "", *,
@@ -355,8 +353,9 @@ class ProfilePicker(ModalScreen[tuple[str, str] | None]):
         Binding("enter", "pick('edit')", show=False),
         Binding("n", "pick('new')", show=False),
         Binding("c", "pick('copy')", show=False),
+        Binding("u", "pick('use')", show=False),
     ]
-    HINT = "enter edit · n new · c copy · esc close"
+    HINT = "enter edit · u use here · n new · c copy · esc close"
 
     def __init__(self, rows: list[Row], current: str, *, under: Offset) -> None:
         super().__init__()
@@ -702,10 +701,19 @@ class SelectorApp(App[Callable[[Path], int] | None]):
     def __init__(self, root: Path | None = None) -> None:
         super().__init__()
         self.root = (root or Path(__file__).resolve().parent.parent).resolve()
-        # A home without a valid record has nothing to edit until it chooses a profile.
-        self.active: str | None = reconcile_skills.active_profile(self.root)
+        self.record_problem = ""
+        try:
+            self.active: str | None = reconcile_skills.active_profile(self.root)
+        except reconcile_skills.ReconcileError as error:
+            # The launch prompt asks which profile to use; until then the first one is edited.
+            self.active = None
+            # A broken or stale record says why at the prompt; a missing one is simply a fresh home.
+            self.record_problem = (str(error).partition("\n")[0]
+                                   if os.path.lexists(reconcile_skills.record_path()) else "")
+            if not skill_catalog.list_profiles(self.root):
+                raise
         # The profile being edited; the picker switches it to any other.
-        self.profile = self.active
+        self.profile = self.active or skill_catalog.list_profiles(self.root)[0]
         # Browsing needs source validation, not the reconciler's deployment gate.
         self.selection_catalog = skill_catalog.load_catalog(self.root)
         self.catalog = display_catalog(self.selection_catalog)
@@ -754,6 +762,34 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.query_one("#sources", CatalogList).focus()
         for name, source in self.selection_catalog.sources.items():
             self.run_worker(partial(self.find_update, name, source), thread=True)
+        if self.active is None:
+            self.call_after_refresh(self.choose_profile_here)
+
+    def choose_profile_here(self) -> None:
+        """Ask a home with no profile which one to use, as setup opens the selector on a fresh home."""
+        names = self.profile_names()
+        committed = self.committed_profiles()
+        disabled = {}
+        for number, name in enumerate(names, 1):
+            if reason := (reconcile_skills.selection_install_blocker(self.root, name) if name in committed
+                          else f"{skill_catalog.profile_path(name)} is not committed"):
+                disabled[number] = reason
+
+        def chosen(choice: int | None) -> None:
+            if choice is None:
+                self.query_one("#message", Static).update(
+                    "⎿ Browsing without a profile for this home. Saving offers to use the edited one here.")
+            elif choice > len(names):
+                self.new_profile()
+            else:
+                self.exit(partial(commit_profile, profile=names[choice - 1], after=After.USE_HERE))
+
+        self.push_screen(ChoiceDialog(
+            "This home has no profile yet. Which one should it use?", [*names, "New profile"],
+            (f"{self.record_problem}\n\n" if self.record_problem else "")
+            + "The choice is saved in ~/.agents/.skillset/profile on this machine only, "
+            "then that profile is installed.\nEsc to browse first and decide when you save.",
+            disabled=disabled), chosen)
 
     def find_update(self, name: str, source: skill_catalog.SourceCatalog) -> None:
         worker = get_current_worker()
@@ -822,6 +858,10 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         paths = {entry[3:] for entry in status.split("\0") if entry}
         return {name for name in self.profile_names() if skill_catalog.profile_path(name) in paths}
 
+    def committed_profiles(self) -> set[str]:
+        """Profiles at HEAD whose file matches it, the only ones --profile can make this home's."""
+        return set(skill_catalog.list_profiles(self.root)) - self.uncommitted_profiles()
+
     def profile_rows(self) -> list[Row]:
         names = self.profile_names()
         uncommitted = self.uncommitted_profiles()
@@ -858,6 +898,8 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             self.switch_to(name)
         elif operation in ("new", "copy"):
             self.new_profile(copy_from=name if operation == "copy" else None)
+        elif operation == "use":
+            self.use_here(name)
 
     def switch_to(self, name: str, edit: Callable[[], None] | None = None) -> None:
         """Edit name, through `edit` if given, after asking whether to drop unsaved changes."""
@@ -884,6 +926,33 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         where = ("" if name == self.active else " This home has no profile." if self.active is None
                  else f" This home uses {self.active}.")
         self.query_one("#message", Static).update(Text(f"⎿ Editing {name}.{where}"))
+
+    def use_here(self, name: str) -> None:
+        """Ask, then close for the terminal handoff to make name this home's profile."""
+        if name == self.active:
+            self.query_one("#message", Static).update(Text(f"⎿ This home already uses {name}."))
+            return
+        # --profile installs the file at HEAD, so a saved edit would silently not apply.
+        if name not in self.committed_profiles():
+            self.query_one("#message", Static).update(Text(
+                f"⎿ Cannot use {name} here: {skill_catalog.profile_path(name)} is not committed. "
+                "Save and commit it first."))
+            return
+        if self.draft.unsaved:
+            self.query_one("#message", Static).update(Text(
+                f"⎿ Cannot use {name} here: save or discard the unsaved changes first."))
+            return
+        reason = reconcile_skills.selection_install_blocker(self.root, name)
+        where = (f"This home uses {self.active}; skills only it selects are uninstalled here." if self.active
+                 else "This home has no profile yet.")
+
+        def confirmed(choice: int | None) -> None:
+            if choice == 1:
+                self.exit(partial(commit_profile, profile=name, after=After.USE_HERE))
+
+        self.push_screen(ChoiceDialog(f"Use {name} in this home?", [f"Use {name} and install", "Cancel"],
+                                      f"{where}\nOther homes are not affected.",
+                                      disabled={1: reason} if reason else None), confirmed)
 
     def new_profile(self, *, copy_from: str | None = None) -> None:
         """Name a profile that starts empty or as a copy of a saved one, and edit it unsaved."""
