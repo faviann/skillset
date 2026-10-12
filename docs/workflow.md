@@ -44,7 +44,14 @@ gitlink commit.
 ## Select skills
 
 Select skills in the live checkout, on its branch, by running `select-skills`
-from any directory. It edits the profile this home's record names. Space toggles the highlighted skill; Enter does the same in
+from any directory. It opens on the profile this home's record names and edits
+one profile at a time. The title names the edited profile and says **used here**
+or **this home uses <name>**. Ctrl+P drops a list of
+every profile under that name, with its skill count, **● used here**, and its
+unsaved changes or **not committed** when its file differs from HEAD. Enter edits
+the highlighted profile; with unsaved changes it first asks whether to keep
+editing, review and save, or discard them and switch. Esc or a click outside
+closes the list. Space toggles the highlighted skill; Enter does the same in
 the skills column. Clicking a circle toggles it, and clicking a name highlights
 it. Selecting a name from another source asks before replacing its current
 selection.
@@ -69,12 +76,19 @@ detached HEAD, during a merge or rebase, when tracked changes outside `profiles/
 when untracked files exist under `scripts/`, or while selected entries remain
 under **Not in catalog**.
 
-The title shows **not installed** when the profile's file differs from HEAD or a
+The title shows **not installed**, for this home's profile only, when its file differs from HEAD or a
 read-only installation check finds links to update or fails. Ctrl+S then offers
 **Install** even with no unsaved changes; it preserves the saved file and
 commits only if needed. A failed check appears on the message line and disables
 Install with its reason. After an install failure, run the skill selector again
 and choose Install.
+
+Saving a profile this home doesn't use never installs it here unless asked. The
+dialog names the profile this home uses and offers **Save and commit**, which
+commits only that file as above and installs nothing; **Save, commit and use it
+here**, which then runs `scripts/reconcile-skills.sh --profile <name>`; and
+**Save only**. The title marks such a profile **not committed** while its file
+differs from HEAD.
 
 **Save only** rewrites the profile's file in sorted order with its standard header and
 stays open. It becomes the default when Save and install is unavailable.
