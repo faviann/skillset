@@ -23,17 +23,25 @@ directory is missing from PATH. With terminal input and output it opens the
 selector; otherwise it prints `Ready. Run: select-skills`. Setup installs no
 skills.
 
-Then choose the profile this home installs. This records the choice in
-`~/.agents/.skillset/profile` and installs the profile:
+Then choose the profile this home installs. The selector that setup opens asks
+which profile this home should use, listing every profile plus **New profile**.
+Choosing one closes the selector and runs `scripts/reconcile-skills.sh --profile
+<name>` in your terminal. That records the choice in
+`~/.agents/.skillset/profile` and installs the profile. A profile whose file
+differs from HEAD can't be chosen. **New profile** asks for a name and edits a
+new, empty profile. Esc browses without choosing; Save then offers **Save,
+commit and use it here** for the edited profile. Without the selector, choose
+from the checkout:
 
 ```bash
 scripts/reconcile-skills.sh --profile workstation
 ```
 
-Until a home has a valid record, installs, `--check`, the selector and the
-update command refuse to start and list the profiles at HEAD. Rerun `--profile`
-with another name to switch. That removes the links only the old profile
-wanted and adds the new profile's.
+Until a home has a valid record, installs, `--check` and the update command
+refuse to start and list the profiles at HEAD. The selector asks again, and says
+why when the record exists but is invalid or stale. Rerun `--profile` with
+another name, or press U in the selector's Ctrl+P list, to switch. That removes
+the links only the old profile wanted and adds the new profile's.
 
 In the live checkout, rerun `./setup.sh` whenever a source is missing or at the
 wrong commit, for example after a pull that moved a pin. An install never
@@ -45,8 +53,8 @@ gitlink commit.
 
 Select skills in the live checkout, on its branch, by running `select-skills`
 from any directory. It opens on the profile this home's record names and edits
-one profile at a time. The title names the edited profile and says **used here**
-or **this home uses <name>**. Ctrl+P drops a list of
+one profile at a time. The title names the edited profile and says **used here**,
+**this home uses <name>** or **this home has no profile**. Ctrl+P drops a list of
 every profile under that name, with its skill count, **● used here**, and its
 unsaved changes or **not committed** when its file differs from HEAD. Enter edits
 the highlighted profile; with unsaved changes it first asks whether to keep
@@ -103,6 +111,11 @@ with the current selection. Esc asks before discarding unsaved
 changes. Entries that no longer resolve appear first under **Not in catalog**
 with their reasons; deselect them to remove them, or leave them to preserve them
 on save. Duplicate selected names must be resolved before saving.
+
+In the Ctrl+P list, U makes the highlighted profile the one this home uses.
+After confirmation it closes the selector and runs
+`scripts/reconcile-skills.sh --profile <name>`; other homes are not affected.
+U is refused for the same reasons as R and D below.
 
 In the Ctrl+P list, R renames and D deletes the highlighted profile. Both
 are refused while anything is unsaved or the profile's file differs from HEAD,

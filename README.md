@@ -57,12 +57,16 @@ Add that directory to PATH if setup warns. In a terminal, setup opens the
 selector; otherwise, run `select-skills` when ready. Setup installs no skills.
 Rerun `./setup.sh` to restore missing or stale sources.
 
-A new home has no profile yet, so installs and the selector refuse to start and
-list the profiles to choose from. Choose one once; this records it and installs it:
+A new home has no profile yet. The selector asks which profile it should use,
+records the choice and installs it. Without the selector, choose one once from
+the checkout; this records it and installs it:
 
 ```bash
 scripts/reconcile-skills.sh --profile workstation
 ```
+
+Until a home has a profile, installs and the update command refuse to start and
+list the profiles to choose from.
 
 In the selector, choose skills, then press Ctrl+S and choose **Save and
 install**. That commits the home's profile in the live checkout and links the selected

@@ -187,8 +187,10 @@ receipts like any deselected skill.
 If the record is missing, holds an invalid name, or names a profile that isn't
 at HEAD, install and `--check` fail closed. They change no links and print the
 profiles at HEAD and the `--profile` command. There is no default profile and no
-guessing from receipts. The selector and the update command refuse to start in
-that state for the same reason. Install validates only the active profile, so a
+guessing from receipts. The update command refuses to start in that state for
+the same reason. The selector opens and asks which profile this home should use;
+it never writes the record itself, and every change to this home's profile runs
+`--profile` after the selector closes. Install validates only the active profile, so a
 broken profile no home here uses never blocks it. `--check` validates every
 profile committed at HEAD, so a broken profile shows from any home. It reports
 each unresolved line, invalid skill and repeated name at its
