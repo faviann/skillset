@@ -1386,65 +1386,66 @@ class After(Enum):
 def commit_profile(root: Path, profile: str, after: After) -> int:
     """Run only after the TUI closes, with hooks and signing in the terminal."""
     path = skill_catalog.profile_path(profile)
+    kept = f"{path} stays saved; nothing was committed or installed."
     if reason := reconcile_skills.selection_install_blocker(root, profile):
-        print(f"Could not commit: {reason}. {path} stays saved; nothing was committed or installed.")
+        print(f"Could not commit: {reason}. {kept}")
         return 1
     try:
         store = CheckoutStore(root, profile)
         changes = Changes.between(store.head(), store.read())
-        message = f"Update {profile} profile ({changes.summary})"
-        if not skill_catalog.git(["ls-files", "--", path], cwd=root):
-            # A new profile: `commit --only` takes only paths Git already knows.
-            skill_catalog.git(["add", "--", path], cwd=root)
-            message = f"Add {profile} profile ({changes.summary})"
-        # Match the checkout inspected by the catalog's Git reads, while
-        # retaining terminal streams for hooks and interactive signing.
-        if skill_catalog.selection_uncommitted(root, profile):
-            commit = subprocess.run(
-                ["git", "commit", "-m", message, "-m", "\n".join(changes.lines()), "--only", "--", path],
-                cwd=root, env=skill_catalog.git_env(interactive=True), check=False,
-            )
-            if commit.returncode:
-                print(f"Commit failed. {path} stays saved; nothing was committed or installed.")
-                return commit.returncode
+        # A new profile is staged first: `commit --only` takes only paths Git already knows.
+        new = not skill_catalog.git(["ls-files", "--", path], cwd=root)
+        unchanged = not new and not skill_catalog.selection_uncommitted(root, profile)
     except (reconcile_skills.ReconcileError, OSError) as error:
-        print(f"Could not commit: {error}. {path} stays saved; nothing was committed or installed.")
+        print(f"Could not commit: {error}. {kept}")
         return 1
-    return finish_handoff(root, profile, after)
+    if unchanged:
+        return finish_handoff(root, profile, after)
+    return commit_handoff(root, [path], [f"{'Add' if new else 'Update'} {profile} profile ({changes.summary})",
+                                         "\n".join(changes.lines())],
+                          stage=["add", "--", path] if new else None, failed=kept, profile=profile, after=after)
 
 
 def commit_rename(root: Path, profile: str, new: str, after: After) -> int:
     """Rename a committed profile with git mv and commit only that, then use it here if `after` says so."""
     path, new_path = skill_catalog.profile_path(profile), skill_catalog.profile_path(new)
-    try:
-        skill_catalog.git(["mv", "--", path, new_path], cwd=root)
-        commit = subprocess.run(["git", "commit", "-m", f"Rename {profile} profile to {new}", "--only", "--",
-                                 path, new_path], cwd=root, env=skill_catalog.git_env(interactive=True), check=False)
-        if commit.returncode:
-            skill_catalog.git(["mv", "--", new_path, path], cwd=root)
-            print(f"Commit failed. {path} was not renamed.")
-            return commit.returncode
-    except (reconcile_skills.ReconcileError, OSError) as error:
-        print(f"Could not rename: {error}")
-        return 1
-    return finish_handoff(root, new, after)
+    return commit_handoff(root, [path, new_path], [f"Rename {profile} profile to {new}"],
+                          stage=["mv", "--", path, new_path], undo=["mv", "--", new_path, path],
+                          failed=f"{path} was not renamed.", profile=new, after=after)
 
 
 def commit_delete(root: Path, profile: str) -> int:
     """Delete a committed profile with git rm and commit only that."""
     path = skill_catalog.profile_path(profile)
+    return commit_handoff(root, [path], [f"Delete {profile} profile"],
+                          stage=["rm", "-q", "--", path], undo=["checkout", "HEAD", "--", path],
+                          failed=f"{path} was not deleted.", profile=profile, after=After.NOTHING)
+
+
+def commit_handoff(root: Path, paths: list[str], message: list[str], *, stage: list[str] | None = None,
+                   undo: list[str] | None = None, failed: str, profile: str, after: After) -> int:
+    """Stage with the Git arguments `stage`, commit only `paths`, then finish the handoff for profile.
+
+    `message` holds the commit's paragraphs. If the commit fails (a hook,
+    signing), `undo` restores the files; either failure prints `failed`, which
+    says what was left as it was.
+    """
     try:
-        skill_catalog.git(["rm", "-q", "--", path], cwd=root)
-        commit = subprocess.run(["git", "commit", "-m", f"Delete {profile} profile", "--only", "--", path],
+        if stage:
+            skill_catalog.git(stage, cwd=root)
+        # Match the checkout inspected by the catalog's Git reads, while
+        # retaining terminal streams for hooks and interactive signing.
+        commit = subprocess.run(["git", "commit", *(f"--message={part}" for part in message), "--only", "--", *paths],
                                 cwd=root, env=skill_catalog.git_env(interactive=True), check=False)
         if commit.returncode:
-            skill_catalog.git(["checkout", "HEAD", "--", path], cwd=root)
-            print(f"Commit failed. {path} was not deleted.")
+            if undo:
+                skill_catalog.git(undo, cwd=root)
+            print(f"Commit failed. {failed}")
             return commit.returncode
     except (reconcile_skills.ReconcileError, OSError) as error:
-        print(f"Could not delete: {error}")
+        print(f"Could not commit: {error}. {failed}")
         return 1
-    return finish_handoff(root, profile, After.NOTHING)
+    return finish_handoff(root, profile, after)
 
 
 def finish_handoff(root: Path, profile: str, after: After) -> int:
