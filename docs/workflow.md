@@ -87,7 +87,8 @@ with their reasons; deselect them to remove them, or leave them to preserve them
 on save. Duplicate selected names must be resolved before saving.
 
 You can also edit a profile by hand. Uncommitted changes to profiles other than
-this home's never block committing or installing. Each selection line is
+this home's never block committing or installing, but they block a source
+update, which validates every profile as committed. Each selection line is
 `owner/repo:name`: `owner/repo` is the source's folder under `sources/`,
 and `name` is the skill's frontmatter name. Neither part may contain `:`.
 For example, `faviann/agent-skills:publish-artifact` selects that named skill
@@ -129,13 +130,15 @@ Then it takes each source in `.gitmodules` order:
    <short-sha>`. For a fork, the same commit sets `upstream` in `sources.toml`
    to the merge-base of the canonical branch tip and the new pin.
 3. It validates the worktree with the install's read-only checks. The catalog
-   must load, every selection must resolve and no `upstream` may be stale. A
-   failure skips the source with its reason. When a selected skill no longer resolves, the
-   report names it and lists the skills the update adds. Deselect it, commit
-   and rerun.
+   must load, every profile must resolve, not only this home's, and no
+   `upstream` may be stale. A failure skips the source with its reason. When a
+   selected skill no longer resolves, the report names it at its profile line
+   and lists the skills the update adds. Deselect it, commit and rerun.
 4. It shows the commits gained and the skills added, removed and changed, with
-   selected skills flagged `*`. Answer `d` to see the full diff of each changed
-   selected skill's directory, `a` to accept or `s` to skip. Review the content,
+   selected skills flagged `*`. Each other profile whose selected skills
+   change gets one line, such as `also changes 2 skills in llm: research,
+   tdd`. Answer `d` to see the full diff of each changed skill this home
+   selects, `a` to accept or `s` to skip. Review the content,
    not just the names. A skill can keep its name while its instructions or
    scripts change. When local `main` has commits that are not on `origin`, such
    as a selection save, the summary says they will be published with this push.
@@ -149,13 +152,17 @@ sources to the new pins and installs. If it cannot fast-forward because the
 live checkout gained commits during the run, the command says so. The pushed
 commits are safe, and a rerun finishes. Ctrl+C at a prompt stops the run the
 same way. Rerunning after an interrupted run is always safe, because finished
-sources show nothing to do.
+sources show nothing to do. If `origin/main` renamed or deleted this home's
+profile, the command says so at the start. Updates still go through, since
+every profile is validated, but the install at the end fails closed until you
+[choose a profile](#set-up-a-machine) again.
 
 The command refuses to start, with the reason, outside the primary checkout,
 off `main`, on a detached `HEAD`, during a merge or rebase, with uncommitted
 tracked changes, with untracked files under `scripts/`, without a valid
-profile record for this home, or with uncommitted changes to this home's
-profile, naming the file. It does not refuse a committed selection that is under
+profile record for this home, or with uncommitted changes to any file under
+`profiles/`, untracked ones included, naming the files. It does not refuse a
+committed selection that is under
 **Not in catalog**, because the update may be what makes it resolve. It never
 pushes to a source repository.
 

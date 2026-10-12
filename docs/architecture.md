@@ -90,9 +90,10 @@ lookup shows no marker.
 worktree of the live checkout, `~/worktrees/skillset/update-sources`, which it
 forces back to the live `HEAD` and merges `origin/main` into on every run.
 There it fetches each source's tracked branch, commits one pin per source,
-validates the result with the install's read-only checks, and pushes each
-accepted commit to `main`. The worktree validates but never installs. An
-install rejects linked worktrees, and the links point into the live checkout.
+validates the result with the install's read-only checks against every profile,
+not only this home's, and pushes each accepted commit to `main`. The worktree
+validates but never installs. An install rejects linked worktrees, and the
+links point into the live checkout.
 The live checkout changes only at the end of a run, by fast-forward, after
 which its sources are restored and the selection is installed. Because the
 worktree starts from the live checkout, a selection committed locally but not
@@ -188,7 +189,10 @@ at HEAD, install and `--check` fail closed. They change no links and print the
 profiles at HEAD and the `--profile` command. There is no default profile and no
 guessing from receipts. The selector and the update command refuse to start in
 that state for the same reason. Install validates only the active profile, so a
-broken profile no home here uses never blocks it.
+broken profile no home here uses never blocks it. A source update validates
+every profile instead, because the pin it pushes reaches every home. If
+`origin/main` renames or deletes this home's profile, the update still goes
+ahead and the install at its end fails closed the same way.
 
 ## Persistence and restoration
 
