@@ -13,6 +13,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from textual.color import Color
+
 from fixture import CHECKOUT, SkillsetFixture, configure_git, git, redirect_github, write_profile, write_record
 from pilot import PilotTestCase, selector
 
@@ -604,6 +606,23 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             await pilot.press("space", "escape", "3")
             self.assertFalse(app.is_running)
         self.assertEqual(selection.read_bytes(), saved)
+
+    async def test_a_dialog_leaves_the_selector_visible_and_faint_behind_it(self) -> None:
+        fixture = self.fixture()
+        app = selector.SelectorApp(root=fixture.repo)
+        async with app.run_test() as pilot:
+            selector_screen = app.screen
+            search_box = selector_screen.query_one("#search-box")
+            await pilot.press("right", "space", "escape")
+            self.assertEqual(self.text(app, "#dialog-title"), "Quit without saving?")
+            shown = (await self.screen_text(pilot)).replace("\xa0", " ")
+            self.assertIn("Quit without saving?", shown)
+            self.assertIn("1 unsaved", shown)
+            self.assertTrue(selector_screen.has_class("-screen-suspended"))
+            self.assertEqual(search_box.styles.border_top[1], Color.parse("#5f5f5f"))
+            await pilot.press("1")
+            self.assertFalse(selector_screen.has_class("-screen-suspended"))
+            self.assertEqual(search_box.styles.border_top[1], Color.parse("#999999"))
 
 
 class RealCatalogTests(unittest.TestCase):
