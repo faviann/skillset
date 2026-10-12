@@ -346,16 +346,18 @@ class ProfilePicker(ModalScreen[tuple[str, str] | None]):
     ProfilePicker { align: left top; background: transparent; }
     #dialog { height: auto; padding: 0 1; border: round #D77757; background: ansi_default; }
     #choices { height: auto; max-height: 16; }
-    #dialog-hint { height: 1; margin-top: 1; color: #999999; }
+    #dialog-hint { height: auto; margin-top: 1; color: #999999; }
     """
     BINDINGS = [
         Binding("escape", "cancel", show=False),
         Binding("enter", "pick('edit')", show=False),
         Binding("n", "pick('new')", show=False),
         Binding("c", "pick('copy')", show=False),
+        Binding("r", "pick('rename')", show=False),
+        Binding("d", "pick('delete')", show=False),
         Binding("u", "pick('use')", show=False),
     ]
-    HINT = "enter edit · u use here · n new · c copy · esc close"
+    HINT = "enter edit · u use here · esc close\nn new · c copy · r rename · d delete"
 
     def __init__(self, rows: list[Row], current: str, *, under: Offset) -> None:
         super().__init__()
@@ -377,7 +379,7 @@ class ProfilePicker(ModalScreen[tuple[str, str] | None]):
         # Border, padding and pointer take 6 cells; the names line up under the cell `under`.
         widest = max(cell_len(line.plain) for row in self.rows for line in row.lines)
         dialog = self.query_one("#dialog")
-        dialog.styles.width = max(widest, cell_len(self.HINT)) + 6
+        dialog.styles.width = max(widest, *map(cell_len, self.HINT.splitlines())) + 6
         dialog.styles.margin = (self.under.y + 1, 0, 0, self.under.x - 4)
 
     @on(CatalogList.Activated, "#choices")
@@ -768,12 +770,8 @@ class SelectorApp(App[Callable[[Path], int] | None]):
     def choose_profile_here(self) -> None:
         """Ask a home with no profile which one to use, as setup opens the selector on a fresh home."""
         names = self.profile_names()
-        committed = self.committed_profiles()
-        disabled = {}
-        for number, name in enumerate(names, 1):
-            if reason := (reconcile_skills.selection_install_blocker(self.root, name) if name in committed
-                          else f"{skill_catalog.profile_path(name)} is not committed"):
-                disabled[number] = reason
+        disabled = {number: reason for number, name in enumerate(names, 1)
+                    if (reason := self.file_operation_blocker(name))}
 
         def chosen(choice: int | None) -> None:
             if choice is None:
@@ -782,7 +780,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             elif choice > len(names):
                 self.new_profile()
             else:
-                self.exit(partial(commit_profile, profile=names[choice - 1], after=After.USE_HERE))
+                self.exit(partial(finish_handoff, profile=names[choice - 1], after=After.USE_HERE))
 
         self.push_screen(ChoiceDialog(
             "This home has no profile yet. Which one should it use?", [*names, "New profile"],
@@ -858,10 +856,6 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         paths = {entry[3:] for entry in status.split("\0") if entry}
         return {name for name in self.profile_names() if skill_catalog.profile_path(name) in paths}
 
-    def committed_profiles(self) -> set[str]:
-        """Profiles at HEAD whose file matches it, the only ones --profile can make this home's."""
-        return set(skill_catalog.list_profiles(self.root)) - self.uncommitted_profiles()
-
     def profile_rows(self) -> list[Row]:
         names = self.profile_names()
         uncommitted = self.uncommitted_profiles()
@@ -898,6 +892,10 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             self.switch_to(name)
         elif operation in ("new", "copy"):
             self.new_profile(copy_from=name if operation == "copy" else None)
+        elif operation == "rename":
+            self.rename_profile(name)
+        elif operation == "delete":
+            self.delete_profile(name)
         elif operation == "use":
             self.use_here(name)
 
@@ -932,27 +930,19 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         if name == self.active:
             self.query_one("#message", Static).update(Text(f"⎿ This home already uses {name}."))
             return
-        # --profile installs the file at HEAD, so a saved edit would silently not apply.
-        if name not in self.committed_profiles():
-            self.query_one("#message", Static).update(Text(
-                f"⎿ Cannot use {name} here: {skill_catalog.profile_path(name)} is not committed. "
-                "Save and commit it first."))
+        # --profile installs the file at HEAD, and closing would drop unsaved changes.
+        if reason := self.file_operation_blocker(name):
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot use {name} here: {reason}"))
             return
-        if self.draft.unsaved:
-            self.query_one("#message", Static).update(Text(
-                f"⎿ Cannot use {name} here: save or discard the unsaved changes first."))
-            return
-        reason = reconcile_skills.selection_install_blocker(self.root, name)
         where = (f"This home uses {self.active}; skills only it selects are uninstalled here." if self.active
                  else "This home has no profile yet.")
 
         def confirmed(choice: int | None) -> None:
             if choice == 1:
-                self.exit(partial(commit_profile, profile=name, after=After.USE_HERE))
+                self.exit(partial(finish_handoff, profile=name, after=After.USE_HERE))
 
         self.push_screen(ChoiceDialog(f"Use {name} in this home?", [f"Use {name} and install", "Cancel"],
-                                      f"{where}\nOther homes are not affected.",
-                                      disabled={1: reason} if reason else None), confirmed)
+                                      f"{where}\nOther homes are not affected."), confirmed)
 
     def new_profile(self, *, copy_from: str | None = None) -> None:
         """Name a profile that starts empty or as a copy of a saved one, and edit it unsaved."""
@@ -996,6 +986,52 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.fill_sources()
         self.fill_skills()
         return True
+
+    def file_operation_blocker(self, name: str) -> str | None:
+        """Why name cannot be renamed, deleted or used here now, or None.
+
+        Each closes the selector and acts on name's file as it is at HEAD, so nothing may be unsaved or uncommitted.
+        """
+        if self.draft.unsaved:
+            return "save or discard the unsaved changes first"
+        if name not in skill_catalog.list_profiles(self.root) or name in self.uncommitted_profiles():
+            return f"{skill_catalog.profile_path(name)} is not committed; save and commit it first"
+        return reconcile_skills.selection_install_blocker(self.root, name)
+
+    def rename_profile(self, name: str) -> None:
+        """Ask for the new name, then close for the terminal handoff to commit the rename."""
+        if reason := self.file_operation_blocker(name):
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot rename {name}: {reason}"))
+            return
+        details = (f"Other homes that use {name} stop installing until they run "
+                   "reconcile-skills.sh --profile <new name> again; this selector can't see them.")
+        if name == self.active:
+            details += "\nThis home uses it, so its record is updated too."
+
+        def named(new: str | None) -> None:
+            if new and new != name:
+                self.exit(partial(commit_rename, profile=name, new=new,
+                                  after=After.USE_HERE if name == self.active else After.NOTHING))
+
+        self.push_screen(NameDialog(f"Rename {name}", details, set(self.profile_names()) - {name}, value=name), named)
+
+    def delete_profile(self, name: str) -> None:
+        """Confirm, then close for the terminal handoff to commit the deletion."""
+        reason = ("it is the last profile" if self.profile_names() == [name]
+                  else "this home uses it; choose another here first" if name == self.active
+                  else self.file_operation_blocker(name))
+        if reason:
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot delete {name}: {reason}"))
+            return
+
+        def confirmed(choice: int | None) -> None:
+            if choice == 1:
+                self.exit(partial(commit_delete, profile=name))
+
+        self.push_screen(ChoiceDialog(f"Delete {name}?", [f"Delete {name}", "Keep it"],
+                                      f"Other homes that use {name} stop installing until they choose another "
+                                      "profile with reconcile-skills.sh --profile <name>; this selector can't see "
+                                      "them."), confirmed)
 
     def fill_sources(self, *, keep_cursor: bool = False) -> None:
         rows = []
@@ -1382,6 +1418,45 @@ def commit_profile(root: Path, profile: str, after: After) -> int:
     except (reconcile_skills.ReconcileError, OSError) as error:
         print(f"Could not commit: {error}. {path} stays saved; nothing was committed or installed.")
         return 1
+    return finish_handoff(root, profile, after)
+
+
+def commit_rename(root: Path, profile: str, new: str, after: After) -> int:
+    """Rename a committed profile with git mv and commit only that, then use it here if `after` says so."""
+    path, new_path = skill_catalog.profile_path(profile), skill_catalog.profile_path(new)
+    try:
+        skill_catalog.git(["mv", "--", path, new_path], cwd=root)
+        commit = subprocess.run(["git", "commit", "-m", f"Rename {profile} profile to {new}", "--only", "--",
+                                 path, new_path], cwd=root, env=skill_catalog.git_env(interactive=True), check=False)
+        if commit.returncode:
+            skill_catalog.git(["mv", "--", new_path, path], cwd=root)
+            print(f"Commit failed. {path} was not renamed.")
+            return commit.returncode
+    except (reconcile_skills.ReconcileError, OSError) as error:
+        print(f"Could not rename: {error}")
+        return 1
+    return finish_handoff(root, new, after)
+
+
+def commit_delete(root: Path, profile: str) -> int:
+    """Delete a committed profile with git rm and commit only that."""
+    path = skill_catalog.profile_path(profile)
+    try:
+        skill_catalog.git(["rm", "-q", "--", path], cwd=root)
+        commit = subprocess.run(["git", "commit", "-m", f"Delete {profile} profile", "--only", "--", path],
+                                cwd=root, env=skill_catalog.git_env(interactive=True), check=False)
+        if commit.returncode:
+            skill_catalog.git(["checkout", "HEAD", "--", path], cwd=root)
+            print(f"Commit failed. {path} was not deleted.")
+            return commit.returncode
+    except (reconcile_skills.ReconcileError, OSError) as error:
+        print(f"Could not delete: {error}")
+        return 1
+    return finish_handoff(root, profile, After.NOTHING)
+
+
+def finish_handoff(root: Path, profile: str, after: After) -> int:
+    """Install profile here as `after` says, once it is committed, and point out an unpushed commit."""
     code = 0
     if after is not After.NOTHING:
         command = [str(root / "scripts/reconcile-skills.sh")]
