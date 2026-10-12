@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from functools import partial
 
 from fixture import git, write_profile
 from pilot import PilotTestCase, selector
@@ -211,6 +212,194 @@ class OtherProfileSaveTests(ProfileCase):
             await pilot.press("1")
             self.assertEqual(self.text(app, "#message"), "⎿ Reloaded profiles/llm.txt. Unsaved changes discarded.")
             self.assertTrue(self.text(app, "#title").endswith("0 selected · 0 unsaved · not committed"))
+
+
+class RenameTests(ProfileCase):
+    """r renames the highlighted profile, then the selector closes and commits the rename."""
+
+    async def rename(self, pilot, keys: tuple[str, ...], new: str) -> None:
+        await self.started(pilot)
+        await pilot.press("ctrl+p", *keys, "r")
+        name = pilot.app.screen.query_one("#name-input", selector.Input)
+        name.value = new
+        await pilot.press("enter")
+        await self.started(pilot)
+
+    async def test_renaming_another_profile_commits_it_and_installs_nothing(self) -> None:
+        previous = git(["rev-parse", "HEAD"], self.repo)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p")
+            self.assertIn("r rename · d delete", self.text(app, "#dialog-hint"))
+            await pilot.press("up", "r")
+            self.assertEqual(self.text(app, "#dialog-title"), "Rename llm")
+            self.assertEqual(self.text(app, "#dialog-details"),
+                             "Other homes that use llm stop installing until they run "
+                             "reconcile-skills.sh --profile <new name> again; this selector can't see them.")
+            self.assertEqual(app.screen.query_one("#name-input", selector.Input).value, "llm")
+            app.screen.query_one("#name-input", selector.Input).value = "ml"
+            await pilot.press("enter")
+            await self.started(pilot)
+            self.assertFalse(app.is_running)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), previous)
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
+        self.assertEqual(git(["log", "-1", "--format=%B"], self.repo), "Rename llm profile to ml")
+        self.assertEqual(git(["ls-tree", "--name-only", "HEAD", "profiles/"], self.repo).splitlines(),
+                         ["profiles/ml.txt", "profiles/workstation.txt", "profiles/zeroshot-review.txt"])
+        self.assertEqual(git(["show", "HEAD:profiles/ml.txt"], self.repo),
+                         "# fixture selection\nmattpocock/skills:tdd")
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+        self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "workstation\n")
+        self.assert_nothing_installed()
+
+    async def test_renaming_the_profile_this_home_uses_records_the_new_name_after_the_commit(self) -> None:
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "r")
+            self.assertTrue(self.text(app, "#dialog-details").endswith(
+                "\nThis home uses it, so its record is updated too."))
+            await pilot.press("escape")
+            await self.rename(pilot, (), "home")
+            self.assertFalse(app.is_running)
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["log", "-1", "--format=%s"], self.repo), "Rename workstation profile to home")
+        self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "home\n")
+        for directory in (".agents/skills", ".claude/skills"):
+            self.assertTrue((self.home / directory / "prototype").is_symlink())
+
+    async def test_a_new_name_must_follow_the_skill_name_rules_and_be_free(self) -> None:
+        head = git(["rev-parse", "HEAD"], self.repo)
+        write_profile(self.repo, "saved-only", [])
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.rename(pilot, ("up", "up"), "Bad Name")
+            self.assertEqual(self.text(app, "#name-error"), "use 1-64 lowercase letters, digits or single hyphens")
+            for taken in ("zeroshot-review", "saved-only"):
+                app.screen.query_one("#name-input", selector.Input).value = taken
+                await pilot.press("enter")
+                self.assertEqual(self.text(app, "#name-error"), f"{taken} already exists")
+            app.screen.query_one("#name-input", selector.Input).value = " llm "
+            await pilot.press("enter")
+            self.assertFalse(app.screen.is_modal)
+            await pilot.press("ctrl+p", "up", "up", "r", "escape")
+            self.assertFalse(app.screen.is_modal)
+            self.assertTrue(app.is_running)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "?? profiles/saved-only.txt")
+
+    async def test_rename_is_refused_with_unsaved_changes_or_an_uncommitted_file(self) -> None:
+        write_profile(self.repo, "llm", [])
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("right", "down", "space", "ctrl+p", "down", "r")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot rename zeroshot-review: save or discard the unsaved changes first")
+            await pilot.press("space", "ctrl+p", "up", "r")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot rename llm: profiles/llm.txt is not committed; save and commit it first")
+
+
+class DeleteTests(ProfileCase):
+    """d deletes the highlighted profile, then the selector closes and commits the deletion."""
+
+    async def test_deleting_another_profile_asks_then_commits_it(self) -> None:
+        previous = git(["rev-parse", "HEAD"], self.repo)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "up", "d")
+            self.assertEqual(self.text(app, "#dialog-title"), "Delete llm?")
+            self.assertEqual(self.lines(app, "choices"), ["1. Delete llm", "2. Keep it"])
+            self.assertEqual(self.text(app, "#dialog-details"),
+                             "Other homes that use llm stop installing until they choose another profile with "
+                             "reconcile-skills.sh --profile <name>; this selector can't see them.")
+            await pilot.press("2")
+            self.assertFalse(app.screen.is_modal)
+            await pilot.press("ctrl+p", "up", "d", "escape")
+            self.assertFalse(app.screen.is_modal)
+            self.assertTrue(app.is_running)
+            await pilot.press("ctrl+p", "up", "d", "1")
+            await self.started(pilot)
+            self.assertFalse(app.is_running)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), previous)
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
+        self.assertEqual(git(["log", "-1", "--format=%B"], self.repo), "Delete llm profile")
+        self.assertEqual(git(["ls-tree", "--name-only", "HEAD", "profiles/"], self.repo).splitlines(),
+                         ["profiles/workstation.txt", "profiles/zeroshot-review.txt"])
+        self.assertFalse((self.repo / "profiles/llm.txt").exists())
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+        self.assert_nothing_installed()
+
+    async def test_delete_is_refused_for_this_homes_profile_unsaved_changes_or_an_uncommitted_file(self) -> None:
+        write_profile(self.repo, "llm", [])
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "d")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot delete workstation: this home uses it; choose another here first")
+            await pilot.press("ctrl+p", "up", "d")
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot delete llm: profiles/llm.txt is not committed; save and commit it first")
+            await pilot.press("right", "down", "space", "ctrl+p", "down", "d")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot delete zeroshot-review: save or discard the unsaved changes first")
+
+    async def test_the_last_profile_cannot_be_deleted(self) -> None:
+        git(["rm", "-q", "profiles/llm.txt", "profiles/zeroshot-review.txt"], self.repo)
+        git(["commit", "-qm", "keep only workstation"], self.repo)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "d")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"), "⎿ Cannot delete workstation: it is the last profile")
+
+
+class RejectedCommitTests(ProfileCase):
+    """A commit hook that refuses leaves the profile where it was."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        hook = self.repo / ".git/hooks/pre-commit"
+        hook.write_text("#!/bin/sh\necho refused by hook\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        self.head = git(["rev-parse", "HEAD"], self.repo)
+
+    def assert_unchanged(self, code: int, output: str, last_line: str) -> None:
+        self.assertEqual(code, 1, output)
+        self.assertIn("refused by hook", output)
+        self.assertEqual(output.splitlines()[-1], last_line)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), self.head)
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+        self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "workstation\n")
+
+    def test_a_refused_rename_moves_the_file_back(self) -> None:
+        code, output = self.handoff(partial(selector.commit_rename, profile="workstation", new="home",
+                                            after=selector.After.USE_HERE))
+        self.assert_unchanged(code, output, "Commit failed. profiles/workstation.txt was not renamed.")
+
+    def test_a_refused_delete_restores_the_file(self) -> None:
+        code, output = self.handoff(partial(selector.commit_delete, profile="llm"))
+        self.assert_unchanged(code, output, "Commit failed. profiles/llm.txt was not deleted.")
 
 
 if __name__ == "__main__":

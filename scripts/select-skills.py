@@ -296,6 +296,50 @@ class ChoiceDialog(ModalScreen[int | None]):
         self.dismiss(None)
 
 
+class NameDialog(ModalScreen[str | None]):
+    """Ask for a profile name, validated with the skill-name rules and refused if taken."""
+
+    DEFAULT_CSS = ChoiceDialog.DEFAULT_CSS.replace("ChoiceDialog", "NameDialog") + """
+    #name-box { height: 3; margin-top: 1; border: round #999999; }
+    #name-input { height: 1; padding: 0; border: none; background: transparent; }
+    #name-input:focus { border: none; }
+    #name-error { height: auto; color: red; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, title: str, details: str, taken: set[str], value: str = "") -> None:
+        super().__init__()
+        self.heading = title
+        self.details = details
+        self.taken = taken
+        self.value = value
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static(Text(self.heading), id="dialog-title")
+            yield Static(Text(self.details), id="dialog-details")
+            with Horizontal(id="name-box"):
+                yield Static(">", id="search-prompt")
+                yield Input(value=self.value, placeholder="profile name", select_on_focus=False, id="name-input")
+            yield Static(id="name-error")
+            yield Static("Enter to confirm · Esc to cancel", id="dialog-hint")
+
+    @on(Input.Submitted, "#name-input")
+    def submitted(self, event: Input.Submitted) -> None:
+        name = event.value.strip()
+        if not skill_catalog.valid_name(name):
+            problem = "use 1-64 lowercase letters, digits or single hyphens"
+        elif name in self.taken:
+            problem = f"{name} already exists"
+        else:
+            self.dismiss(name)
+            return
+        self.query_one("#name-error", Static).update(Text(problem))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class ProfilePicker(ModalScreen[tuple[str, str] | None]):
     """Every profile, in a list dropped down under the edited profile's name in the title.
 
@@ -311,8 +355,10 @@ class ProfilePicker(ModalScreen[tuple[str, str] | None]):
     BINDINGS = [
         Binding("escape", "cancel", show=False),
         Binding("enter", "pick('edit')", show=False),
+        Binding("r", "pick('rename')", show=False),
+        Binding("d", "pick('delete')", show=False),
     ]
-    HINT = "enter edit · esc close"
+    HINT = "enter edit · r rename · d delete · esc close"
 
     def __init__(self, rows: list[Row], current: str, *, under: Offset) -> None:
         super().__init__()
@@ -810,6 +856,10 @@ class SelectorApp(App[Callable[[Path], int] | None]):
     def profile_operation(self, operation: str, name: str) -> None:
         if operation == "edit":
             self.switch_to(name)
+        elif operation == "rename":
+            self.rename_profile(name)
+        elif operation == "delete":
+            self.delete_profile(name)
 
     def switch_to(self, name: str) -> None:
         if name == self.profile:
@@ -849,6 +899,52 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.fill_sources()
         self.fill_skills()
         return True
+
+    def file_operation_blocker(self, name: str) -> str | None:
+        """Why name cannot be renamed or deleted now, or None.
+
+        Both commit only name's file as it is at HEAD, so nothing may be unsaved or uncommitted.
+        """
+        if self.draft.unsaved:
+            return "save or discard the unsaved changes first"
+        if name not in skill_catalog.list_profiles(self.root) or name in self.uncommitted_profiles():
+            return f"{skill_catalog.profile_path(name)} is not committed; save and commit it first"
+        return reconcile_skills.selection_install_blocker(self.root, name)
+
+    def rename_profile(self, name: str) -> None:
+        """Ask for the new name, then close for the terminal handoff to commit the rename."""
+        if reason := self.file_operation_blocker(name):
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot rename {name}: {reason}"))
+            return
+        details = (f"Other homes that use {name} stop installing until they run "
+                   "reconcile-skills.sh --profile <new name> again; this selector can't see them.")
+        if name == self.active:
+            details += "\nThis home uses it, so its record is updated too."
+
+        def named(new: str | None) -> None:
+            if new and new != name:
+                self.exit(partial(commit_rename, profile=name, new=new,
+                                  after=After.USE_HERE if name == self.active else After.NOTHING))
+
+        self.push_screen(NameDialog(f"Rename {name}", details, set(self.profile_names()) - {name}, name), named)
+
+    def delete_profile(self, name: str) -> None:
+        """Confirm, then close for the terminal handoff to commit the deletion."""
+        reason = ("it is the last profile" if self.profile_names() == [name]
+                  else "this home uses it; choose another here first" if name == self.active
+                  else self.file_operation_blocker(name))
+        if reason:
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot delete {name}: {reason}"))
+            return
+
+        def confirmed(choice: int | None) -> None:
+            if choice == 1:
+                self.exit(partial(commit_delete, profile=name))
+
+        self.push_screen(ChoiceDialog(f"Delete {name}?", [f"Delete {name}", "Keep it"],
+                                      f"Other homes that use {name} stop installing until they choose another "
+                                      "profile with reconcile-skills.sh --profile <name>; this selector can't see "
+                                      "them."), confirmed)
 
     def fill_sources(self, *, keep_cursor: bool = False) -> None:
         rows = []
@@ -1229,6 +1325,45 @@ def commit_profile(root: Path, profile: str, after: After) -> int:
     except (reconcile_skills.ReconcileError, OSError) as error:
         print(f"Could not commit: {error}. {path} stays saved; nothing was committed or installed.")
         return 1
+    return finish_handoff(root, profile, after)
+
+
+def commit_rename(root: Path, profile: str, new: str, after: After) -> int:
+    """Rename a committed profile with git mv and commit only that, then use it here if `after` says so."""
+    path, new_path = skill_catalog.profile_path(profile), skill_catalog.profile_path(new)
+    try:
+        skill_catalog.git(["mv", "--", path, new_path], cwd=root)
+        commit = subprocess.run(["git", "commit", "-m", f"Rename {profile} profile to {new}", "--only", "--",
+                                 path, new_path], cwd=root, env=skill_catalog.git_env(interactive=True), check=False)
+        if commit.returncode:
+            skill_catalog.git(["mv", "--", new_path, path], cwd=root)
+            print(f"Commit failed. {path} was not renamed.")
+            return commit.returncode
+    except (reconcile_skills.ReconcileError, OSError) as error:
+        print(f"Could not rename: {error}")
+        return 1
+    return finish_handoff(root, new, after)
+
+
+def commit_delete(root: Path, profile: str) -> int:
+    """Delete a committed profile with git rm and commit only that."""
+    path = skill_catalog.profile_path(profile)
+    try:
+        skill_catalog.git(["rm", "-q", "--", path], cwd=root)
+        commit = subprocess.run(["git", "commit", "-m", f"Delete {profile} profile", "--only", "--", path],
+                                cwd=root, env=skill_catalog.git_env(interactive=True), check=False)
+        if commit.returncode:
+            skill_catalog.git(["checkout", "HEAD", "--", path], cwd=root)
+            print(f"Commit failed. {path} was not deleted.")
+            return commit.returncode
+    except (reconcile_skills.ReconcileError, OSError) as error:
+        print(f"Could not delete: {error}")
+        return 1
+    return finish_handoff(root, profile, After.NOTHING)
+
+
+def finish_handoff(root: Path, profile: str, after: After) -> int:
+    """Install profile here as `after` says, once it is committed, and point out an unpushed commit."""
     code = 0
     if after is not After.NOTHING:
         command = [str(root / "scripts/reconcile-skills.sh")]
