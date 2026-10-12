@@ -153,8 +153,8 @@ def ensure_skillset_committed(root: Path, profile: str, *, committing: bool = Fa
         raise ReconcileError("untracked install input is present")
 
 
-def selection_install_blocker(root: Path) -> str | None:
-    """Why the selector cannot commit the active profile and install, or None."""
+def selection_install_blocker(root: Path, profile: str | None = None) -> str | None:
+    """Why the selector cannot commit the profile (by default the active one) and install it, or None."""
     try:
         require_primary_checkout(root)
         for marker, operation in (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase")):
@@ -162,7 +162,7 @@ def selection_install_blocker(root: Path) -> str | None:
                 return f"a {operation} is in progress; finish it first"
         if not git(["symbolic-ref", "--quiet", "HEAD"], cwd=root, check=False):
             return "checkout is on a detached HEAD; switch to a branch"
-        ensure_skillset_committed(root, active_profile(root), committing=True)
+        ensure_skillset_committed(root, profile or active_profile(root), committing=True)
     except (ReconcileError, OSError) as error:
         return str(error)
     return None

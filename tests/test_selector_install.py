@@ -29,11 +29,17 @@ class InstallCase(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
+    @staticmethod
+    def install_workstation(root: Path) -> int:
+        """The handoff the selector exits with after Save and install on workstation, this home's profile."""
+        return selector.commit_profile(root, "workstation", selector.After.INSTALL)
+
     def assert_nothing_installed(self) -> None:
         self.assertEqual(sorted(str(path.relative_to(self.home)) for path in self.home.rglob("*")),
                          [".agents", ".agents/.skillset", ".agents/.skillset/profile"])
 
-    def handoff(self) -> tuple[int, str]:
+    def handoff(self, run) -> tuple[int, str]:
+        """Run a terminal handoff the selector exited with, as main() does."""
         # The terminal handoff inherits stdout/stderr, including from real Git
         # and reconciler children. Redirect file descriptors, not Python alone.
         sys.stdout.flush()
@@ -43,7 +49,7 @@ class InstallCase(unittest.TestCase):
             try:
                 os.dup2(captured.fileno(), 1)
                 os.dup2(captured.fileno(), 2)
-                code = selector.install_saved_selection(self.repo)
+                code = run(self.repo)
             finally:
                 sys.stdout.flush()
                 sys.stderr.flush()
@@ -68,7 +74,7 @@ class InstallHandoffTests(InstallCase):
         previous = git(["rev-parse", "HEAD"], self.repo)
         self.save_tdd_instead_of_prototype()
 
-        code, output = self.handoff()
+        code, output = self.handoff(self.install_workstation)
 
         self.assertEqual(code, 1, output)
         self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
@@ -88,7 +94,7 @@ class InstallHandoffTests(InstallCase):
         # The selector offers Install whenever the saved bytes differ from HEAD.
         self.assertTrue(selector.skill_catalog.selection_uncommitted(self.repo, "workstation"))
 
-        code, output = self.handoff()
+        code, output = self.handoff(self.install_workstation)
 
         self.assertEqual(code, 0, output)
         self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), head)
@@ -103,7 +109,7 @@ class InstallHandoffTests(InstallCase):
         previous = git(["rev-parse", "HEAD"], self.repo)
         self.save_tdd_instead_of_prototype()
 
-        code, output = self.handoff()
+        code, output = self.handoff(self.install_workstation)
 
         self.assertEqual(code, 1, output)
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), previous)
@@ -123,7 +129,7 @@ class InstallHandoffTests(InstallCase):
         previous = git(["rev-parse", "HEAD"], self.repo)
         self.save_tdd_instead_of_prototype()
 
-        code, output = self.handoff()
+        code, output = self.handoff(self.install_workstation)
 
         self.assertEqual(code, 0, output)
         self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
@@ -140,7 +146,7 @@ class InstallHandoffTests(InstallCase):
         previous = git(["rev-parse", "HEAD"], self.repo)
         self.save_tdd_instead_of_prototype()
 
-        code, output = self.handoff()
+        code, output = self.handoff(self.install_workstation)
 
         self.assertEqual(code, 0, output)
         self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
@@ -155,7 +161,7 @@ class InstallHandoffTests(InstallCase):
         upstream = git(["rev-parse", f"refs/heads/{branch}"], remote)
         self.save_tdd_instead_of_prototype()
 
-        code, output = self.handoff()
+        code, output = self.handoff(self.install_workstation)
 
         self.assertEqual(code, 0, output)
         self.assertEqual(output.splitlines()[-1], "Not pushed yet. To back it up: git push")
@@ -213,11 +219,10 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
                                  ["1. Save and install", "2. Save only", "3. Keep editing"])
                 await pilot.press("enter")
                 self.assertFalse(app.is_running)
-                self.assertIs(app.return_value, selector.install_saved_selection)
             self.assertEqual(git(["rev-parse", "HEAD"], self.repo), previous)
             self.assert_nothing_installed()
 
-            code, output = self.handoff()
+            code, output = self.handoff(app.return_value)
 
         self.assertEqual(git(["rev-parse", "HEAD"], other), other_head, output)
         self.assertEqual((other / "profiles/workstation.txt").read_bytes(), other_selection)
@@ -249,9 +254,8 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
             await app.workers.wait_for_complete()
             self.assertIn("1 selected · 0 unsaved", self.text(app, "#title"))
             await pilot.press("right", "space", "ctrl+s", "enter")
-            self.assertIs(app.return_value, selector.install_saved_selection)
 
-        code, output = self.handoff()
+        code, output = self.handoff(app.return_value)
 
         self.assertEqual(code, 0, output)
         self.assertEqual(git(["log", "-1", "--format=%B"], self.repo),
@@ -273,10 +277,9 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
             await pilot.press("ctrl+s")
             self.assertEqual(self.lines(app, "choices"), ["1. Install", "2. Save only", "3. Keep editing"])
             await pilot.press("1")
-            self.assertIs(app.return_value, selector.install_saved_selection)
         self.assertEqual((self.repo / "profiles/workstation.txt").read_bytes(), before)
 
-        code, output = self.handoff()
+        code, output = self.handoff(app.return_value)
 
         self.assertEqual(code, 0, output)
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
@@ -291,7 +294,7 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
         for installed in (False, True):
             with self.subTest(installed=installed):
                 if installed:
-                    code, output = self.handoff()
+                    code, output = self.handoff(self.install_workstation)
                     self.assertEqual(code, 0, output)
                 app = selector.SelectorApp(root=self.repo)
                 async with app.run_test() as pilot:
@@ -373,11 +376,10 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
             self.assertEqual(selection.read_text(), external)
             await pilot.press("2")
             self.assertFalse(app.is_running)
-            self.assertIs(app.return_value, selector.install_saved_selection)
         self.assertEqual(selection.read_text().splitlines()[1:], ["mattpocock/skills:tdd"])
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
 
-        code, output = self.handoff()
+        code, output = self.handoff(app.return_value)
 
         self.assertEqual(code, 0, output)
         self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), head)
