@@ -19,6 +19,7 @@ from reconcile_skills import (
     stale_upstreams,
 )
 from skill_catalog import (
+    UPDATE_AVAILABLE,
     Catalog,
     ReconcileError,
     SourceCatalog,
@@ -29,12 +30,11 @@ from skill_catalog import (
     load_catalog,
     parse_modules,
     path_prefixes,
-    profile_problems,
     profile_path,
+    profile_problems,
     read_selection_text,
     uncommitted_profile_files,
     update_marker,
-    UPDATE_AVAILABLE,
 )
 
 BRANCH = "update-sources"

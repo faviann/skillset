@@ -24,6 +24,13 @@ class ProfileCase(InstallCase, PilotTestCase):
         await pilot.app.workers.wait_for_complete()
         await pilot.pause()
 
+    def assert_committed(self, previous: str, path: str, message: str) -> None:
+        """HEAD is one commit on previous that changes only path, with message, and the checkout is clean."""
+        self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
+        self.assertEqual(git(["log", "-1", "--format=%B"], self.repo), message)
+        self.assertEqual(git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], self.repo), path)
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+
 
 class TitleTests(ProfileCase):
     async def test_title_names_the_profile_this_home_uses(self) -> None:
@@ -67,7 +74,6 @@ class PickerTests(ProfileCase):
             self.assertIn("workstation  · used here", self.text(app, "#title"))
 
 
-
 class SwitchTests(ProfileCase):
     async def test_enter_edits_another_profile_without_installed_markers(self) -> None:
         app = selector.SelectorApp(root=self.repo)
@@ -101,7 +107,6 @@ class SwitchTests(ProfileCase):
                              "✻ Skill selector  zeroshot-review  · this home uses workstation   "
                              "1 selected · 0 unsaved · not committed")
 
-
     async def test_switching_with_unsaved_changes_asks_first(self) -> None:
         workstation = (self.repo / "profiles/workstation.txt").read_bytes()
         app = selector.SelectorApp(root=self.repo)
@@ -127,7 +132,6 @@ class SwitchTests(ProfileCase):
         self.assertEqual((self.repo / "profiles/workstation.txt").read_bytes(), workstation)
 
 
-
 class OtherProfileSaveTests(ProfileCase):
     """Saving a profile this home doesn't use never installs it here unless asked."""
 
@@ -147,14 +151,6 @@ class OtherProfileSaveTests(ProfileCase):
         await pilot.press(choice)
         await self.started(pilot)
 
-    def assert_llm_committed(self, previous: str) -> None:
-        self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
-        self.assertEqual(git(["log", "-1", "--format=%B"], self.repo),
-                         "Update llm profile (+1 -0)\n\n+ mattpocock/skills:prototype")
-        self.assertEqual(git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], self.repo),
-                         "profiles/llm.txt")
-        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
-
     async def test_save_and_commit_commits_only_the_profile_and_installs_nothing(self) -> None:
         previous = git(["rev-parse", "HEAD"], self.repo)
         app = selector.SelectorApp(root=self.repo)
@@ -166,7 +162,8 @@ class OtherProfileSaveTests(ProfileCase):
         code, output = self.handoff(app.return_value)
 
         self.assertEqual(code, 0, output)
-        self.assert_llm_committed(previous)
+        self.assert_committed(previous, "profiles/llm.txt",
+                              "Update llm profile (+1 -0)\n\n+ mattpocock/skills:prototype")
         self.assert_nothing_installed()
         self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "workstation\n")
 
@@ -180,7 +177,8 @@ class OtherProfileSaveTests(ProfileCase):
         code, output = self.handoff(app.return_value)
 
         self.assertEqual(code, 0, output)
-        self.assert_llm_committed(previous)
+        self.assert_committed(previous, "profiles/llm.txt",
+                              "Update llm profile (+1 -0)\n\n+ mattpocock/skills:prototype")
         self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "llm\n")
         for directory in (".agents/skills", ".claude/skills"):
             for name in ("prototype", "tdd"):
@@ -198,7 +196,6 @@ class OtherProfileSaveTests(ProfileCase):
                          ["mattpocock/skills:prototype", "mattpocock/skills:tdd"])
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
         self.assert_nothing_installed()
-
 
     async def test_conflict_dialog_names_the_edited_profile_file(self) -> None:
         app = selector.SelectorApp(root=self.repo)
@@ -258,7 +255,6 @@ class NewProfileTests(ProfileCase):
             self.assertIn("laptop            0 skills  1 unsaved", self.lines(app, "choices"))
         self.assertFalse((self.repo / "profiles/laptop.txt").exists())
 
-
     async def test_c_copies_the_highlighted_profiles_saved_lines_into_an_independent_profile(self) -> None:
         write_profile(self.repo, "llm", ["mattpocock/skills:tdd", "mattpocock/skills:prototype"])
         llm = (self.repo / "profiles/llm.txt").read_bytes()
@@ -286,7 +282,6 @@ class NewProfileTests(ProfileCase):
         self.assertEqual((self.repo / "profiles/llm-lite.txt").read_text().splitlines()[1:],
                          ["mattpocock/skills:tdd"])
         self.assertEqual((self.repo / "profiles/llm.txt").read_bytes(), llm)
-
 
     async def test_switching_away_after_the_prompt_or_quitting_drops_it_without_a_file(self) -> None:
         app = selector.SelectorApp(root=self.repo)
@@ -330,7 +325,6 @@ class NewProfileTests(ProfileCase):
             await self.started(pilot)
             self.assertIn("laptop  · this home uses workstation   0 selected · 1 unsaved", self.text(app, "#title"))
 
-
     async def save_a_copy_of_llm(self, pilot, choice: str) -> None:
         app = pilot.app
         await self.started(pilot)
@@ -348,14 +342,6 @@ class NewProfileTests(ProfileCase):
         await pilot.press(choice)
         await self.started(pilot)
 
-    def assert_laptop_committed(self, previous: str) -> None:
-        self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
-        self.assertEqual(git(["log", "-1", "--format=%B"], self.repo),
-                         "Add laptop profile (+1 -0)\n\n+ mattpocock/skills:tdd")
-        self.assertEqual(git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], self.repo),
-                         "profiles/laptop.txt")
-        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
-
     async def test_save_and_commit_adds_the_new_profile_file_and_installs_nothing(self) -> None:
         previous = git(["rev-parse", "HEAD"], self.repo)
         app = selector.SelectorApp(root=self.repo)
@@ -367,7 +353,7 @@ class NewProfileTests(ProfileCase):
         code, output = self.handoff(app.return_value)
 
         self.assertEqual(code, 0, output)
-        self.assert_laptop_committed(previous)
+        self.assert_committed(previous, "profiles/laptop.txt", "Add laptop profile (+1 -0)\n\n+ mattpocock/skills:tdd")
         self.assert_nothing_installed()
         self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "workstation\n")
 
@@ -381,7 +367,7 @@ class NewProfileTests(ProfileCase):
         code, output = self.handoff(app.return_value)
 
         self.assertEqual(code, 0, output)
-        self.assert_laptop_committed(previous)
+        self.assert_committed(previous, "profiles/laptop.txt", "Add laptop profile (+1 -0)\n\n+ mattpocock/skills:tdd")
         self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "laptop\n")
         for directory in (".agents/skills", ".claude/skills"):
             self.assertTrue((self.home / directory / "tdd").is_symlink())
@@ -408,7 +394,7 @@ class NewProfileTests(ProfileCase):
         code, output = self.handoff(app.return_value)
 
         self.assertEqual(code, 0, output)
-        self.assert_laptop_committed(previous)
+        self.assert_committed(previous, "profiles/laptop.txt", "Add laptop profile (+1 -0)\n\n+ mattpocock/skills:tdd")
 
 
 class RenameTests(ProfileCase):
@@ -627,7 +613,6 @@ class RejectedCommitTests(ProfileCase):
         self.assert_unchanged(code, output, "Commit failed. profiles/llm.txt was not deleted.")
 
 
-
 class UseHereTests(ProfileCase):
     """u makes a committed profile this home's choice, through reconcile-skills.sh --profile."""
 
@@ -659,7 +644,6 @@ class UseHereTests(ProfileCase):
         for directory in (".agents/skills", ".claude/skills"):
             self.assertTrue((self.home / directory / "tdd").is_symlink())
             self.assertFalse((self.home / directory / "prototype").exists())
-
 
     async def test_u_refuses_an_uncommitted_file_unsaved_changes_and_the_profile_already_used(self) -> None:
         write_profile(self.repo, "llm", [])
@@ -734,7 +718,6 @@ class FreshHomeTests(ProfileCase):
         self.assertEqual(self.record.read_text(), "workstation\n")
         for directory in (".agents/skills", ".claude/skills"):
             self.assertTrue((self.home / directory / "prototype").is_symlink())
-
 
     async def test_escape_browses_and_save_then_offers_to_commit_and_use_the_profile_here(self) -> None:
         previous = git(["rev-parse", "HEAD"], self.repo)
