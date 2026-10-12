@@ -368,6 +368,32 @@ class UpdateApplyTests(UpdateCase):
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
         self.assertEqual(self.check().returncode, 0)
 
+    def test_a_profile_renamed_on_origin_main_still_lets_updates_through_then_stops_the_install(self) -> None:
+        self.update()
+        links = sorted(path.name for path in (self.home / ".agents/skills").iterdir())
+        other = self.base / "other"
+        git(["clone", "-q", str(self.origin), str(other)], self.base)
+        configure_git(other)
+        git(["mv", "profiles/workstation.txt", "profiles/desk.txt"], other)
+        git(["commit", "-qm", "Rename workstation profile to desk"], other)
+        git(["push", "-q", "origin", "main"], other)
+        origin = self.fixture.origins["acme/skills"]
+        with (origin / "skills/alpha/SKILL.md").open("a", encoding="utf-8") as skill:
+            skill.write("\nRewritten.\n")
+        git(["add", "-A"], origin)
+        acme = self.advance("acme/skills", "rewrite")
+        output = self.update("a\n", ok=False)
+        self.assertIn("origin/main has no profiles/workstation.txt, which this home uses; the install at the end "
+                      "stops until you choose a profile\n", output)
+        self.assertIn("\nalso changes 1 skill in desk: alpha\n", output)
+        self.assertNotIn("Skills you use", output)
+        self.assertIn("acme/skills: pushed", output)
+        self.assertIn("this home's profile workstation is not a profile at HEAD\nprofiles at HEAD: desk\n"
+                      "choose one with: scripts/reconcile-skills.sh --profile <name>", output)
+        self.assertEqual(self.pin("acme/skills", repo=self.origin, ref="main"), acme)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
+        self.assertEqual(sorted(path.name for path in (self.home / ".agents/skills").iterdir()), links)
+
     def test_main_that_moves_during_the_run_is_merged_validated_and_pushed(self) -> None:
         acme = self.advance("acme/skills")
         process = self.start()

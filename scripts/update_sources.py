@@ -30,6 +30,7 @@ from skill_catalog import (
     parse_modules,
     path_prefixes,
     PROFILES_DIR,
+    profile_path,
     read_selection_text,
     update_marker,
     UPDATE_AVAILABLE,
@@ -181,7 +182,23 @@ def start(root: Path, log: Log) -> Path:
     restore_sources(root, log)
     if reason := update_blocker(root):
         raise ReconcileError(reason)
-    return prepare_worktree(root, log)
+    worktree = prepare_worktree(root, log)
+    if home_profile(worktree) is None:
+        log(f"origin/main has no {profile_path(active_profile(root))}, which this home uses; "
+            "the install at the end stops until you choose a profile")
+    return worktree
+
+
+def home_profile(worktree: Path) -> str | None:
+    """This home's profile, or None when origin/main renamed or deleted it.
+
+    Updates still go ahead, since every profile is validated, and the install at
+    the end fails closed with the choose-a-profile message.
+    """
+    try:
+        return active_profile(worktree)
+    except ReconcileError:
+        return None
 
 
 def reset_worktree(worktree: Path, checkpoint: str, log: Log) -> None:
@@ -233,7 +250,8 @@ def check_profiles(worktree: Path, catalog: Catalog) -> None:
 
 
 def check_installable(worktree: Path, catalog: Catalog) -> None:
-    ensure_skillset_committed(worktree, active_profile(worktree))
+    if profile := home_profile(worktree):
+        ensure_skillset_committed(worktree, profile)
     check_profiles(worktree, catalog)
     if stale := stale_upstreams(catalog):
         raise ReconcileError("\n".join(stale))
@@ -311,7 +329,7 @@ def prepare(worktree: Path, name: str, before: Catalog, log: Log) -> Prepared | 
         selections = {profile: frozenset(line.name for line in after.resolve(read_selection_text(worktree, profile)).lines
                                          if line.name and line.value.startswith(f"{name}:"))
                       for profile in list_profiles(worktree)}
-        selected = selections.pop(active_profile(worktree))
+        selected = selections.pop(home_profile(worktree), frozenset())
         summary = summarize(worktree, update, source, after.sources[name], selected, selections)
         added = summary.added
         check_installable(worktree, after)
