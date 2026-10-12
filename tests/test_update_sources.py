@@ -301,6 +301,24 @@ class UpdateApplyTests(UpdateCase):
         self.assertEqual(git(["rev-parse", "HEAD"], self.worktree), head)
         self.assertEqual(git(["rev-parse", "HEAD"], self.worktree / "sources/acme/skills"), old)
 
+    def test_summary_adds_one_line_for_each_other_profile_whose_skills_change(self) -> None:
+        self.add_profile("llm", ["acme/skills:unselected", "acme/skills:alpha"])
+        self.add_profile("review", ["acme/skills:alpha"])
+        self.add_profile("tools", ["zebra/tools:gamma"])
+        origin = self.fixture.origins["acme/skills"]
+        for skill in ("alpha", "unselected"):
+            with (origin / f"skills/{skill}/SKILL.md").open("a", encoding="utf-8") as file:
+                file.write("\nRewritten.\n")
+        git(["add", "-A"], origin)
+        self.advance("acme/skills", "rewrite")
+        summary = self.update("s\n").split("[a]ccept", 1)[0]
+        self.assertRegex(summary, r"\n\nSkills you use\n  alpha +updated · 1 file \+2 −0\n\n"
+                                  r"also changes 2 skills in llm: alpha, unselected\n"
+                                  r"also changes 1 skill in review: alpha\n\n"
+                                  r"Skills you don't use\n  unselected +updated")
+        self.assertNotIn("tools", summary)
+        self.assertNotIn("@@", summary)
+
     def test_a_failed_source_leaves_the_others_processed_and_its_pin_unchanged(self) -> None:
         self.fixture.add_source("mid/tools", {"delta": "delta"})
         git(["commit", "-qm", "Add mid/tools"], self.repo)

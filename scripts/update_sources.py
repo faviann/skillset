@@ -61,6 +61,7 @@ class Summary:
     changed: dict[str, str]
     selected: frozenset[str]
     unpublished: list[str]
+    others: dict[str, frozenset[str]]
 
     def lines(self, update: SourceUpdate, *, named: bool = True) -> list[str]:
         count = len(self.commits)
@@ -70,13 +71,19 @@ class Summary:
         rows += [(name, "removed") for name in self.removed]
         rows += [(name, "added") for name in self.added]
         width = max((len(name) for name, _ in rows), default=0)
-        for title, section in (
-            ("Skills you use", [row for row in rows if row[0] in self.selected]),
-            ("New skills", [row for row in rows if row[1] == "added"]),
-            ("Skills you don't use", [row for row in rows if row[0] not in self.selected and row[1] != "added"]),
-        ):
-            if section:
-                lines += ["", title, *(f"  {name:<{width}}  {what}" for name, what in sorted(section))]
+
+        def section(title: str, part: list[tuple[str, str]]) -> list[str]:
+            return ["", title, *(f"  {name:<{width}}  {what}" for name, what in sorted(part))] if part else []
+
+        # Other profiles get one line each, no detail: this home doesn't install them.
+        also = [f"also changes {len(names)} skill{'s' if len(names) != 1 else ''} in {profile}: {', '.join(names)}"
+                for profile, selected in sorted(self.others.items())
+                if (names := sorted(selected.intersection(self.changed)))]
+        lines += section("Skills you use", [row for row in rows if row[0] in self.selected])
+        lines += ["", *also] if also else []
+        lines += section("New skills", [row for row in rows if row[1] == "added"])
+        lines += section("Skills you don't use",
+                         [row for row in rows if row[0] not in self.selected and row[1] != "added"])
         if not self.added and not self.removed:
             lines += ["", "No skills added or removed." if self.changed else "No skill files changed."]
         if self.commits:
@@ -245,7 +252,7 @@ def diffstat(path: Path, old: str, new: str, directories: set[Path]) -> str:
 
 
 def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after: SourceCatalog,
-              selected: frozenset[str]) -> Summary:
+              selected: frozenset[str], others: dict[str, frozenset[str]]) -> Summary:
     changed_files = git(["diff", "--name-only", "-z", "--no-renames", update.old, update.new], cwd=after.path)
     touched = path_prefixes(map(Path, filter(None, changed_files.split("\0"))))
     changed = {}
@@ -257,7 +264,7 @@ def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after
                   cwd=after.path).splitlines()
     unpublished = git(["log", "--format=%h %s", "origin/main..HEAD^"], cwd=worktree).splitlines()
     return Summary(commits, sorted(set(after.skills) - set(before.skills)),
-                   sorted(set(before.skills) - set(after.skills)), changed, selected, unpublished)
+                   sorted(set(before.skills) - set(after.skills)), changed, selected, unpublished, others)
 
 
 @dataclass(frozen=True)
@@ -298,9 +305,11 @@ def prepare(worktree: Path, name: str, before: Catalog, log: Log) -> Prepared | 
             return update
         commit_update(worktree, update, source, log)
         after = load_catalog(worktree)
-        selected = frozenset(line.name for line in after.resolve(read_selection_text(worktree, active_profile(worktree))).lines
-                             if line.name and line.value.startswith(f"{name}:"))
-        summary = summarize(worktree, update, source, after.sources[name], selected)
+        selections = {profile: frozenset(line.name for line in after.resolve(read_selection_text(worktree, profile)).lines
+                                         if line.name and line.value.startswith(f"{name}:"))
+                      for profile in list_profiles(worktree)}
+        selected = selections.pop(active_profile(worktree))
+        summary = summarize(worktree, update, source, after.sources[name], selected, selections)
         added = summary.added
         check_installable(worktree, after)
         return Prepared(worktree, checkpoint, update, source, after, summary)
