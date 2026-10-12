@@ -24,6 +24,7 @@ from skill_catalog import (
     list_profiles,
     load_catalog,
     profile_path,
+    profile_problems,
     read_selection_text,
     valid_name,
 )
@@ -241,17 +242,22 @@ def choose_profile(root: Path, name: str) -> None:
     fsync_dir(record.parent)
 
 
-def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str], Catalog]:
+def read_inputs(root: Path) -> tuple[str, str, Catalog]:
+    """HEAD, the active profile and the catalog, once the checkout passes the install gates."""
     head = require_primary_checkout(root)
     profile = active_profile(root)
     catalog = load_catalog(root)
     ensure_skillset_committed(root, profile)
-    return head, catalog.resolve(read_selection_text(root, profile)).install_targets(profile), catalog
+    return head, profile, catalog
+
+
+def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str]]:
+    head, profile, catalog = read_inputs(root)
+    return head, catalog.resolve(read_selection_text(root, profile)).install_targets(profile)
 
 
 def build_plan(root: Path) -> Plan:
-    head, selected, _ = read_selection(root)
-    return plan_links(head, selected)
+    return plan_links(*read_selection(root))
 
 
 def stale_upstreams(catalog: Catalog) -> list[str]:
@@ -400,19 +406,27 @@ def apply_plan(plan: Plan) -> str:
         messages.append(f"created {created} skill links")
     return " and ".join(messages) or "skills are reconciled"
 
-def run(root: Path, check_only: bool) -> int:
-    head, selected, catalog = read_selection(root)
+def check(root: Path) -> int:
+    """Report every profile's problems and this home's install state, changing nothing."""
+    head, profile, catalog = read_inputs(root)
+    broken = profile_problems(root, catalog)
+    findings = [problem for problems in broken.values() for problem in problems]
+    if profile not in broken:
+        plan = plan_links(head, catalog.resolve(read_selection_text(root, profile)).install_targets(profile))
+        findings += [f"missing: {r.path}" for r in plan.creations]
+        findings += [f"stale owned link: {r.path}" for r in plan.removals]
+        findings += [f"stale receipt: {r.receipt}" for r in plan.receipt_cleanup]
+    findings += stale_upstreams(catalog)
+    if findings:
+        print("\n".join(findings), file=sys.stderr)
+        return 1
+    print(f"skills are reconciled at skillset commit {head}")
+    return 0
+
+
+def install(root: Path) -> int:
+    head, selected = read_selection(root)
     plan = plan_links(head, selected)
-    if check_only:
-        discrepancies = [f"missing: {r.path}" for r in plan.creations]
-        discrepancies += [f"stale owned link: {r.path}" for r in plan.removals]
-        discrepancies += [f"stale receipt: {r.receipt}" for r in plan.receipt_cleanup]
-        discrepancies += stale_upstreams(catalog)
-        if discrepancies:
-            print("\n".join(discrepancies), file=sys.stderr)
-            return 1
-        print(f"skills are reconciled at skillset commit {plan.head}")
-        return 0
     lock = home_path() / ".agents/.skillset/lock"
     lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     flags = os.O_CREAT | os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW
@@ -432,7 +446,7 @@ def main(argv: list[str]) -> int:
     try:
         if argv[:1] == ["--profile"]:
             choose_profile(root, argv[1])
-        return run(root, argv == ["--check"])
+        return check(root) if argv == ["--check"] else install(root)
     except (ReconcileError, OSError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

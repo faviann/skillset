@@ -90,25 +90,30 @@ class ResolvedLine:
 class Resolution:
     lines: tuple[ResolvedLine, ...]
 
-    def install_targets(self, profile: str) -> dict[tuple[Path, str], str]:
-        """Raise the first syntax error, else the first catalog or same-name error, located in the profile."""
+    def problems(self, profile: str) -> list[str]:
+        """Every syntax error, then every catalog or same-name error, located in the profile."""
         path = profile_path(profile)
-        for line in self.lines:
-            if line.syntax_error:
-                raise ReconcileError(f"{path}:{line.number}: {line.error}")
+        problems = [f"{path}:{line.number}: {line.error}" for line in self.lines if line.syntax_error]
         names: dict[str, str] = {}
-        result = {}
         for line in self.lines:
             location = f"{path}:{line.number}"
+            if line.syntax_error:
+                continue
             if line.error:
-                raise ReconcileError(f"{location}: {line.error}")
-            if line.name in names:
-                raise ReconcileError(f"{location}: same name selected from two sources: {line.name}\n"
-                                     f"  {names[line.name]}\n  {line.value}")
-            names[line.name] = line.value
-            for directory, target in line.targets.items():
-                result[directory, line.name] = target
-        return dict(sorted(result.items()))
+                problems.append(f"{location}: {line.error}")
+            elif line.name in names:
+                problems.append(f"{location}: same name selected from two sources: {line.name}\n"
+                                f"  {names[line.name]}\n  {line.value}")
+            else:
+                names[line.name] = line.value
+        return problems
+
+    def install_targets(self, profile: str) -> dict[tuple[Path, str], str]:
+        """Raise the first problem, else map each install directory and name to its target."""
+        if problems := self.problems(profile):
+            raise ReconcileError(problems[0])
+        return dict(sorted(((directory, line.name), target) for line in self.lines
+                           for directory, target in line.targets.items()))
 
 
 @dataclass(frozen=True)
@@ -492,6 +497,37 @@ def read_selection_text(root: Path, profile: str) -> str:
         return selection.read_bytes().decode("utf-8")
     except (OSError, UnicodeError) as error:
         raise ReconcileError(f"could not read {path} as UTF-8") from error
+
+
+def committed_selection_text(root: Path, profile: str) -> str:
+    """Read the profile's content as committed at HEAD, whatever is on disk."""
+    path = profile_path(profile)
+    result = subprocess.run(["git", "cat-file", "blob", f"HEAD:{path}"], cwd=root, env=git_env(),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode:
+        raise ReconcileError(f"could not read {path} at HEAD: {result.stderr.decode(errors='replace').strip()}")
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeError as error:
+        raise ReconcileError(f"could not read {path} at HEAD as UTF-8") from error
+
+
+def profile_problems(root: Path, catalog: Catalog) -> dict[str, list[str]]:
+    """Validate every profile committed at HEAD of root against catalog.
+
+    Maps each broken profile's name to its problems, each located at
+    profiles/<name>.txt:<line>. Profiles are read as committed, because that is
+    what every home installs; uncommitted edits are not checked.
+    """
+    problems = {}
+    for profile in list_profiles(root):
+        try:
+            found = catalog.resolve(committed_selection_text(root, profile)).problems(profile)
+        except ReconcileError as error:
+            found = [str(error)]
+        if found:
+            problems[profile] = found
+    return problems
 
 
 def parse_selection(content: str) -> list[SelectionLine]:
