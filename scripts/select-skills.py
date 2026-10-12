@@ -925,8 +925,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         if reason := self.file_operation_blocker(name):
             self.query_one("#message", Static).update(Text(f"⎿ Cannot use {name} here: {reason}"))
             return
-        where = (f"This home uses {self.active}; skills only it selects are uninstalled here." if self.active
-                 else "This home has no profile yet.")
+        where = self.home_note("skills only it selects are uninstalled here")
 
         def confirmed(choice: int | None) -> None:
             if choice == 1:
@@ -934,6 +933,10 @@ class SelectorApp(App[Callable[[Path], int] | None]):
 
         self.push_screen(ChoiceDialog(f"Use {name} in this home?", [f"Use {name} and install", "Cancel"],
                                       f"{where}\nOther homes are not affected."), confirmed)
+
+    def home_note(self, consequence: str) -> str:
+        """For a dialog's details: the profile this home uses and `consequence` of that, or that it has none."""
+        return f"This home uses {self.active}; {consequence}." if self.active else "This home has no profile yet."
 
     def new_profile(self, *, copy_from: str | None = None) -> None:
         """Name a profile that starts empty or as a copy of a saved one, and edit it unsaved."""
@@ -1237,8 +1240,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             if not self.draft.unsaved and not self.not_committed:
                 self.query_one("#message", Static).update("⎿ No changes to save.")
                 return
-            where = (f"This home uses {self.active}; saving {self.profile} doesn't change what's installed here."
-                     if self.active else "This home has no profile yet.")
+            where = self.home_note(f"saving {self.profile} doesn't change what's installed here")
             dialog = ChoiceDialog(f"Save {self.profile}?",
                                   ["Save and commit (nothing installed here)", "Save, commit and use it here",
                                    "Save only"],
