@@ -23,6 +23,18 @@ directory is missing from PATH. With terminal input and output it opens the
 selector; otherwise it prints `Ready. Run: select-skills`. Setup installs no
 skills.
 
+Then choose the profile this home installs. This records the choice in
+`~/.agents/.skillset/profile` and installs the profile:
+
+```bash
+scripts/reconcile-skills.sh --profile workstation
+```
+
+Until a home has a valid record, installs, `--check`, the selector and the
+update command refuse to start and list the profiles at HEAD. Rerun `--profile`
+with another name to switch. That removes the links only the old profile
+wanted and adds the new profile's.
+
 In the live checkout, rerun `./setup.sh` whenever a source is missing or at the
 wrong commit, for example after a pull that moved a pin. An install never
 fetches, pulls, initializes, or advances sources. It requires the skillset's
@@ -32,7 +44,7 @@ gitlink commit.
 ## Select skills
 
 Select skills in the live checkout, on its branch, by running `select-skills`
-from any directory. Space toggles the highlighted skill; Enter does the same in
+from any directory. It edits the profile this home's record names. Space toggles the highlighted skill; Enter does the same in
 the skills column. Clicking a circle toggles it, and clicking a name highlights
 it. Selecting a name from another source asks before replacing its current
 selection.
@@ -47,9 +59,9 @@ selector. The `ctrl+u update` hint is in the accent color when the highlighted
 source has an update.
 
 Ctrl+S reviews additions and removals against the last commit. **Save and install**
-is the default: it writes `profiles/workstation.txt`, closes the selector, commits
-only that file if needed, as `Update workstation profile (+N -M)`, and installs in
-your terminal. When the branch is ahead of its
+is the default: it writes the profile's file, `profiles/<name>.txt`, closes the
+selector, commits only that file if needed, as `Update <name> profile (+N -M)`,
+and installs in your terminal. When the branch is ahead of its
 upstream, it reminds you to run `git push`; the selector never pushes. Install
 failures keep the commit, and commit failures keep the saved file without
 installing. This choice is disabled with a reason in linked worktrees, on a
@@ -57,14 +69,14 @@ detached HEAD, during a merge or rebase, when tracked changes outside `profiles/
 when untracked files exist under `scripts/`, or while selected entries remain
 under **Not in catalog**.
 
-The title shows **not installed** when `profiles/workstation.txt` differs from HEAD or a
+The title shows **not installed** when the profile's file differs from HEAD or a
 read-only installation check finds links to update or fails. Ctrl+S then offers
 **Install** even with no unsaved changes; it preserves the saved file and
 commits only if needed. A failed check appears on the message line and disables
 Install with its reason. After an install failure, run the skill selector again
 and choose Install.
 
-**Save only** rewrites `profiles/workstation.txt` in sorted order with its standard header and
+**Save only** rewrites the profile's file in sorted order with its standard header and
 stays open. It becomes the default when Save and install is unavailable.
 **Keep editing** returns to the selection. The title counts unsaved changes
 relative to the last loaded or saved file. If the file changed on disk, saving
@@ -75,7 +87,7 @@ with their reasons; deselect them to remove them, or leave them to preserve them
 on save. Duplicate selected names must be resolved before saving.
 
 You can also edit a profile by hand. Uncommitted changes to profiles other than
-`workstation` never block committing or installing. Each selection line is
+this home's never block committing or installing. Each selection line is
 `owner/repo:name`: `owner/repo` is the source's folder under `sources/`,
 and `name` is the skill's frontmatter name. Neither part may contain `:`.
 For example, `faviann/agent-skills:publish-artifact` selects that named skill
@@ -98,7 +110,7 @@ frontmatter or harness identity.
 Installed links expose the live checkout's sources directly, so a pin never
 changes there by hand. Make, commit and publish skill edits in the source's own
 repository first. Then run the update command from the live checkout, on
-`main`, with `profiles/workstation.txt` committed:
+`main`, with this home's profile committed:
 
 ```bash
 scripts/update-sources.sh
@@ -141,8 +153,9 @@ sources show nothing to do.
 
 The command refuses to start, with the reason, outside the primary checkout,
 off `main`, on a detached `HEAD`, during a merge or rebase, with uncommitted
-tracked changes, with untracked files under `scripts/`, or with uncommitted
-`profiles/workstation.txt` changes, naming the file. It does not refuse a committed selection that is under
+tracked changes, with untracked files under `scripts/`, without a valid
+profile record for this home, or with uncommitted changes to this home's
+profile, naming the file. It does not refuse a committed selection that is under
 **Not in catalog**, because the update may be what makes it resolve. It never
 pushes to a source repository.
 
@@ -247,10 +260,11 @@ git add .gitmodules sources/owner/repo sources.toml profiles
 git commit -m "Update owner/repo source pin"
 ```
 
-Then validate the commit with an install into a throwaway home:
+Then validate the commit with an install into a throwaway home, once per
+profile:
 
 ```bash
-HOME="$(mktemp -d)" scripts/reconcile-skills.sh
+HOME="$(mktemp -d)" scripts/reconcile-skills.sh --profile workstation
 ```
 
 This runs the same validation as `--check`, including repeated names that no
@@ -277,9 +291,10 @@ when nothing is unsaved.
 
 ## Install and provenance
 
-Run `scripts/reconcile-skills.sh` to install and
-`scripts/reconcile-skills.sh --check` for a read-only check. After a
-successful install, the script also links `select-skills` and its lockfile in
+Run `scripts/reconcile-skills.sh` to install this home's profile,
+`scripts/reconcile-skills.sh --profile <name>` to choose another and install
+it, and `scripts/reconcile-skills.sh --check` for a read-only check. After a
+successful install, with or without `--profile`, the script also links `select-skills` and its lockfile in
 `~/.local/bin` to the live checkout, as setup does, so a machine whose dotfiles
 hook installs skills also gets the selector command. The skillset
 commit SHA identifies the selection and source pins used for the install.
@@ -309,6 +324,11 @@ else
 fi
 env -u BW_SESSION "$skillset_repo/scripts/reconcile-skills.sh"
 ```
+
+Before the hook first runs the profile-aware installer, run
+`scripts/reconcile-skills.sh --profile workstation` once in the live checkout.
+The hook's plain install then keeps installing that profile; without the
+record it fails closed.
 
 For an existing skillset checkout, the hook only installs; it does not pull
 the superproject or initialize/advance sources implicitly. If the checkout

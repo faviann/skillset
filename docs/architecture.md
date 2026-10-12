@@ -26,8 +26,8 @@ source-commit lock; the tracked branch never changes which commit is installed.
 Each profile, `profiles/<name>.txt`, is a complete, independent selection; none
 builds on another. Profile names follow the skill-name rules: 1-64 lowercase
 ASCII letters, digits or hyphens, with no leading, trailing or consecutive
-hyphens. A profile may be empty. Every home installs the `workstation` profile
-for now. A profile lists selected skills as
+hyphens. A profile may be empty. Each home installs the one profile its
+[record](#the-homes-profile) names. A profile lists selected skills as
 `owner/repo:name`, where `owner/repo` is the source folder under `sources/` and
 `name` is the frontmatter identity. Path selections are rejected. The catalog
 resolves these identities at the pinned commit, so moving a skill within its
@@ -172,11 +172,29 @@ promise protection against malicious same-user filesystem races. Do not run
 other installers or mutate source checkouts concurrently. An I/O failure may
 leave partial progress; rerun after repairing the cause.
 
+## The home's profile
+
+Each home records its active profile in `~/.agents/.skillset/profile`, one line
+holding the name, beside the receipts and the lock. It is never committed.
+`scripts/reconcile-skills.sh --profile <name>` checks that `profiles/<name>.txt`
+exists at HEAD, writes the record, then installs. Writing first means a failed
+install converges on the new profile when a plain install reruns. Every later
+install and `--check` reads the record. Switching profiles needs no special
+case: the owned links the new profile doesn't want are removed through the
+receipts like any deselected skill.
+
+If the record is missing, holds an invalid name, or names a profile that isn't
+at HEAD, install and `--check` fail closed. They change no links and print the
+profiles at HEAD and the `--profile` command. There is no default profile and no
+guessing from receipts. The selector and the update command refuse to start in
+that state for the same reason. Install validates only the active profile, so a
+broken profile no home here uses never blocks it.
+
 ## Persistence and restoration
 
 The workstation persists `~/.agents` and `~/.claude` through an LXC rebuild,
-but does not persist every directory under `~/.local/state`. Receipts therefore
-live beside the install directories. Each install directory has its own receipt
+but does not persist every directory under `~/.local/state`. Receipts and the
+profile record therefore live beside the install directories. Each install directory has its own receipt
 directory, so publication does not cross their separate bind mounts.
 
 Backup and restore must preserve the hard-link relationship between receipts
