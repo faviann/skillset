@@ -1474,7 +1474,8 @@ def finish_handoff(root: Path, profile: str, after: After) -> int:
         if int(skill_catalog.git(["rev-list", "--count", "@{upstream}..HEAD"], cwd=root)):
             print("Not pushed yet. To back it up: git push")
     if code:
-        print("run the skill selector again and choose Install")
+        print(f"run scripts/reconcile-skills.sh --profile {profile} again" if after is After.USE_HERE
+              else "run the skill selector again and choose Install")
     return code
 
 

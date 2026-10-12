@@ -678,6 +678,16 @@ class UseHereTests(ProfileCase):
             self.assertTrue(app.is_running)
         self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "workstation\n")
 
+    def test_a_failed_install_names_the_command_that_uses_the_profile_here(self) -> None:
+        unmanaged = self.home / ".claude/skills/tdd"
+        unmanaged.mkdir(parents=True)
+
+        code, output = self.handoff(partial(selector.finish_handoff, profile="llm", after=selector.After.USE_HERE))
+
+        self.assertEqual(code, 1, output)
+        self.assertIn("install directory entry collision", output)
+        self.assertEqual(output.splitlines()[-1], "run scripts/reconcile-skills.sh --profile llm again")
+
     async def test_u_cannot_install_where_the_checkout_cannot_install(self) -> None:
         git(["checkout", "-q", "--detach"], self.repo)
         app = selector.SelectorApp(root=self.repo)
