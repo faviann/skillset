@@ -50,7 +50,11 @@ or **this home uses <name>**. Ctrl+P drops a list of
 every profile under that name, with its skill count, **● used here**, and its
 unsaved changes or **not committed** when its file differs from HEAD. Enter edits
 the highlighted profile; with unsaved changes it first asks whether to keep
-editing, review and save, or discard them and switch. Esc or a click outside
+editing, review and save, or discard them and switch. N starts a new, empty
+profile and C copies the highlighted profile's saved file; both ask for a name
+that follows the skill-name rules and isn't taken. The new profile exists only
+in the selector, counted as unsaved, until Save writes `profiles/<name>.txt`;
+switching away or quitting without saving drops it. Esc or a click outside
 closes the list. Space toggles the highlighted skill; Enter does the same in
 the skills column. Clicking a circle toggles it, and clicking a name highlights
 it. Selecting a name from another source asks before replacing its current
@@ -87,7 +91,7 @@ Saving a profile this home doesn't use never installs it here unless asked. The
 dialog names the profile this home uses and offers **Save and commit**, which
 commits only that file as above and installs nothing; **Save, commit and use it
 here**, which then runs `scripts/reconcile-skills.sh --profile <name>`; and
-**Save only**. The title marks such a profile **not committed** while its file
+**Save only**. Committing a new profile adds its file as `Add <name> profile (+N -0)`. The title marks such a profile **not committed** while its file
 differs from HEAD.
 
 **Save only** rewrites the profile's file in sorted order with its standard header and
