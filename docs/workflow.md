@@ -93,7 +93,8 @@ read-only installation check finds links to update or fails. Ctrl+S then offers
 **Install** even with no unsaved changes; it preserves the saved file and
 commits only if needed. A failed check appears on the message line and disables
 Install with its reason. After an install failure, run the skill selector again
-and choose Install.
+and choose Install. When the selector closed to use a profile here, the failure
+names `scripts/reconcile-skills.sh --profile <name>` to run again instead.
 
 Saving a profile this home doesn't use never installs it here unless asked. The
 dialog names the profile this home uses and offers **Save and commit (nothing
@@ -121,7 +122,7 @@ In the Ctrl+P list, R renames and D deletes the highlighted profile. Both
 are refused while anything is unsaved or the profile's file differs from HEAD,
 and for the same reasons that disable Save and install. Rename asks for a new
 name, which follows the skill-name rules and must not be taken. Delete asks for
-confirmation; it refuses the last profile and the profile this home uses, so
+confirmation; it refuses the last committed profile and the profile this home uses, so
 choose another here first. Each closes the selector and commits only the change,
 as `Rename <old> profile to <new>` with `git mv` or `Delete <name> profile` with
 `git rm`. If the commit fails, the file is put back. Renaming the profile this
