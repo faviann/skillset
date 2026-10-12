@@ -47,10 +47,9 @@ class CheckoutStore:
 
     def head(self) -> str:
         """HEAD's copy, or "" for a profile not committed yet."""
-        path = skill_catalog.profile_path(self.profile)
-        if not skill_catalog.git(["ls-tree", "--name-only", "HEAD", "--", path], cwd=self.root):
+        if self.profile not in skill_catalog.list_profiles(self.root):
             return ""
-        return skill_catalog.git(["show", f"HEAD:{path}"], cwd=self.root)
+        return skill_catalog.committed_selection_text(self.root, self.profile)
 
 
 class MemoryStore:

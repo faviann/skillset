@@ -224,7 +224,7 @@ class CheckoutStoreTests(unittest.TestCase):
             store.write("# new\r\nzebra/tools:omega\n")
             self.assertEqual((fixture.repo / "profiles/workstation.txt").read_bytes(), b"# new\r\nzebra/tools:omega\n")
             self.assertEqual(store.read(), "# new\r\nzebra/tools:omega\n")
-            self.assertEqual(store.head(), committed.rstrip("\n"))
+            self.assertEqual(store.head(), committed)
             self.assertIn("profiles/workstation.txt", git(["status", "--porcelain"], fixture.repo))
 
 
