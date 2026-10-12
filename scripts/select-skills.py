@@ -955,10 +955,11 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             self.query_one("#message", Static).update(
                 Text(f"⎿ Created {name}. It exists only in the selector until you save it."))
 
-    def load_profile(self, name: str, failure: str, *, start: str | None = None) -> bool:
+    def load_profile(self, name: str, failure: str, *, start: str | None = None, keep_cursor: bool = False) -> bool:
         """Edit the saved file of name, dropping unsaved changes, or show why it cannot be read.
 
         With `start`, name has no file yet: the draft starts from that content, unsaved.
+        With `keep_cursor`, the highlighted source and skill stay highlighted where they still exist.
         """
         try:
             store = CheckoutStore(self.root, name, start=start)
@@ -968,11 +969,14 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             return False
         self.store = store
         self.profile = name
-        self.source = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
+        if not keep_cursor:
+            self.source = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
         self.refresh_file_status()
         self.refresh_title()
-        self.fill_sources()
-        self.fill_skills()
+        self.fill_sources(keep_cursor=keep_cursor)
+        if keep_cursor:
+            self.source = self.query_one("#sources", CatalogList).current
+        self.fill_skills(keep_cursor=keep_cursor)
         return True
 
     def file_operation_blocker(self, name: str) -> str | None:
@@ -1312,18 +1316,11 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         try:
             self.selection_catalog = skill_catalog.load_catalog(self.root)
             self.catalog = display_catalog(self.selection_catalog)
-            store = CheckoutStore(self.root, self.profile)
-            self.draft = SelectionDraft.load(store, self.selection_catalog)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
             return
-        self.store = store
-        self.refresh_file_status()
-        self.refresh_title()
-        self.fill_sources(keep_cursor=True)
-        self.source = self.query_one("#sources", CatalogList).current
-        self.fill_skills(keep_cursor=True)
-        self.refresh_hints()
+        if self.load_profile(self.profile, "Could not reload", keep_cursor=True):
+            self.refresh_hints()
 
     def action_quit(self) -> None:
         search = self.query_one("#search", Input)
