@@ -590,8 +590,9 @@ class SelectorApp(App[Callable[[Path], int] | None]):
     def __init__(self, root: Path | None = None) -> None:
         super().__init__()
         self.root = (root or Path(__file__).resolve().parent.parent).resolve()
+        # A home without a valid record has nothing to edit until it chooses a profile.
+        self.profile = reconcile_skills.active_profile(self.root)
         # Browsing needs source validation, not the reconciler's deployment gate.
-        self.profile = reconcile_skills.active_profile()
         self.selection_catalog = skill_catalog.load_catalog(self.root)
         self.catalog = display_catalog(self.selection_catalog)
         self.draft = SelectionDraft.load(CheckoutStore(self.root, self.profile), self.selection_catalog)
@@ -1020,7 +1021,11 @@ def shell_path_env() -> dict[str, str]:
 
 def install_saved_selection(root: Path) -> int:
     """Run only after the TUI closes, with hooks and signing in the terminal."""
-    profile = reconcile_skills.active_profile()
+    try:
+        profile = reconcile_skills.active_profile(root)
+    except (reconcile_skills.ReconcileError, OSError) as error:
+        print(f"Could not commit: {error}\nThe selection stays saved; nothing was committed or installed.")
+        return 1
     path = skill_catalog.profile_path(profile)
     if reason := reconcile_skills.selection_install_blocker(root):
         print(f"Could not commit: {reason}. {path} stays saved; nothing was committed or installed.")

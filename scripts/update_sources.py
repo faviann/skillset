@@ -114,7 +114,7 @@ def update_blocker(root: Path) -> str | None:
     """Why the update cannot start, or None."""
     if reason := off_main(root) or selection_install_blocker(root):
         return reason
-    if selection_uncommitted(root, profile := active_profile()):
+    if selection_uncommitted(root, profile := active_profile(root)):
         return f"{profile_path(profile)} has uncommitted changes; save and install first"
     return None
 
@@ -210,7 +210,7 @@ def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog, l
 
 
 def check_installable(worktree: Path, catalog: Catalog) -> None:
-    profile = active_profile()
+    profile = active_profile(worktree)
     ensure_skillset_committed(worktree, profile)
     catalog.resolve(read_selection_text(worktree, profile)).install_targets(profile)
     if stale := stale_upstreams(catalog):
@@ -286,7 +286,7 @@ def prepare(worktree: Path, name: str, before: Catalog, log: Log) -> Prepared | 
             return update
         commit_update(worktree, update, source, log)
         after = load_catalog(worktree)
-        selected = frozenset(line.name for line in after.resolve(read_selection_text(worktree, active_profile())).lines
+        selected = frozenset(line.name for line in after.resolve(read_selection_text(worktree, active_profile(worktree))).lines
                              if line.name and line.value.startswith(f"{name}:"))
         summary = summarize(worktree, update, source, after.sources[name], selected)
         added = summary.added

@@ -21,6 +21,7 @@ from skill_catalog import (
     git,
     git_env,
     identity,
+    list_profiles,
     load_catalog,
     profile_path,
     read_selection_text,
@@ -72,9 +73,37 @@ def home_path() -> Path:
     return Path(os.path.abspath(value))
 
 
-def active_profile() -> str:
-    """The profile this home installs. Every home uses workstation for now."""
-    return "workstation"
+def record_path() -> Path:
+    """This home's record of its active profile. It is never committed."""
+    return home_path() / ".agents/.skillset/profile"
+
+
+def choose_profile_hint(root: Path) -> str:
+    return (f"profiles at HEAD: {', '.join(list_profiles(root)) or 'none'}\n"
+            "choose one with: scripts/reconcile-skills.sh --profile <name>")
+
+
+def active_profile(root: Path) -> str:
+    """The profile this home's record names, which must be committed at HEAD of root."""
+    record = record_path()
+    safe_components(record)
+    st = lstat(record)
+    if st is None:
+        problem = f"this home has no profile: {record} is missing"
+    elif not stat.S_ISREG(st.st_mode):
+        problem = f"this home's profile record is not a regular file: {record}"
+    else:
+        try:
+            name = record.read_bytes().decode("utf-8").strip()
+        except UnicodeError:
+            name = None
+        if name is None or not valid_name(name):
+            problem = f"this home's profile record holds an invalid name: {record}"
+        elif name not in list_profiles(root):
+            problem = f"this home's profile {name} is not a profile at HEAD"
+        else:
+            return name
+    raise ReconcileError(f"{problem}\n{choose_profile_hint(root)}")
 
 
 def require_primary_checkout(root: Path) -> str:
@@ -132,7 +161,7 @@ def selection_install_blocker(root: Path) -> str | None:
                 return f"a {operation} is in progress; finish it first"
         if not git(["symbolic-ref", "--quiet", "HEAD"], cwd=root, check=False):
             return "checkout is on a detached HEAD; switch to a branch"
-        ensure_skillset_committed(root, active_profile(), committing=True)
+        ensure_skillset_committed(root, active_profile(root), committing=True)
     except (ReconcileError, OSError) as error:
         return str(error)
     return None
@@ -194,9 +223,27 @@ def local_collision(desired: set[str], retiring: set[Path]) -> None:
 
 
 
+def choose_profile(root: Path, name: str) -> None:
+    """Record name as this home's profile. Recording before installing lets a rerun converge."""
+    require_primary_checkout(root)
+    if name not in list_profiles(root):
+        raise ReconcileError(f"{name!r} is not a profile at HEAD\n{choose_profile_hint(root)}")
+    record = record_path()
+    safe_components(record)
+    record.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    staged = record.with_name(".profile.new")
+    fd = os.open(staged, os.O_CREAT | os.O_TRUNC | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(f"{name}\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(staged, record)
+    fsync_dir(record.parent)
+
+
 def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str], Catalog]:
-    profile = active_profile()
     head = require_primary_checkout(root)
+    profile = active_profile(root)
     catalog = load_catalog(root)
     ensure_skillset_committed(root, profile)
     return head, catalog.resolve(read_selection_text(root, profile)).install_targets(profile), catalog
@@ -378,11 +425,13 @@ def run(root: Path, check_only: bool) -> int:
     return 0
 
 def main(argv: list[str]) -> int:
-    if argv not in ([], ["--check"]):
-        print("usage: scripts/reconcile-skills.sh [--check]", file=sys.stderr)
+    if argv not in ([], ["--check"]) and (len(argv) != 2 or argv[0] != "--profile"):
+        print("usage: scripts/reconcile-skills.sh [--check | --profile <name>]", file=sys.stderr)
         return 2
     root = Path(__file__).resolve().parent.parent
     try:
+        if argv[:1] == ["--profile"]:
+            choose_profile(root, argv[1])
         return run(root, argv == ["--check"])
     except (ReconcileError, OSError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)

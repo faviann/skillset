@@ -45,7 +45,7 @@ jobs:
           temporary_home="$(mktemp -d)"
           trap 'rm -rf -- "$temporary_home"' EXIT
           export HOME="$temporary_home"
-          scripts/reconcile-skills.sh
+          scripts/reconcile-skills.sh --profile workstation
           scripts/reconcile-skills.sh --check
           scripts/reconcile-skills.sh
           scripts/reconcile-skills.sh --check

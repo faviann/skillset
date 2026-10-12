@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import CHECKOUT, SkillsetFixture, configure_git, git, redirect_github, write_profile
+from fixture import CHECKOUT, SkillsetFixture, configure_git, git, redirect_github, write_profile, write_record
 from pilot import PilotTestCase, selector
 
 
@@ -31,7 +31,7 @@ class SkillsetCase(unittest.TestCase):
         return SkillsetFixture(self.base, sources if sources is not None else {
             "acme/skills": {"skills/alpha": "alpha", "skills/beta": "beta"},
             "zebra/tools": {"tools/gamma": "gamma", "tools/omega": "omega"},
-        }, {"workstation": selection if selection is not None else ["acme/skills:beta"]})
+        }, {"workstation": selection if selection is not None else ["acme/skills:beta"]}, record="workstation")
 
     def metadata(self, fixture: SkillsetFixture, source: str, path: str, fields: str) -> None:
         file = fixture.sources[source] / path / "SKILL.md"
@@ -455,7 +455,8 @@ class SelectorTests(SkillsetCase, PilotTestCase):
     async def test_off_catalog_reasons_are_shown_and_can_only_be_deselected(self) -> None:
         fixture = SkillsetFixture(self.base, {"acme/skills": {
             "alpha": "alpha", "invalid": "wrong-name", "codex/lone": "lone",
-        }}, {"workstation": ["acme/skills:alpha"]}, sources_toml='["acme/skills".variants]\ncodex = "codex"\n')
+        }}, {"workstation": ["acme/skills:alpha"]}, sources_toml='["acme/skills".variants]\ncodex = "codex"\n',
+                                 record="workstation")
         reasons = {
             "broken selection": "bad syntax",
             "unknown/source:lost": "unknown source",
@@ -521,7 +522,8 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIn("0 unsaved", self.text(app, "#title"))
             self.assertEqual(selection.read_text().splitlines()[1:], ["acme/skills:beta"])
         self.assertEqual(git(["rev-parse", "HEAD"], fixture.repo), head)
-        self.assertEqual(list(fixture.home.iterdir()), [])
+        self.assertEqual(sorted(str(path.relative_to(fixture.home)) for path in fixture.home.rglob("*")),
+                         [".agents", ".agents/.skillset", ".agents/.skillset/profile"])
 
     async def test_reload_replaces_unsaved_selection_and_refreshes_baselines(self) -> None:
         fixture = self.fixture()
@@ -626,6 +628,7 @@ class SelectorRealDataTests(PilotTestCase):
         self.addCleanup(temporary.cleanup)
         config_home = Path(temporary.name) / "config"
         redirect_github(config_home, Path(temporary.name) / "github")
+        write_record(Path(temporary.name), "workstation")
         environment = patch.dict(os.environ, HOME=temporary.name, XDG_CONFIG_HOME=str(config_home))
         environment.start()
         self.addCleanup(environment.stop)
@@ -652,7 +655,8 @@ class SelectorStartupTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="skillset-selector-startup-")
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
-        self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}}, {"workstation": []})
+        self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}}, {"workstation": []},
+                                       record="workstation")
 
     def launch(self) -> subprocess.CompletedProcess:
         # The symlink and unrelated cwd exercise the entrypoint's resolved root.
@@ -662,6 +666,16 @@ class SelectorStartupTests(unittest.TestCase):
             [sys.executable, str(link)], cwd=self.fixture.home, env=self.fixture.env,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
         )
+
+    def test_home_without_a_valid_record_refuses_to_open(self) -> None:
+        (self.fixture.home / ".agents/.skillset/profile").unlink()
+        result = self.launch()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr,
+                         f"error: this home has no profile: {self.fixture.home}/.agents/.skillset/profile is missing\n"
+                         "profiles at HEAD: workstation\n"
+                         "choose one with: scripts/reconcile-skills.sh --profile <name>\n")
+        self.assertEqual(result.stdout, "")
 
     def test_missing_source_refuses_to_open(self) -> None:
         shutil.rmtree(self.fixture.sources["acme/skills"])

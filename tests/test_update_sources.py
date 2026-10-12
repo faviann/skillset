@@ -20,7 +20,7 @@ class UpdateCase(unittest.TestCase):
         self.fixture = SkillsetFixture(self.base, {
             "acme/skills": {"skills/alpha": "alpha", "skills/unselected": "unselected"},
             "zebra/tools": {"gamma": "gamma"},
-        }, {"workstation": ["acme/skills:alpha"]})
+        }, {"workstation": ["acme/skills:alpha"]}, record="workstation")
         self.repo = self.fixture.repo
         self.home = self.fixture.home
         self.env = self.fixture.env
@@ -84,8 +84,20 @@ class UpdateStartTests(UpdateCase):
     def assert_refused(self, reason: str, script: Path | None = None) -> None:
         self.assertIn(reason, self.update(ok=False, script=script))
         self.assertFalse(self.worktree.exists())
-        self.assertFalse((self.home / ".agents").exists())
+        self.assertFalse((self.home / ".agents/skills").exists())
+        self.assertFalse((self.home / ".claude").exists())
         self.assertEqual(self.origin_subjects(), ["initial skillset"])
+
+    def test_refuses_a_home_without_a_valid_record(self) -> None:
+        record = self.home / ".agents/.skillset/profile"
+        for content in (None, "gone\n"):
+            with self.subTest(content=content):
+                if content is None:
+                    record.unlink()
+                else:
+                    record.write_text(content, encoding="utf-8")
+                self.assert_refused("profiles at HEAD: workstation\n"
+                                    "choose one with: scripts/reconcile-skills.sh --profile <name>")
 
     def test_refuses_off_main_with_unsaved_selection_or_blocked_install(self) -> None:
         old, checkout = self.pin("acme/skills"), self.fixture.sources["acme/skills"]

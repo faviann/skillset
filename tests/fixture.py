@@ -70,22 +70,32 @@ def write_profile(repo: Path, name: str, selection: list[str]) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def write_record(home: Path, name: str) -> None:
+    """Record the home's active profile, as reconcile-skills.sh --profile does."""
+    record = home / ".agents/.skillset/profile"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(f"{name}\n", encoding="utf-8")
+
+
 class SkillsetFixture:
     """Build a committed skillset with sources keyed by owner/repo.
 
     Each source maps source-relative skill paths to frontmatter names; each
     profile maps its name to owner/repo:name lines, independently of those paths. Pass
     ``env`` to subprocesses so local source URLs remain usable by Git helpers.
+    ``record`` names the profile this home uses; without it the home has no record.
     The caller owns the temporary base directory and its cleanup.
     """
 
     def __init__(
         self, base: Path, sources: dict[str, dict[str, str]], profiles: dict[str, list[str]],
-        *, sources_toml: str = "",
+        *, sources_toml: str = "", record: str | None = None,
     ) -> None:
         self.base = base
         self.home = base / "home"
         self.home.mkdir()
+        if record is not None:
+            write_record(self.home, record)
         self.github = base / "github"
         redirect_github(base / "config", self.github)
         self.env = git_environment()

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import SkillsetFixture, configure_git, git, write_profile
+from fixture import SkillsetFixture, configure_git, git, write_profile, write_record
 from pilot import PilotTestCase, selector
 
 
@@ -22,12 +22,16 @@ class InstallCase(unittest.TestCase):
             "mattpocock/skills": {
                 "skills/prototype": "prototype", "skills/tdd": "tdd",
             },
-        }, {"workstation": ["mattpocock/skills:prototype"]})
+        }, {"workstation": ["mattpocock/skills:prototype"]}, record="workstation")
         self.repo = self.fixture.repo
         self.home = self.fixture.home
         environment = patch.dict(os.environ, self.fixture.env, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
+
+    def assert_nothing_installed(self) -> None:
+        self.assertEqual(sorted(str(path.relative_to(self.home)) for path in self.home.rglob("*")),
+                         [".agents", ".agents/.skillset", ".agents/.skillset/profile"])
 
     def handoff(self) -> tuple[int, str]:
         # The terminal handoff inherits stdout/stderr, including from real Git
@@ -73,7 +77,7 @@ class InstallHandoffTests(InstallCase):
         self.assertIn(str(unmanaged), output)
         self.assertFalse(unmanaged.is_symlink())
         self.assertEqual((unmanaged / "notes.txt").read_text(), "Keep my local work.\n")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assertFalse((self.home / ".agents/skills").exists())
         self.assertEqual(output.splitlines()[-1], "run the skill selector again and choose Install")
 
     def test_comment_only_change_offers_install_and_commits_saved_bytes(self) -> None:
@@ -109,7 +113,7 @@ class InstallHandoffTests(InstallCase):
         self.assertIn("selection commit rejected", output)
         self.assertIn("profiles/workstation.txt stays saved; nothing was committed or installed", output)
         self.assertNotIn("tracked skillset changes are not committed", output)
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assert_nothing_installed()
 
     def test_other_saved_profile_neither_blocks_nor_joins_the_commit(self) -> None:
         write_profile(self.repo, "llm", ["mattpocock/skills:prototype"])
@@ -179,7 +183,7 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
             self.assertIsNone(app.return_value)
         self.assertEqual((self.repo / "profiles/workstation.txt").read_text().splitlines()[1:], [])
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assert_nothing_installed()
 
     async def test_default_choice_commits_only_selection_then_installs_without_upstream_hint(self) -> None:
         other = self.base / "other-checkout"
@@ -211,7 +215,7 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
                 self.assertFalse(app.is_running)
                 self.assertIs(app.return_value, selector.install_saved_selection)
             self.assertEqual(git(["rev-parse", "HEAD"], self.repo), previous)
-            self.assertEqual(list(self.home.iterdir()), [])
+            self.assert_nothing_installed()
 
             code, output = self.handoff()
 
@@ -234,6 +238,30 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
         self.assertIn("created 2 skill links", output)
         self.assertNotIn("git push", output)
 
+    async def test_selector_edits_commits_and_installs_the_recorded_profile(self) -> None:
+        write_profile(self.repo, "llm", ["mattpocock/skills:tdd"])
+        git(["add", "profiles/llm.txt"], self.repo)
+        git(["commit", "-qm", "add llm profile"], self.repo)
+        write_record(self.home, "llm")
+        workstation = (self.repo / "profiles/workstation.txt").read_bytes()
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            self.assertIn("1 selected · 0 unsaved", self.text(app, "#title"))
+            await pilot.press("right", "space", "ctrl+s", "enter")
+            self.assertIs(app.return_value, selector.install_saved_selection)
+
+        code, output = self.handoff()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(git(["log", "-1", "--format=%B"], self.repo),
+                         "Update llm profile (+1 -0)\n\n+ mattpocock/skills:prototype")
+        self.assertEqual(git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], self.repo),
+                         "profiles/llm.txt")
+        self.assertEqual((self.repo / "profiles/workstation.txt").read_bytes(), workstation)
+        for name in ("prototype", "tdd"):
+            self.assertTrue((self.home / ".agents/skills" / name).is_symlink())
+
     async def test_committed_never_installed_selection_offers_install_without_a_new_commit(self) -> None:
         before = (self.repo / "profiles/workstation.txt").read_bytes()
         head = git(["rev-parse", "HEAD"], self.repo)
@@ -241,7 +269,7 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
         async with app.run_test() as pilot:
             await app.workers.wait_for_complete()
             self.assertIn("0 unsaved · not installed", self.text(app, "#title"))
-            self.assertEqual(list(self.home.iterdir()), [])
+            self.assert_nothing_installed()
             await pilot.press("ctrl+s")
             self.assertEqual(self.lines(app, "choices"), ["1. Install", "2. Save only", "3. Keep editing"])
             await pilot.press("1")
@@ -305,7 +333,7 @@ class SelectorInstallTests(InstallCase, PilotTestCase):
             self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
         self.assertTrue(unmanaged.is_dir())
         self.assertFalse(unmanaged.is_symlink())
-        self.assertFalse((self.home / ".agents/.skillset").exists())
+        self.assertEqual(list((self.home / ".agents/.skillset").iterdir()), [self.home / ".agents/.skillset/profile"])
         self.assertFalse((self.home / ".claude").exists())
 
     async def test_detached_head_disables_install_and_defaults_to_save_only(self) -> None:

@@ -18,7 +18,7 @@ class UpdateKeyTests(PilotTestCase):
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name)
         self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}, "zebra/tools": {"gamma": "gamma"}},
-                                       {"workstation": ["acme/skills:alpha"]})
+                                       {"workstation": ["acme/skills:alpha"]}, record="workstation")
         self.repo = self.fixture.repo
         self.origin = self.base / "origin.git"
         git(["init", "-q", "--bare", "-b", "main", str(self.origin)], self.base)

@@ -16,7 +16,7 @@ import time
 import unittest
 from pathlib import Path
 
-from fixture import SkillsetFixture, git
+from fixture import SkillsetFixture, git, write_record
 
 
 class SetupTests(unittest.TestCase):
@@ -131,6 +131,8 @@ class SetupTests(unittest.TestCase):
         self.env["UV_CACHE_DIR"] = str(self.base / "uv-cache")
         result = self.setup()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # Until the selector can choose a profile, it opens only in a home that has one.
+        write_record(self.home, "workstation")
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
         output = bytearray()
@@ -171,7 +173,7 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(sent_escape, transcript)
         self.assertEqual(process.returncode, 0, transcript)
         self.assertNotIn("Downloading", transcript)
-        self.assertFalse((self.home / ".agents").exists())
+        self.assertFalse((self.home / ".agents/skills").exists())
         self.assertFalse((self.home / ".claude").exists())
 
 

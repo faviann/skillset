@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-from fixture import CHECKOUT, SkillsetFixture, git, write_profile, write_skill
+from fixture import CHECKOUT, SkillsetFixture, git, write_profile, write_record, write_skill
 
 sys.path.insert(0, str(CHECKOUT / "scripts"))
 from reconcile_skills import (
@@ -41,8 +41,9 @@ class ReconcileIntegrationTests(unittest.TestCase):
                 "skills/engineering/beta": "beta",
                 "skills/misc/unselected": "unselected",
             },
-        }, {"workstation": self.selection})
+        }, {"workstation": self.selection}, record="workstation")
         self.home = self.fixture.home
+        self.record = self.home / ".agents/.skillset/profile"
         self.repo = self.fixture.repo
         self.origin = self.fixture.origins["acme/skills"]
         self.source = self.fixture.sources["acme/skills"]
@@ -136,6 +137,82 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertTrue(link.is_symlink(), str(link))
         self.assertEqual(os.readlink(link), str(target))
 
+    def home_entries(self) -> list[str]:
+        return sorted(str(path.relative_to(self.home)) for path in self.home.rglob("*"))
+
+    def assert_untouched(self) -> None:
+        """HOME holds nothing but this home's profile record."""
+        self.assertEqual(self.home_entries(), [".agents", ".agents/.skillset", ".agents/.skillset/profile"])
+
+    def test_home_without_a_valid_record_fails_closed(self) -> None:
+        write_profile(self.repo, "llm", [self.beta])
+        self.commit_skillset("add llm profile")
+        for content in (None, "", "Work Station\n", "llm\nworkstation\n", "gone\n"):
+            with self.subTest(content=content):
+                if content is None:
+                    self.record.unlink()
+                else:
+                    self.record.write_text(content, encoding="utf-8")
+                before = self.home_entries()
+                for args in ((), ("--check",)):
+                    result = self.run_reconciler(*args)
+                    self.assert_reconcile_fails(result, "profiles at HEAD: llm, workstation")
+                    self.assertIn("scripts/reconcile-skills.sh --profile <name>", result.stderr)
+                    self.assertEqual(self.home_entries(), before)
+
+    def test_profile_switch_records_the_choice_and_relocates_owned_links(self) -> None:
+        write_profile(self.repo, "llm", [self.beta])
+        self.commit_skillset("add llm profile")
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        unrelated = self.home / AGENTS_DIR / "local-folder"
+        write_skill(unrelated.parent, unrelated.name)
+        receipt = self.home / ".agents/.skillset/receipts/beta"
+
+        result = self.run_reconciler("--profile", "llm")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("removed 2 owned skill links and created 2 skill links", result.stdout)
+        self.assertEqual(self.record.read_text(encoding="utf-8"), "llm\n")
+        for install_dir in (AGENTS_DIR, CLAUDE_DIR):
+            self.assert_link(install_dir, "beta", self.source / "skills/engineering/beta")
+            self.assertFalse((self.home / install_dir / "alpha").is_symlink())
+        self.assertTrue(os.path.samestat(receipt.lstat(), (self.home / AGENTS_DIR / "beta").lstat()))
+        self.assertTrue((unrelated / "SKILL.md").is_file())
+        self.assertEqual(self.run_reconciler().stdout.strip(), "skills are reconciled")
+        self.assertEqual(self.run_reconciler("--check").returncode, 0)
+
+    def test_failed_profile_install_converges_on_the_new_profile_when_rerun(self) -> None:
+        write_profile(self.repo, "llm", [self.alpha, self.beta])
+        self.commit_skillset("add llm profile")
+        failed = self.run_reconciler("--profile", "llm", extra_env={"SKILLSET_TEST_FAIL_AT": "after-receipt-create"})
+        self.assertEqual(failed.returncode, 73, failed.stderr)
+        self.assertFalse((self.home / AGENTS_DIR / "beta").exists())
+        result = self.run_reconciler()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for install_dir in (AGENTS_DIR, CLAUDE_DIR):
+            self.assert_link(install_dir, "alpha", self.source / "skills/engineering/alpha")
+            self.assert_link(install_dir, "beta", self.source / "skills/engineering/beta")
+        self.assertEqual(self.run_reconciler("--check").returncode, 0)
+
+    def test_profile_refuses_a_name_that_is_not_a_profile_at_head(self) -> None:
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        write_profile(self.repo, "draft", [self.beta])
+        before = self.home_entries()
+        for name in ("gone", "draft", "Work Station", "../workstation"):
+            with self.subTest(name=name):
+                result = self.run_reconciler("--profile", name)
+                self.assert_reconcile_fails(result, "profiles at HEAD: workstation")
+                self.assertIn("scripts/reconcile-skills.sh --profile <name>", result.stderr)
+                self.assertEqual(self.record.read_text(encoding="utf-8"), "workstation\n")
+                self.assertEqual(self.home_entries(), before)
+
+    def test_usage_names_the_profile_option(self) -> None:
+        for args in (("--profile",), ("--check", "--profile", "workstation"), ("--profile", "workstation", "--check"),
+                     ("--profile=workstation",), ("workstation",)):
+            with self.subTest(args=args):
+                result = self.run_reconciler(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stderr, "usage: scripts/reconcile-skills.sh [--check | --profile <name>]\n")
+
     def test_projects_only_committed_selection_and_converges(self) -> None:
         first = self.run_reconciler()
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -167,6 +244,11 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertEqual(result.stdout.strip(), "skills are reconciled")
         self.assertEqual(command.resolve(), self.repo / "scripts/select-skills.py")
 
+        command.unlink()
+        result = self.run_reconciler("--profile", "workstation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(command.resolve(), self.repo / "scripts/select-skills.py")
+
     def test_plan_reads_the_explicit_checkout_root(self) -> None:
         with patch.dict(os.environ, {"HOME": str(self.home)}):
             plan = build_plan(self.repo)
@@ -176,7 +258,7 @@ raise SystemExit(m.main(sys.argv[4:]))
                 {(self.home / directory / "alpha", str(self.source / "skills/engineering/alpha"))
                  for directory in (AGENTS_DIR, CLAUDE_DIR)},
             )
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assert_untouched()
 
     def test_python_entrypoint_works_from_another_directory(self) -> None:
         command = [sys.executable, str(self.repo / "scripts/reconcile_skills.py")]
@@ -196,7 +278,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assert_reconcile_fails(
             result, "required install input is not tracked: scripts/skill_catalog.py",
         )
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assert_untouched()
 
     def test_untracked_sources_manifest_fails_the_gate(self) -> None:
         git(["rm", "--cached", "sources.toml"], self.repo)
@@ -205,7 +287,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assert_reconcile_fails(
             result, "required install input is not tracked: sources.toml",
         )
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assert_untouched()
 
     def test_modified_catalog_module_fails_the_gate(self) -> None:
         module = self.repo / "scripts/skill_catalog.py"
@@ -213,7 +295,7 @@ raise SystemExit(m.main(sys.argv[4:]))
                           encoding="utf-8")
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "tracked skillset changes are not committed")
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assert_untouched()
 
     def test_additional_submodule_requires_an_explicit_skill_selection(self) -> None:
         self.fixture.add_source("other/tool", {
@@ -281,7 +363,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertEqual(result.returncode, 1)  # missing links, but guard itself did not fire
         self.assertNotIn("forbidden git", result.stderr)
         self.assertIn("missing:", result.stderr)
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
         guarded = {"PATH": f"{guard}:{os.environ['PATH']}", "GIT_NO_LAZY_FETCH": "0"}
         applied = self.run_reconciler(extra_env=guarded)
         self.assertEqual(applied.returncode, 0, applied.stderr)
@@ -402,16 +484,17 @@ raise SystemExit(m.main(sys.argv[4:]))
 
     def test_install_directory_and_parent_symlinks_are_rejected(self) -> None:
         outside = self.base / "outside"
-        outside.mkdir()
         agents = self.home / ".agents"
+        agents.rename(outside)
         agents.symlink_to(outside)
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "managed directory is a symlink")
-        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual([path.name for path in outside.rglob("*")], [".skillset", "profile"])
 
         agents.unlink()
+        outside.rename(agents)
+        outside.mkdir()
         install_dir = self.home / ".agents/skills"
-        install_dir.parent.mkdir()
         install_dir.symlink_to(outside)
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "managed directory is a symlink")
@@ -421,7 +504,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         (self.home / ".claude").write_text("preserve", encoding="utf-8")
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "managed parent is not a directory")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assertEqual(self.home_entries(), [".agents", ".agents/.skillset", ".agents/.skillset/profile", ".claude"])
         self.assertEqual((self.home / ".claude").read_text(encoding="utf-8"), "preserve")
 
     def test_deleted_selected_skill_blocks_install_until_its_line_is_removed(self) -> None:
@@ -469,13 +552,13 @@ raise SystemExit(m.main(sys.argv[4:]))
         result = self.run_reconciler(repo=clone)
         self.assert_reconcile_fails(result, "source is missing or uninitialized")
         self.assertFalse((clone / "sources/acme/skills/.git").exists())
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
 
     def test_dirty_source_fails_before_install_directory_changes(self) -> None:
         (self.source / "skills/engineering/alpha/SKILL.md").write_text("changed", encoding="utf-8")
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "source checkout is dirty")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
 
     def test_wrong_source_revision_fails_before_install_directory_changes(self) -> None:
         write_skill(self.source, "skills/misc/new-commit")
@@ -484,7 +567,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertNotEqual(git(["rev-parse", "HEAD"], self.source), self.initial_source_commit)
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "source revision mismatch")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
 
     def test_uncommitted_aggregate_configuration_is_rejected(self) -> None:
         (self.repo / "profiles/workstation.txt").write_text("# uncommitted change\n", encoding="utf-8")
@@ -494,7 +577,7 @@ raise SystemExit(m.main(sys.argv[4:]))
                 self.assert_reconcile_fails(result, "tracked skillset changes are not committed")
                 self.assertIn("profiles/workstation.txt", result.stderr)
                 self.assertIn("run select-skills and choose Install", result.stderr)
-                self.assertEqual(list(self.home.iterdir()), [])
+                self.assert_untouched()
 
     def test_committed_gate_allows_only_the_profile_being_committed(self) -> None:
         readme = self.repo / "README.md"
@@ -556,7 +639,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "not committed")
         self.assertNotEqual(newer, self.initial_source_commit)
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
 
     def test_ignored_untracked_selected_content_is_rejected(self) -> None:
         (self.source / ".gitignore").write_text("skills/engineering/shadow/\n", encoding="utf-8")
@@ -570,7 +653,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.commit_skillset()
         result = self.run_reconciler()
         self.assert_reconcile_fails(result, "name is missing at the pinned commit")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
 
     def test_relocation_uses_recorded_old_target_to_relink(self) -> None:
         self.assertEqual(self.run_reconciler().returncode, 0)
@@ -671,7 +754,7 @@ raise SystemExit(m.main(sys.argv[4:]))
                     self.assert_reconcile_fails(result, "invalid variant skill")
                     self.assertIn(str(invalid / "SKILL.md"), result.stderr)
                     self.assertIn("unsupported frontmatter", result.stderr)
-                    self.assertEqual(list(self.home.iterdir()), [])
+                    self.assert_untouched()
 
     def test_receipt_before_publication_recovers_without_adopting(self) -> None:
         failed = self.run_reconciler(extra_env={"SKILLSET_TEST_FAIL_AT": "after-receipt-create"})
@@ -737,7 +820,7 @@ raise SystemExit(m.main(sys.argv[4:]))
             },
         )
         self.assert_reconcile_fails(result, "skill links belong to the primary checkout")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
         self.assertFalse((self.home / ".local").exists())
 
     def test_historical_commit_reconstructs_its_source_gitlink_and_selection(self) -> None:
@@ -800,7 +883,6 @@ raise SystemExit(m.main(sys.argv[4:]))
 
     def test_symlinked_lock_does_not_create_or_write_its_target(self) -> None:
         lock = self.home / ".agents/.skillset/lock"
-        lock.parent.mkdir(parents=True)
         target = self.base / "unrelated-lock-target"
         lock.symlink_to(target)
         self.assert_reconcile_fails(self.run_reconciler(), "symlink")
@@ -809,7 +891,6 @@ raise SystemExit(m.main(sys.argv[4:]))
 
     def test_non_regular_lock_is_rejected_without_opening_it(self) -> None:
         lock = self.home / ".agents/.skillset/lock"
-        lock.parent.mkdir(parents=True)
         os.mkfifo(lock)
         self.assert_reconcile_fails(self.run_reconciler(), "lock is not a regular file")
 
@@ -819,7 +900,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         owner.rename(moved)
         owner.symlink_to(moved)
         self.assert_reconcile_fails(self.run_reconciler(), "source path traverses a symlink")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
 
     def test_staged_gitlink_guard_overrides_local_ignore_setting(self) -> None:
         file = self.source / "skills/engineering/alpha/SKILL.md"
@@ -835,7 +916,7 @@ raise SystemExit(m.main(sys.argv[4:]))
              str(self.origin), "nested"], self.source)
         self.commit_source()
         self.assert_reconcile_fails(self.run_reconciler(), "nested source submodules are unsupported")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
 
     def test_missing_receipt_never_reclaims_same_target_install_directory(self) -> None:
         self.assertEqual(self.run_reconciler().returncode, 0)
@@ -918,13 +999,13 @@ raise SystemExit(m.main(sys.argv[4:]))
         (self.repo / ".gitmodules").write_text("[not valid config\n")
         self.commit_skillset()
         self.assert_reconcile_fails(self.run_reconciler(), "git config")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
 
     def test_missing_committed_source_url_is_rejected(self) -> None:
         (self.repo / ".gitmodules").write_text('[submodule "sources/acme/skills"]\npath = sources/acme/skills\n')
         self.commit_skillset()
         self.assert_reconcile_fails(self.run_reconciler(), "no committed URL")
-        self.assertFalse((self.home / ".agents").exists())
+        self.assert_untouched()
 
     def test_missing_or_empty_tracked_branch_is_rejected(self) -> None:
         entry = f'[submodule "sources/acme/skills"]\npath = sources/acme/skills\nurl = {self.origin}\n'
@@ -934,7 +1015,7 @@ raise SystemExit(m.main(sys.argv[4:]))
                 self.commit_skillset()
                 self.assert_reconcile_fails(self.run_reconciler(),
                                             "submodule has no tracked branch: sources/acme/skills")
-                self.assertFalse((self.home / ".agents").exists())
+                self.assert_untouched()
 
 
 
@@ -945,7 +1026,7 @@ class InstallInterfaceTests(unittest.TestCase):
         self.base = Path(temporary.name)
         self.fixture = SkillsetFixture(self.base, {
             "acme/skills": {"skills/alpha": "alpha", "skills/beta": "beta"},
-        }, {"workstation": ["acme/skills:alpha"]})
+        }, {"workstation": ["acme/skills:alpha"]}, record="workstation")
         self.repo = self.fixture.repo
         self.home = self.fixture.home
         environment = patch.dict(os.environ, {"HOME": str(self.home)})
