@@ -213,6 +213,16 @@ class OtherProfileSaveTests(ProfileCase):
             self.assertEqual(self.text(app, "#message"), "⎿ Reloaded profiles/llm.txt. Unsaved changes discarded.")
             self.assertTrue(self.text(app, "#title").endswith("0 selected · 0 unsaved · not committed"))
 
+    async def test_update_key_asks_to_save_and_commit_unsaved_changes_to_another_profile(self) -> None:
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "up", "enter")
+            await self.started(pilot)
+            await pilot.press("right", "space", "ctrl+u")
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Cannot update sources: the selection has unsaved changes; save and commit first")
+
 
 class NewProfileTests(ProfileCase):
     """n and c start a profile that exists only in the selector until it is saved."""

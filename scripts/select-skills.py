@@ -1302,7 +1302,9 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             Text(f"⎿ Reloaded {skill_catalog.profile_path(self.profile)}. Unsaved changes discarded."))
 
     def action_update(self) -> None:
-        reason = ("the selection has unsaved changes; save and install first" if self.draft.unsaved
+        # The update refuses any profile file that differs from HEAD, so saving alone is not enough.
+        then = "install" if self.profile == self.active else "commit"
+        reason = (f"the selection has unsaved changes; save and {then} first" if self.draft.unsaved
                   else update_sources.update_blocker(self.root))
         message = self.query_one("#message", Static)
         if reason:
