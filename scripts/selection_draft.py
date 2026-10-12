@@ -26,20 +26,31 @@ class Store(Protocol):
 
 
 class CheckoutStore:
-    """A profile's file in a checkout, with HEAD's copy read through Git."""
+    """A profile's file in a checkout, with HEAD's copy read through Git.
 
-    def __init__(self, root: Path, profile: str) -> None:
+    A profile with no file yet reads as `start` until it is written.
+    """
+
+    def __init__(self, root: Path, profile: str, *, start: str | None = None) -> None:
         self.root = root
         self.profile = profile
+        self.start = start
 
     def read(self) -> str:
+        path = self.root / skill_catalog.profile_path(self.profile)
+        if self.start is not None and not path.is_symlink() and not path.exists():
+            return self.start
         return skill_catalog.read_selection_text(self.root, self.profile)
 
     def write(self, content: str) -> None:
         (self.root / skill_catalog.profile_path(self.profile)).write_bytes(content.encode("utf-8"))
 
     def head(self) -> str:
-        return skill_catalog.git(["show", f"HEAD:{skill_catalog.profile_path(self.profile)}"], cwd=self.root)
+        """HEAD's copy, or "" for a profile not committed yet."""
+        path = skill_catalog.profile_path(self.profile)
+        if not skill_catalog.git(["ls-tree", "--name-only", "HEAD", "--", path], cwd=self.root):
+            return ""
+        return skill_catalog.git(["show", f"HEAD:{path}"], cwd=self.root)
 
 
 class MemoryStore:
@@ -136,16 +147,22 @@ class SelectionDraft:
     """
 
     def __init__(self, store: Store, selected: dict[Key, str], off_catalog: dict[int, ResolvedLine],
-                 content: str, head: Counter[str]) -> None:
+                 content: str, head: Counter[str], new: bool) -> None:
         self._store = store
         self._selected = selected
         self._off_catalog = off_catalog
         self._content = content
         self._loaded = Counter(selected.values())
         self._head = head
+        self._new = new
 
     @classmethod
-    def load(cls, store: Store, catalog: Catalog) -> SelectionDraft:
+    def load(cls, store: Store, catalog: Catalog, *, new: bool = False) -> SelectionDraft:
+        """Load the store's content.
+
+        With `new`, the store holds nothing written yet, which counts as one
+        unsaved change until the first save writes it.
+        """
         content = store.read()
         head = _values(store.head())
         selected: dict[Key, str] = {}
@@ -156,7 +173,7 @@ class SelectionDraft:
                 selected[line.number] = line.value
             else:
                 selected[line.value] = line.value
-        return cls(store, selected, off_catalog, content, head)
+        return cls(store, selected, off_catalog, content, head, new)
 
     def __contains__(self, key: Key) -> bool:
         return key in self._selected
@@ -175,9 +192,9 @@ class SelectionDraft:
 
     @property
     def unsaved(self) -> int:
-        """Multiset distance from the content last loaded or saved."""
+        """Multiset distance from the content last loaded or saved, plus one for a new draft never saved."""
         current = self._current()
-        return (current - self._loaded).total() + (self._loaded - current).total()
+        return (current - self._loaded).total() + (self._loaded - current).total() + self._new
 
     @property
     def changes(self) -> Changes:
@@ -237,6 +254,7 @@ class SelectionDraft:
         if wrote:
             content = skill_catalog.format_selection(self._selected.values())
             self._store.write(content)
+        self._new = False
         self._content = content
         self._loaded = self._current()
         return Saved(wrote)

@@ -214,6 +214,191 @@ class OtherProfileSaveTests(ProfileCase):
             self.assertTrue(self.text(app, "#title").endswith("0 selected · 0 unsaved · not committed"))
 
 
+class NewProfileTests(ProfileCase):
+    """n and c start a profile that exists only in the selector until it is saved."""
+
+    async def name(self, pilot, name: str) -> None:
+        await pilot.press("ctrl+a", "ctrl+k", *name, "enter")
+
+    async def test_n_asks_for_a_valid_untaken_name_and_edits_an_empty_unsaved_profile(self) -> None:
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p")
+            self.assertIn("n new", self.text(app, "#dialog-hint"))
+            await pilot.press("n")
+            self.assertIsInstance(app.screen, selector.NameDialog)
+            self.assertEqual(self.text(app, "#dialog-title"), "New profile")
+            self.assertEqual(self.text(app, "#dialog-details"),
+                             "Starts empty. It exists only in the selector until you save it.")
+            await self.name(pilot, "Laptop")
+            self.assertEqual(self.text(app, "#name-error"),
+                             "use 1-64 lowercase letters, digits or single hyphens")
+            await self.name(pilot, "llm")
+            self.assertEqual(self.text(app, "#name-error"), "llm already exists")
+            await self.name(pilot, "laptop")
+            await self.started(pilot)
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#title"),
+                             "✻ Skill selector  laptop  · this home uses workstation   0 selected · 1 unsaved")
+            self.assertEqual(self.text(app, "#message"),
+                             "⎿ Created laptop. It exists only in the selector until you save it.")
+            await pilot.press("ctrl+p")
+            self.assertIn("laptop            0 skills  1 unsaved", self.lines(app, "choices"))
+        self.assertFalse((self.repo / "profiles/laptop.txt").exists())
+
+
+    async def test_c_copies_the_highlighted_profiles_saved_lines_into_an_independent_profile(self) -> None:
+        write_profile(self.repo, "llm", ["mattpocock/skills:tdd", "mattpocock/skills:prototype"])
+        llm = (self.repo / "profiles/llm.txt").read_bytes()
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "up", "c")
+            self.assertEqual(self.text(app, "#dialog-title"), "Copy llm as")
+            self.assertEqual(self.text(app, "#dialog-details"),
+                             "Starts as a copy of llm; the two stay independent afterwards. "
+                             "It exists only in the selector until you save it.")
+            await pilot.press("escape")
+            self.assertFalse(app.screen.is_modal)
+            self.assertIn("workstation  · used here", self.text(app, "#title"))
+            await pilot.press("ctrl+p", "up", "c")
+            await self.name(pilot, "llm-lite")
+            await self.started(pilot)
+            self.assertEqual(self.text(app, "#title"),
+                             "✻ Skill selector  llm-lite  · this home uses workstation   2 selected · 1 unsaved")
+            await pilot.press("right", "space", "ctrl+p")
+            self.assertEqual(self.lines(app, "choices")[1], "llm-lite          2 skills  2 unsaved")
+            await pilot.press("escape", "ctrl+s", "3")
+            await self.started(pilot)
+            self.assertEqual(self.text(app, "#message"), "⎿ Saved profiles/llm-lite.txt. Not committed.")
+        self.assertEqual((self.repo / "profiles/llm-lite.txt").read_text().splitlines()[1:],
+                         ["mattpocock/skills:tdd"])
+        self.assertEqual((self.repo / "profiles/llm.txt").read_bytes(), llm)
+
+
+    async def test_switching_away_after_the_prompt_or_quitting_drops_it_without_a_file(self) -> None:
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "n")
+            await self.name(pilot, "laptop")
+            await pilot.press("ctrl+p", "down", "enter")
+            self.assertEqual(self.text(app, "#dialog-title"), "Switch to llm with unsaved changes?")
+            await pilot.press("1")
+            self.assertIn("laptop  · this home uses workstation", self.text(app, "#title"))
+            await pilot.press("ctrl+p", "down", "enter", "3")
+            await self.started(pilot)
+            self.assertIn("llm  · this home uses workstation", self.text(app, "#title"))
+            await pilot.press("ctrl+p")
+            self.assertEqual([line.split()[0] for line in self.lines(app, "choices")],
+                             ["llm", "workstation", "zeroshot-review"])
+            await pilot.press("escape", "ctrl+p", "c")
+            await self.name(pilot, "laptop")
+            await pilot.press("escape")
+            self.assertEqual(self.text(app, "#dialog-title"), "Quit without saving?")
+            await pilot.press("3")
+            self.assertFalse(app.is_running)
+        self.assertIsNone(app.return_value)
+        self.assertEqual(sorted(path.name for path in (self.repo / "profiles").iterdir()),
+                         ["llm.txt", "workstation.txt", "zeroshot-review.txt"])
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+
+    async def test_a_new_profile_switches_away_from_unsaved_changes_only_after_the_prompt(self) -> None:
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("right", "down", "space", "ctrl+p", "n")
+            await self.name(pilot, "laptop")
+            self.assertEqual(self.text(app, "#dialog-title"), "Switch to laptop with unsaved changes?")
+            await pilot.press("1")
+            self.assertIn("workstation  · used here   2 selected · 1 unsaved", self.text(app, "#title"))
+            await pilot.press("ctrl+p", "n")
+            await self.name(pilot, "laptop")
+            await pilot.press("3")
+            await self.started(pilot)
+            self.assertIn("laptop  · this home uses workstation   0 selected · 1 unsaved", self.text(app, "#title"))
+
+
+    async def save_a_copy_of_llm(self, pilot, choice: str) -> None:
+        app = pilot.app
+        await self.started(pilot)
+        await pilot.press("ctrl+p", "up", "c")
+        await self.name(pilot, "laptop")
+        await self.started(pilot)
+        await pilot.press("ctrl+s")
+        self.assertEqual(self.text(app, "#dialog-title"), "Save laptop?")
+        self.assertEqual(self.lines(app, "choices"),
+                         ["1. Save and commit", "2. Save, commit and use it here", "3. Save only"])
+        self.assertEqual(self.text(app, "#dialog-details"),
+                         "+ mattpocock/skills:tdd\n\n"
+                         "This home uses workstation; saving laptop doesn't change what's installed here.")
+        await pilot.press(choice)
+        await self.started(pilot)
+
+    def assert_laptop_committed(self, previous: str) -> None:
+        self.assertEqual(git(["rev-parse", "HEAD^"], self.repo), previous)
+        self.assertEqual(git(["log", "-1", "--format=%B"], self.repo),
+                         "Add laptop profile (+1 -0)\n\n+ mattpocock/skills:tdd")
+        self.assertEqual(git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], self.repo),
+                         "profiles/laptop.txt")
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "")
+
+    async def test_save_and_commit_adds_the_new_profile_file_and_installs_nothing(self) -> None:
+        previous = git(["rev-parse", "HEAD"], self.repo)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.save_a_copy_of_llm(pilot, "1")
+            self.assertFalse(app.is_running)
+        self.assertEqual(git(["status", "--porcelain"], self.repo), "?? profiles/laptop.txt")
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assert_laptop_committed(previous)
+        self.assert_nothing_installed()
+        self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "workstation\n")
+
+    async def test_save_commit_and_use_it_here_records_and_installs_the_new_profile(self) -> None:
+        previous = git(["rev-parse", "HEAD"], self.repo)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.save_a_copy_of_llm(pilot, "2")
+            self.assertFalse(app.is_running)
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assert_laptop_committed(previous)
+        self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "laptop\n")
+        for directory in (".agents/skills", ".claude/skills"):
+            self.assertTrue((self.home / directory / "tdd").is_symlink())
+            self.assertFalse((self.home / directory / "prototype").exists())
+
+    async def test_a_new_profile_saved_only_can_be_edited_again_and_committed_later(self) -> None:
+        previous = git(["rev-parse", "HEAD"], self.repo)
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.save_a_copy_of_llm(pilot, "3")
+            self.assertTrue(self.text(app, "#title").endswith("laptop  · this home uses workstation   "
+                                                              "1 selected · 0 unsaved · not committed"))
+            await pilot.press("ctrl+p", "down", "down", "enter")
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "up", "up", "enter")
+            await self.started(pilot)
+            self.assertEqual(self.text(app, "#message"), "⎿ Editing laptop. This home uses workstation.")
+            await pilot.press("ctrl+s")
+            self.assertEqual(self.text(app, "#dialog-details").splitlines()[0], "+ mattpocock/skills:tdd")
+            await pilot.press("1")
+            await self.started(pilot)
+            self.assertFalse(app.is_running)
+
+        code, output = self.handoff(app.return_value)
+
+        self.assertEqual(code, 0, output)
+        self.assert_laptop_committed(previous)
+
+
 class RenameTests(ProfileCase):
     """r renames the highlighted profile, then the selector closes and commits the rename."""
 
@@ -276,17 +461,16 @@ class RenameTests(ProfileCase):
         for directory in (".agents/skills", ".claude/skills"):
             self.assertTrue((self.home / directory / "prototype").is_symlink())
 
-    async def test_a_new_name_must_follow_the_skill_name_rules_and_be_free(self) -> None:
+    async def test_a_new_name_must_be_free_and_the_same_name_or_esc_changes_nothing(self) -> None:
         head = git(["rev-parse", "HEAD"], self.repo)
         write_profile(self.repo, "saved-only", [])
         app = selector.SelectorApp(root=self.repo)
         async with app.run_test() as pilot:
-            await self.rename(pilot, ("up", "up"), "Bad Name")
-            self.assertEqual(self.text(app, "#name-error"), "use 1-64 lowercase letters, digits or single hyphens")
-            for taken in ("zeroshot-review", "saved-only"):
-                app.screen.query_one("#name-input", selector.Input).value = taken
-                await pilot.press("enter")
-                self.assertEqual(self.text(app, "#name-error"), f"{taken} already exists")
+            await self.rename(pilot, ("up", "up"), "zeroshot-review")
+            self.assertEqual(self.text(app, "#name-error"), "zeroshot-review already exists")
+            app.screen.query_one("#name-input", selector.Input).value = "saved-only"
+            await pilot.press("enter")
+            self.assertEqual(self.text(app, "#name-error"), "saved-only already exists")
             app.screen.query_one("#name-input", selector.Input).value = " llm "
             await pilot.press("enter")
             self.assertFalse(app.screen.is_modal)
@@ -309,6 +493,19 @@ class RenameTests(ProfileCase):
             self.assertFalse(app.screen.is_modal)
             self.assertEqual(self.text(app, "#message"),
                              "⎿ Cannot rename llm: profiles/llm.txt is not committed; save and commit it first")
+
+    async def test_rename_and_delete_are_refused_for_a_new_profile_never_saved(self) -> None:
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+p", "n", "ctrl+a", "ctrl+k", *"fresh", "enter")
+            await self.started(pilot)
+            self.assertIn("fresh  · this home uses workstation   0 selected · 1 unsaved", self.text(app, "#title"))
+            for key, verb in (("r", "rename"), ("d", "delete")):
+                await pilot.press("ctrl+p", key)
+                self.assertFalse(app.screen.is_modal)
+                self.assertEqual(self.text(app, "#message"),
+                                 f"⎿ Cannot {verb} fresh: save or discard the unsaved changes first")
 
 
 class DeleteTests(ProfileCase):

@@ -650,6 +650,13 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertNotIn("profiles/workstation.txt", str(caught.exception))
         self.assertNotIn("run select-skills and choose Install", str(caught.exception))
 
+    def test_committed_gate_allows_a_new_untracked_profile_only_when_committing_it(self) -> None:
+        write_profile(self.repo, "laptop", [self.beta])
+        ensure_skillset_committed(self.repo, "laptop", committing=True)
+        with self.assertRaises(ReconcileError) as caught:
+            ensure_skillset_committed(self.repo, "laptop")
+        self.assertIn("required install input is not tracked: profiles/laptop.txt", str(caught.exception))
+
     def test_other_saved_profiles_never_block_install(self) -> None:
         write_profile(self.repo, "llm", [self.beta])
         self.commit_skillset("add llm profile")

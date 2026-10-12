@@ -192,6 +192,21 @@ class SelectionDraftTests(unittest.TestCase):
         self.assertEqual(draft.unsaved, 1)
         self.assertIn("acme/skills:beta", draft)
 
+    def test_a_new_draft_counts_its_unwritten_file_as_unsaved_until_saved(self) -> None:
+        store = MemoryStore(selection("acme/skills:alpha"))
+        draft = SelectionDraft.load(store, CATALOG, new=True)
+        self.assertEqual(draft.unsaved, 1)
+        draft.toggle("acme/skills:beta")
+        self.assertEqual(draft.unsaved, 2)
+        draft.toggle("acme/skills:beta")
+        self.assertEqual(draft.save(install=True), Saved(True))
+        self.assertEqual(store.read(), selection("acme/skills:alpha"))
+        self.assertEqual(draft.unsaved, 0)
+
+    def test_an_empty_new_draft_is_still_unsaved(self) -> None:
+        draft = SelectionDraft.load(MemoryStore(SELECTION_HEADER + "\n"), CATALOG, new=True)
+        self.assertEqual((len(draft), draft.unsaved), (0, 1))
+
     def test_install_is_blocked_while_an_off_catalog_line_is_selected(self) -> None:
         draft, _ = self.load(selection("acme/skills:alpha", "unknown/source:x"))
         self.assertEqual(draft.install_blocker, INSTALL_BLOCKED)
@@ -211,6 +226,18 @@ class CheckoutStoreTests(unittest.TestCase):
             self.assertEqual(store.read(), "# new\r\nzebra/tools:omega\n")
             self.assertEqual(store.head(), committed.rstrip("\n"))
             self.assertIn("profiles/workstation.txt", git(["status", "--porcelain"], fixture.repo))
+
+
+    def test_a_profile_without_a_file_reads_its_start_content_and_has_no_head(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="skillset-draft-test-") as temp:
+            fixture = SkillsetFixture(Path(temp), {}, {"workstation": ["acme/skills:alpha"]})
+            store = CheckoutStore(fixture.repo, "llm", start=selection("acme/skills:beta"))
+            self.assertEqual(store.read(), selection("acme/skills:beta"))
+            self.assertEqual(store.head(), "")
+            self.assertFalse((fixture.repo / "profiles/llm.txt").exists())
+            store.write("acme/skills:alpha\n")
+            self.assertEqual(store.read(), "acme/skills:alpha\n")
+            self.assertEqual(CheckoutStore(fixture.repo, "llm").head(), "")
 
 
 if __name__ == "__main__":

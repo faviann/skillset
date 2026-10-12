@@ -125,8 +125,8 @@ def require_primary_checkout(root: Path) -> str:
 def ensure_skillset_committed(root: Path, profile: str, *, committing: bool = False) -> None:
     """Reject tracked changes except to profiles this home does not install.
 
-    With `committing`, changes to the active profile pass too, because the
-    caller commits that file next.
+    With `committing`, changes to the profile pass too, and so does its file
+    being untracked (a new profile), because the caller commits that file next.
     """
     path = profile_path(profile)
     changed: set[str] = set()
@@ -145,7 +145,7 @@ def ensure_skillset_committed(root: Path, profile: str, *, committing: bool = Fa
             + "\n".join(f"  {item}" for item in sorted(changed))
             + ("\nrun select-skills and choose Install" if path in changed else "")
         )
-    for item in (".gitmodules", path, "sources.toml", "scripts/reconcile-skills.sh",
+    for item in (".gitmodules", *([] if committing else [path]), "sources.toml", "scripts/reconcile-skills.sh",
                  "scripts/reconcile_skills.py", "scripts/skill_catalog.py"):
         if git(["ls-files", "-z", "--", item], cwd=root) != item + "\0":
             raise ReconcileError(f"required install input is not tracked: {item}")
