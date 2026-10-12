@@ -47,23 +47,24 @@ selector. The `ctrl+u update` hint is in the accent color when the highlighted
 source has an update.
 
 Ctrl+S reviews additions and removals against the last commit. **Save and install**
-is the default: it writes `skills.txt`, closes the selector, commits only that
-file if needed, and installs in your terminal. When the branch is ahead of its
+is the default: it writes `profiles/workstation.txt`, closes the selector, commits
+only that file if needed, as `Update workstation profile (+N -M)`, and installs in
+your terminal. When the branch is ahead of its
 upstream, it reminds you to run `git push`; the selector never pushes. Install
 failures keep the commit, and commit failures keep the saved file without
 installing. This choice is disabled with a reason in linked worktrees, on a
-detached HEAD, during a merge or rebase, when other tracked changes are uncommitted,
+detached HEAD, during a merge or rebase, when tracked changes outside `profiles/` are uncommitted,
 when untracked files exist under `scripts/`, or while selected entries remain
 under **Not in catalog**.
 
-The title shows **not installed** when `skills.txt` differs from HEAD or a
+The title shows **not installed** when `profiles/workstation.txt` differs from HEAD or a
 read-only installation check finds links to update or fails. Ctrl+S then offers
 **Install** even with no unsaved changes; it preserves the saved file and
 commits only if needed. A failed check appears on the message line and disables
 Install with its reason. After an install failure, run the skill selector again
 and choose Install.
 
-**Save only** rewrites `skills.txt` in sorted order with its standard header and
+**Save only** rewrites `profiles/workstation.txt` in sorted order with its standard header and
 stays open. It becomes the default when Save and install is unavailable.
 **Keep editing** returns to the selection. The title counts unsaved changes
 relative to the last loaded or saved file. If the file changed on disk, saving
@@ -73,7 +74,8 @@ changes. Entries that no longer resolve appear first under **Not in catalog**
 with their reasons; deselect them to remove them, or leave them to preserve them
 on save. Duplicate selected names must be resolved before saving.
 
-You can also edit `skills.txt` by hand. Each selection line is
+You can also edit a profile by hand. Uncommitted changes to profiles other than
+`workstation` never block committing or installing. Each selection line is
 `owner/repo:name`: `owner/repo` is the source's folder under `sources/`,
 and `name` is the skill's frontmatter name. Neither part may contain `:`.
 For example, `faviann/agent-skills:publish-artifact` selects that named skill
@@ -96,7 +98,7 @@ frontmatter or harness identity.
 Installed links expose the live checkout's sources directly, so a pin never
 changes there by hand. Make, commit and publish skill edits in the source's own
 repository first. Then run the update command from the live checkout, on
-`main`, with `skills.txt` committed:
+`main`, with `profiles/workstation.txt` committed:
 
 ```bash
 scripts/update-sources.sh
@@ -140,7 +142,7 @@ sources show nothing to do.
 The command refuses to start, with the reason, outside the primary checkout,
 off `main`, on a detached `HEAD`, during a merge or rebase, with uncommitted
 tracked changes, with untracked files under `scripts/`, or with uncommitted
-`skills.txt` changes. It does not refuse a committed selection that is under
+`profiles/workstation.txt` changes, naming the file. It does not refuse a committed selection that is under
 **Not in catalog**, because the update may be what makes it resolve. It never
 pushes to a source repository.
 
@@ -207,7 +209,7 @@ git -C sources/owner/repo checkout --detach <reviewed-commit>
 rejects a source without one. Pass the repository's default branch, which
 `git ls-remote --symref https://github.com/owner/repo.git HEAD` prints.
 
-To remove a source, remove its selected lines from `skills.txt` and its
+To remove a source, remove its selected lines from every profile and its
 `sources.toml` entry, then remove the submodule.
 
 In the same change, refresh `sources.toml`. Declare each source's harness
@@ -235,13 +237,13 @@ The selector marks skills changed since that commit as `(forked)`, and
 `--check` reports an `upstream` that is not an ancestor of the pin.
 
 If the new source commit removes or renames selected skills, update
-`skills.txt` in the same commit. Moving a skill within its source while keeping
+every profile that selects them in the same commit. Moving a skill within its source while keeping
 its frontmatter name leaves its selection valid; the install relinks it at the
 new location. Commit `.gitmodules`, the gitlinks, `sources.toml` and any
 selection changes together:
 
 ```bash
-git add .gitmodules sources/owner/repo sources.toml skills.txt
+git add .gitmodules sources/owner/repo sources.toml profiles
 git commit -m "Update owner/repo source pin"
 ```
 

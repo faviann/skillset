@@ -34,8 +34,8 @@ were loaded from and against the committed selection.
 _Avoid_: Working selection, pending changes
 
 **Profile**:
-A named selection. Which machine, person, or harness uses a profile is a
-separate concern; v1 has exactly one profile, which is unnamed.
+A named selection of skills, kept as its own file. Profiles are independent;
+none builds on another. Which home uses a profile is a separate concern.
 _Avoid_: Config, preset
 
 **Harness**:

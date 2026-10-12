@@ -23,7 +23,11 @@ by faviann live in the first-party source `faviann/agent-skills`, at
 `.gitmodules` records the fetch URL, the tracked branch and the canonical source
 path. Every entry must declare `branch`. The superproject gitlink is the only
 source-commit lock; the tracked branch never changes which commit is installed.
-`skills.txt` lists selected skills as
+Each profile, `profiles/<name>.txt`, is a complete, independent selection; none
+builds on another. Profile names follow the skill-name rules: 1-64 lowercase
+ASCII letters, digits or hyphens, with no leading, trailing or consecutive
+hyphens. A profile may be empty. Every home installs the `workstation` profile
+for now. A profile lists selected skills as
 `owner/repo:name`, where `owner/repo` is the source folder under `sources/` and
 `name` is the frontmatter identity. Path selections are rejected. The catalog
 resolves these identities at the pinned commit, so moving a skill within its
@@ -202,7 +206,8 @@ than hiding a possible collision. Project skills, plugins, built-ins and cloud
 skill stores are outside this directory-level check.
 
 An install rejects linked worktrees, symlinked destination/state parents,
-uncommitted tracked superproject files (including staged gitlinks), missing or
+uncommitted tracked superproject files (including staged gitlinks) other than
+profiles the home does not install, missing or
 wrong-revision sources, dirty sources, and ignored/untracked selected content.
 Nested source submodules are deliberately unsupported for now; rejecting them
 is smaller and safer than claiming incomplete recursive validation.

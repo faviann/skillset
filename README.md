@@ -10,8 +10,10 @@ be materialized consistently for interactive use or consumed by execution
 systems such as Broodling and ZeroShot.
 
 Skill contents stay in independent source repositories. Git submodule pointers
-pin their exact commits; [skills.txt](skills.txt) explicitly selects the skills
-to expose. Adding a source or adding a skill upstream does not install it.
+pin their exact commits. Each profile, a file `profiles/<name>.txt` named after
+its use, explicitly selects the skills to expose; every home installs
+[workstation](profiles/workstation.txt) for now. Adding a source or adding a
+skill upstream does not install it.
 
 Each source lives under `sources/<owner>/<repo>`, named after its canonical
 repository, and its gitlink is its pin. `scripts/update-sources.sh` moves pins
@@ -54,7 +56,7 @@ selector; otherwise, run `select-skills` when ready. Setup installs no skills.
 Rerun `./setup.sh` to restore missing or stale sources.
 
 In the selector, choose skills, then press Ctrl+S and choose **Save and
-install**. That commits `skills.txt` in the live checkout and links the selected
+install**. That commits `profiles/workstation.txt` in the live checkout and links the selected
 skills into the install directories `~/.agents/skills` and `~/.claude/skills`.
 To move one source's pin, highlight it in the selector and press Ctrl+U. To
 move every pin, run `scripts/update-sources.sh` from the live checkout. See the
@@ -72,7 +74,7 @@ skills. Selecting a variant does not avoid it.
 **Existing workstation:** migrate the legacy links from `~/repos/skills` by hand
 and switch the dotfiles invocation before using this as the live installer;
 skillset never removes links it did not create. If you installed with an earlier
-skillset version, `skills.txt` is now empty: path selections are not converted,
+skillset version, your selection is now empty: path selections are not converted,
 and the next install removes the links skillset made for them. Select skills
 again with `select-skills`. This repository has not changed the workstation's
 existing links or its dotfiles hook. See the [workflow and migration
