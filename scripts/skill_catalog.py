@@ -512,21 +512,19 @@ def committed_selection_text(root: Path, profile: str) -> str:
         raise ReconcileError(f"could not read {path} at HEAD as UTF-8") from error
 
 
-def profile_problems(root: Path, catalog: Catalog) -> dict[str, list[str]]:
+def profile_problems(root: Path, catalog: Catalog) -> list[str]:
     """Validate every profile committed at HEAD of root against catalog.
 
-    Maps each broken profile's name to its problems, each located at
+    Returns every problem, profile by profile, each located at
     profiles/<name>.txt:<line>. Profiles are read as committed, because that is
     what every home installs; uncommitted edits are not checked.
     """
-    problems = {}
+    problems = []
     for profile in list_profiles(root):
         try:
-            found = catalog.resolve(committed_selection_text(root, profile)).problems(profile)
+            problems += catalog.resolve(committed_selection_text(root, profile)).problems(profile)
         except ReconcileError as error:
-            found = [str(error)]
-        if found:
-            problems[profile] = found
+            problems.append(str(error))
     return problems
 
 

@@ -242,7 +242,7 @@ def check_installable(worktree: Path, catalog: Catalog) -> None:
     if profile := home_profile(worktree):
         ensure_skillset_committed(worktree, profile)
     # Every profile, not only this home's: the pushed pin reaches every home.
-    if problems := [problem for found in profile_problems(worktree, catalog).values() for problem in found]:
+    if problems := profile_problems(worktree, catalog):
         raise ReconcileError("\n".join(problems))
     if stale := stale_upstreams(catalog):
         raise ReconcileError("\n".join(stale))

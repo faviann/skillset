@@ -261,9 +261,8 @@ class CatalogTests(unittest.TestCase):
         write_profile(self.repo, "llm", ["acme/skills:alpha"])
         write_profile(self.repo, "review", ["unknown/skills:alpha"])
         write_profile(self.repo, "draft", ["not a value"])
-        self.assertEqual(profile_problems(self.repo, load_catalog(self.repo)), {
-            "llm": ["profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:gone"],
-        })
+        self.assertEqual(profile_problems(self.repo, load_catalog(self.repo)),
+                         ["profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:gone"])
 
     def test_selection_writer_sorts_and_round_trips_even_without_catalog_entries(self) -> None:
         self.selection_text("# handwritten choices\nretired/tools:gone\n\nacme/skills:alpha\n")

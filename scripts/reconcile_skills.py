@@ -409,10 +409,11 @@ def apply_plan(plan: Plan) -> str:
 def check(root: Path) -> int:
     """Report every profile's problems and this home's install state, changing nothing."""
     head, profile, catalog = read_inputs(root)
-    broken = profile_problems(root, catalog)
-    findings = [problem for problems in broken.values() for problem in problems]
-    if profile not in broken:
-        plan = plan_links(head, catalog.resolve(read_selection_text(root, profile)).install_targets(profile))
+    findings = profile_problems(root, catalog)
+    # read_inputs refused a file that differs from HEAD, so this is the copy profile_problems checked.
+    resolution = catalog.resolve(read_selection_text(root, profile))
+    if not resolution.problems(profile):
+        plan = plan_links(head, resolution.install_targets(profile))
         findings += [f"missing: {r.path}" for r in plan.creations]
         findings += [f"stale owned link: {r.path}" for r in plan.removals]
         findings += [f"stale receipt: {r.receipt}" for r in plan.receipt_cleanup]
