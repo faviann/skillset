@@ -815,7 +815,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         """
         used_here = self.profile == self.active
         self.not_installed = used_here and skill_catalog.selection_uncommitted(self.root, self.profile)
-        self.not_committed = not used_here and self.profile in self.uncommitted_profiles()
+        self.not_committed = not used_here and self.profile in skill_catalog.uncommitted_profiles(self.root)
         self.install_error = None
         self.install_check = None
         if used_here and not self.not_installed:
@@ -842,23 +842,11 @@ class SelectorApp(App[Callable[[Path], int] | None]):
 
     def profile_names(self) -> list[str]:
         """Profiles at HEAD or on disk, and the edited one, sorted."""
-        names = {self.profile, *skill_catalog.list_profiles(self.root)}
-        directory = self.root / skill_catalog.PROFILES_DIR
-        if directory.is_dir() and not directory.is_symlink():
-            names.update(path.stem for path in directory.glob("*.txt")
-                         if skill_catalog.valid_name(path.stem) and path.is_file() and not path.is_symlink())
-        return sorted(names)
-
-    def uncommitted_profiles(self) -> set[str]:
-        """Profiles whose file differs from HEAD, including files Git does not track yet."""
-        status = skill_catalog.git(["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all",
-                                    "--", f"{skill_catalog.PROFILES_DIR}/"], cwd=self.root)
-        paths = {entry[3:] for entry in status.split("\0") if entry}
-        return {name for name in self.profile_names() if skill_catalog.profile_path(name) in paths}
+        return sorted({self.profile, *skill_catalog.profile_names(self.root)})
 
     def profile_rows(self) -> list[Row]:
         names = self.profile_names()
-        uncommitted = self.uncommitted_profiles()
+        uncommitted = skill_catalog.uncommitted_profiles(self.root)
         width = max(map(cell_len, names)) + 3
         rows = []
         for name in names:
@@ -994,7 +982,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         """
         if self.draft.unsaved:
             return "save or discard the unsaved changes first"
-        if name not in skill_catalog.list_profiles(self.root) or name in self.uncommitted_profiles():
+        if name not in skill_catalog.list_profiles(self.root) or name in skill_catalog.uncommitted_profiles(self.root):
             return f"{skill_catalog.profile_path(name)} is not committed; save and commit it first"
         return reconcile_skills.selection_install_blocker(self.root, name)
 

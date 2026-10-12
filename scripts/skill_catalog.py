@@ -25,7 +25,8 @@ PROFILES_DIR = "profiles"
 SELECTION_HEADER = "# Written by the skill selector. Comments and ordering are not kept."
 UPDATE_AVAILABLE = "update available"
 FORK_BEHIND_UPSTREAM = "fork behind upstream"
-NOT_A_PROFILE = "not a profile; name a profile profiles/<name>.txt, with 1-64 lowercase letters, digits or single hyphens"
+NOT_A_PROFILE = ("not a profile; name a profile profiles/<name>.txt, "
+                 "with 1-64 lowercase letters, digits or single hyphens")
 
 
 class ReconcileError(Exception):
@@ -198,6 +199,29 @@ def committed_profiles(root: Path) -> tuple[list[str], list[str]]:
 def list_profiles(root: Path) -> list[str]:
     """Names of the profiles committed at HEAD, sorted. Other files under profiles/ are not profiles."""
     return committed_profiles(root)[0]
+
+
+def profile_names(root: Path) -> list[str]:
+    """Profiles committed at HEAD or saved on disk, sorted; a saved one may not be committed yet."""
+    names = set(list_profiles(root))
+    directory = root / PROFILES_DIR
+    if directory.is_dir() and not directory.is_symlink():
+        names.update(path.stem for path in directory.glob("*.txt")
+                     if valid_name(path.stem) and path.is_file() and not path.is_symlink())
+    return sorted(names)
+
+
+def uncommitted_profile_files(root: Path) -> list[str]:
+    """Paths under profiles/ that differ from HEAD, files Git does not track yet included, sorted."""
+    status = git(["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all",
+                  "--", f"{PROFILES_DIR}/"], cwd=root)
+    return sorted(entry[3:] for entry in status.split("\0") if entry)
+
+
+def uncommitted_profiles(root: Path) -> set[str]:
+    """Profiles whose file differs from HEAD, including files Git does not track yet."""
+    paths = set(uncommitted_profile_files(root))
+    return {name for name in profile_names(root) if profile_path(name) in paths}
 
 
 def parse_modules(root: Path) -> dict[str, Module]:
