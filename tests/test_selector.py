@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import CHECKOUT, SkillsetFixture, configure_git, git, redirect_github, write_selection
+from fixture import CHECKOUT, SkillsetFixture, configure_git, git, redirect_github, write_profile
 from pilot import PilotTestCase, selector
 
 
@@ -31,7 +31,7 @@ class SkillsetCase(unittest.TestCase):
         return SkillsetFixture(self.base, sources if sources is not None else {
             "acme/skills": {"skills/alpha": "alpha", "skills/beta": "beta"},
             "zebra/tools": {"tools/gamma": "gamma", "tools/omega": "omega"},
-        }, selection if selection is not None else ["acme/skills:beta"])
+        }, {"workstation": selection if selection is not None else ["acme/skills:beta"]})
 
     def metadata(self, fixture: SkillsetFixture, source: str, path: str, fields: str) -> None:
         file = fixture.sources[source] / path / "SKILL.md"
@@ -103,7 +103,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         for path in ("skills/alpha", "skills/beta"):
             self.metadata(fixture, "acme/skills", path, "category: Workflow")
         self.publish_and_pin(fixture, "acme/skills")
-        before = (fixture.repo / "skills.txt").read_bytes()
+        before = (fixture.repo / "profiles/workstation.txt").read_bytes()
         head = git(["rev-parse", "HEAD"], fixture.repo)
         subprocess.run([str(fixture.repo / "scripts/reconcile-skills.sh")],
                        env=fixture.env, capture_output=True, check=True)
@@ -138,7 +138,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIs(app.focused, skills)
             await pilot.press("escape")
             self.assertFalse(app.is_running)
-        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+        self.assertEqual((fixture.repo / "profiles/workstation.txt").read_bytes(), before)
         self.assertEqual(git(["rev-parse", "HEAD"], fixture.repo), head)
         self.assertEqual(git(["status", "--porcelain"], fixture.repo), "")
         self.assertTrue((fixture.home / ".agents/skills/beta").is_symlink())
@@ -153,7 +153,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
                       "category: Maintenance\ndescription: Repair fragile builds")
         self.metadata(fixture, "beta/tools", "omega", "category: Maintenance")
         self.publish_and_pin(fixture, "beta/tools")
-        before = (fixture.repo / "skills.txt").read_bytes()
+        before = (fixture.repo / "profiles/workstation.txt").read_bytes()
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             search = app.query_one("#search", selector.Input)
@@ -209,7 +209,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIs(app.focused, skills)
             await pilot.press("escape", "3")
             self.assertFalse(app.is_running)
-        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+        self.assertEqual((fixture.repo / "profiles/workstation.txt").read_bytes(), before)
 
     async def test_mouse_highlights_by_name_toggles_by_circle_and_chooses_dialog_rows(self) -> None:
         fixture = self.fixture()
@@ -233,7 +233,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             await pilot.press("ctrl+s")
             self.assertTrue(await pilot.click("#choices RowsView", offset=(6, 1)))
             self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
-        self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:],
+        self.assertEqual((fixture.repo / "profiles/workstation.txt").read_text().splitlines()[1:],
                          ["acme/skills:beta", "zebra/tools:omega"])
 
     async def test_details_metadata_and_current_selection(self) -> None:
@@ -416,7 +416,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         worktree = self.base / "worktree"
         git(["worktree", "add", "-q", "--detach", str(worktree)], fixture.repo)
         git(["submodule", "update", "--init", "--recursive"], worktree)
-        write_selection(worktree, ["zebra/tools:omega"])
+        write_profile(worktree, "workstation", ["zebra/tools:omega"])
         with (worktree / ".gitignore").open("a", encoding="utf-8") as file:
             file.write("\nlocal-file\n")
         app = selector.SelectorApp(root=worktree)
@@ -435,7 +435,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             "acme/skills": {"alpha": "alpha"},
             "zebra/tools": {"alpha": "alpha"},
         }, ["acme/skills:alpha"])
-        before = (fixture.repo / "skills.txt").read_bytes()
+        before = (fixture.repo / "profiles/workstation.txt").read_bytes()
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             await pilot.press("down", "right", "space")
@@ -450,12 +450,12 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIn("1 selected · 2 unsaved", self.text(app, "#title"))
             await pilot.press("left", "up")
             self.assertEqual(self.lines(app, "skills"), ["○ alpha"])
-        self.assertEqual((fixture.repo / "skills.txt").read_bytes(), before)
+        self.assertEqual((fixture.repo / "profiles/workstation.txt").read_bytes(), before)
 
     async def test_off_catalog_reasons_are_shown_and_can_only_be_deselected(self) -> None:
         fixture = SkillsetFixture(self.base, {"acme/skills": {
             "alpha": "alpha", "invalid": "wrong-name", "codex/lone": "lone",
-        }}, ["acme/skills:alpha"], sources_toml='["acme/skills".variants]\ncodex = "codex"\n')
+        }}, {"workstation": ["acme/skills:alpha"]}, sources_toml='["acme/skills".variants]\ncodex = "codex"\n')
         reasons = {
             "broken selection": "bad syntax",
             "unknown/source:lost": "unknown source",
@@ -463,7 +463,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             "acme/skills:invalid": "selected name is invalid",
             "acme/skills:lone": "name is missing at the pinned commit",
         }
-        write_selection(fixture.repo, ["acme/skills:alpha", *reasons])
+        write_profile(fixture.repo, "workstation", ["acme/skills:alpha", *reasons])
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             self.assertEqual(self.lines(app, "sources")[0], "Not in catalog")
@@ -474,6 +474,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             details = self.text(app, "#skill-metadata")
             value = next(value for value in reasons if value in details)
             self.assertIn(reasons[value], details.lower())
+            self.assertRegex(details, r"\Aprofiles/workstation\.txt:\d+\n")
             await pilot.press("space")
             self.assertIn(f"○ {value}", self.text(app, "#skills RowsView"))
             self.assertIn("1 unsaved", self.text(app, "#title"))
@@ -486,8 +487,8 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             "acme/skills": {"skills/alpha": "alpha", "skills/beta": "beta"},
             "zebra/tools": {"tools/alpha": "alpha", "tools/omega": "omega"},
         })
-        selection = fixture.repo / "skills.txt"
-        write_selection(fixture.repo, ["acme/skills:alpha", "zebra/tools:alpha", "zebra/tools:omega"])
+        selection = fixture.repo / "profiles/workstation.txt"
+        write_profile(fixture.repo, "workstation", ["acme/skills:alpha", "zebra/tools:alpha", "zebra/tools:omega"])
         before = selection.read_bytes()
         head = git(["rev-parse", "HEAD"], fixture.repo)
         app = selector.SelectorApp(root=fixture.repo)
@@ -510,7 +511,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertEqual(selection.read_text(),
                              "# Written by the skill selector. Comments and ordering are not kept.\n"
                              "acme/skills:alpha\nzebra/tools:omega\n")
-            self.assertEqual(git(["status", "--porcelain"], fixture.repo), "M skills.txt")
+            self.assertEqual(git(["status", "--porcelain"], fixture.repo), "M profiles/workstation.txt")
             await pilot.press("down", "space", "left", "up", "right", "space", "down", "space")
             self.assertIn("3 unsaved", self.text(app, "#title"))
             await pilot.press("ctrl+s")
@@ -524,14 +525,14 @@ class SelectorTests(SkillsetCase, PilotTestCase):
 
     async def test_reload_replaces_unsaved_selection_and_refreshes_baselines(self) -> None:
         fixture = self.fixture()
-        write_selection(fixture.repo, ["acme/skills:beta", "unknown/source:stale"])
-        selection = fixture.repo / "skills.txt"
+        write_profile(fixture.repo, "workstation", ["acme/skills:beta", "unknown/source:stale"])
+        selection = fixture.repo / "profiles/workstation.txt"
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             await pilot.press(*"gamma", "enter", "space", "ctrl+s")
             external = "# Changed in another window\nzebra/tools:gamma\nunknown/source:gamma-lost\nbroken gamma\n"
             selection.write_text(external, encoding="utf-8")
-            git(["add", "skills.txt"], fixture.repo)
+            git(["add", "profiles/workstation.txt"], fixture.repo)
             git(["commit", "-qm", "update selection in another window"], fixture.repo)
             await pilot.press("2")
             self.assertEqual(self.lines(app, "choices"), ["1. Reload", "2. Overwrite"])
@@ -558,7 +559,7 @@ class SelectorTests(SkillsetCase, PilotTestCase):
         names = [f"skill-{number:02}" for number in range(20)]
         fixture = self.fixture({"acme/skills": {name: name for name in names}}, [])
         values = [f"acme/skills:{name}" for name in names]
-        write_selection(fixture.repo, values)
+        write_profile(fixture.repo, "workstation", values)
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
             await pilot.press("ctrl+s")
@@ -567,11 +568,11 @@ class SelectorTests(SkillsetCase, PilotTestCase):
             self.assertIn(values[-1], await self.screen_text(pilot))
             await pilot.press("2")
             self.assertEqual(self.text(app, "#message"), "⎿ Saved. Not installed yet.")
-            self.assertEqual((fixture.repo / "skills.txt").read_text().splitlines()[1:], values)
+            self.assertEqual((fixture.repo / "profiles/workstation.txt").read_text().splitlines()[1:], values)
 
     async def test_quit_can_keep_editing_cancel_review_and_save_or_discard(self) -> None:
         fixture = self.fixture()
-        selection = fixture.repo / "skills.txt"
+        selection = fixture.repo / "profiles/workstation.txt"
         before = selection.read_bytes()
         app = selector.SelectorApp(root=fixture.repo)
         async with app.run_test() as pilot:
@@ -651,7 +652,7 @@ class SelectorStartupTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="skillset-selector-startup-")
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
-        self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}}, [])
+        self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}}, {"workstation": []})
 
     def launch(self) -> subprocess.CompletedProcess:
         # The symlink and unrelated cwd exercise the entrypoint's resolved root.

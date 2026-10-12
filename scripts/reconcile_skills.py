@@ -15,15 +15,16 @@ from skill_catalog import (
     AGENTS_DIR,
     CLAUDE_DIR,
     INSTALL_HARNESSES,
-    NAME_PATTERN,
-    SELECTION_PATH,
+    PROFILES_DIR,
     Catalog,
     ReconcileError,
     git,
     git_env,
     identity,
     load_catalog,
+    profile_path,
     read_selection_text,
+    valid_name,
 )
 
 INSTALL_DIRS = tuple(INSTALL_HARNESSES)
@@ -71,6 +72,11 @@ def home_path() -> Path:
     return Path(os.path.abspath(value))
 
 
+def active_profile() -> str:
+    """The profile this home installs. Every home uses workstation for now."""
+    return "workstation"
+
+
 def require_primary_checkout(root: Path) -> str:
     try:
         top = Path(git(["rev-parse", "--show-toplevel"], cwd=root)).resolve()
@@ -86,10 +92,13 @@ def require_primary_checkout(root: Path) -> str:
     return git(["rev-parse", "HEAD"], cwd=root)
 
 
-def ensure_skillset_committed(
-    root: Path, exempt: set[str] | frozenset[str] = frozenset(),
-) -> None:
-    """Reject tracked changes except for explicitly exempt repository-relative paths."""
+def ensure_skillset_committed(root: Path, profile: str, *, committing: bool = False) -> None:
+    """Reject tracked changes except to profiles this home does not install.
+
+    With `committing`, changes to the active profile pass too, because the
+    caller commits that file next.
+    """
+    path = profile_path(profile)
     changed: set[str] = set()
     # Check both comparisons: a staged gitlink can differ even when its worktree
     # has been returned to HEAD. Override local submodule.ignore configuration.
@@ -97,15 +106,16 @@ def ensure_skillset_committed(
         paths = git(["diff", *staged, "--name-only", "-z", "--no-ext-diff",
                      "--no-renames", "--ignore-submodules=none", "HEAD", "--"], cwd=root)
         changed.update(filter(None, paths.split("\0")))
-    changed.difference_update(exempt)
+    changed = {item for item in changed if not item.startswith(f"{PROFILES_DIR}/")
+               or (item == path and not committing)}
     if changed:
         raise ReconcileError(
             "tracked skillset changes are not committed; commit selection, "
             "source pins, and install code first:\n"
-            + "\n".join(f"  {path}" for path in sorted(changed))
-            + ("\nrun select-skills and choose Install" if "skills.txt" in changed else "")
+            + "\n".join(f"  {item}" for item in sorted(changed))
+            + ("\nrun select-skills and choose Install" if path in changed else "")
         )
-    for item in (".gitmodules", SELECTION_PATH, "sources.toml", "scripts/reconcile-skills.sh",
+    for item in (".gitmodules", path, "sources.toml", "scripts/reconcile-skills.sh",
                  "scripts/reconcile_skills.py", "scripts/skill_catalog.py"):
         if git(["ls-files", "-z", "--", item], cwd=root) != item + "\0":
             raise ReconcileError(f"required install input is not tracked: {item}")
@@ -114,7 +124,7 @@ def ensure_skillset_committed(
 
 
 def selection_install_blocker(root: Path) -> str | None:
-    """Why the selector cannot commit skills.txt and install, or None."""
+    """Why the selector cannot commit the active profile and install, or None."""
     try:
         require_primary_checkout(root)
         for marker, operation in (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase")):
@@ -122,7 +132,7 @@ def selection_install_blocker(root: Path) -> str | None:
                 return f"a {operation} is in progress; finish it first"
         if not git(["symbolic-ref", "--quiet", "HEAD"], cwd=root, check=False):
             return "checkout is on a detached HEAD; switch to a branch"
-        ensure_skillset_committed(root, exempt={"skills.txt"})
+        ensure_skillset_committed(root, active_profile(), committing=True)
     except (ReconcileError, OSError) as error:
         return str(error)
     return None
@@ -185,10 +195,11 @@ def local_collision(desired: set[str], retiring: set[Path]) -> None:
 
 
 def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str], Catalog]:
+    profile = active_profile()
     head = require_primary_checkout(root)
     catalog = load_catalog(root)
-    ensure_skillset_committed(root)
-    return head, catalog.resolve(read_selection_text(root)).install_targets(), catalog
+    ensure_skillset_committed(root, profile)
+    return head, catalog.resolve(read_selection_text(root, profile)).install_targets(profile), catalog
 
 
 def build_plan(root: Path) -> Plan:
@@ -241,7 +252,7 @@ def plan_links(head: str, desired: dict[tuple[Path, str], str]) -> Plan:
         receipt = home_path() / install_dir.parent / ".skillset/receipts" / name
         want = desired.get((install_dir, name))
         rs, es = lstat(receipt), lstat(entry)
-        if rs is not None and (not stat.S_ISLNK(rs.st_mode) or len(name) > 64 or NAME_PATTERN.fullmatch(name) is None):
+        if rs is not None and (not stat.S_ISLNK(rs.st_mode) or not valid_name(name)):
             raise ReconcileError(f"invalid ownership receipt: {receipt}")
         if es is not None and not owned(receipt, entry):
             if want is not None:

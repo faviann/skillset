@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-from fixture import CHECKOUT, SkillsetFixture, git, write_selection, write_skill
+from fixture import CHECKOUT, SkillsetFixture, git, write_profile, write_skill
 
 sys.path.insert(0, str(CHECKOUT / "scripts"))
 from reconcile_skills import (
@@ -41,7 +41,7 @@ class ReconcileIntegrationTests(unittest.TestCase):
                 "skills/engineering/beta": "beta",
                 "skills/misc/unselected": "unselected",
             },
-        }, self.selection)
+        }, {"workstation": self.selection})
         self.home = self.fixture.home
         self.repo = self.fixture.repo
         self.origin = self.fixture.origins["acme/skills"]
@@ -52,7 +52,7 @@ class ReconcileIntegrationTests(unittest.TestCase):
         self.temp.cleanup()
 
     def write_selection(self) -> None:
-        write_selection(self.repo, self.selection)
+        write_profile(self.repo, "workstation", self.selection)
 
     def commit_skillset(self, message: str = "update skillset") -> None:
         git(["add", "-A"], self.repo)
@@ -334,7 +334,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         for args in ((), ("--check",)):
             with self.subTest(args=args):
                 result = self.run_reconciler(*args)
-                self.assert_reconcile_fails(result, "skills.txt:3: name is missing at the pinned commit")
+                self.assert_reconcile_fails(result, "profiles/workstation.txt:3: name is missing at the pinned commit")
                 for path, before in existing.items():
                     self.assertTrue(os.path.samestat(before, path.lstat()), str(path))
                     self.assertEqual(os.readlink(path), str(self.source / "skills/engineering/alpha"))
@@ -435,7 +435,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.commit_source(pin=True)
         self.assertFalse(stale_target.exists())
         failed = self.run_reconciler()
-        self.assert_reconcile_fails(failed, "skills.txt:2: name is missing at the pinned commit: acme/skills:alpha")
+        self.assert_reconcile_fails(failed, "profiles/workstation.txt:2: name is missing at the pinned commit: acme/skills:alpha")
         for install_dir in (AGENTS_DIR, CLAUDE_DIR):
             self.assert_link(install_dir, "alpha", stale_target)
 
@@ -487,30 +487,43 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertFalse((self.home / ".agents").exists())
 
     def test_uncommitted_aggregate_configuration_is_rejected(self) -> None:
-        (self.repo / "skills.txt").write_text("# uncommitted change\n", encoding="utf-8")
+        (self.repo / "profiles/workstation.txt").write_text("# uncommitted change\n", encoding="utf-8")
         for args in ((), ("--check",)):
             with self.subTest(args=args):
                 result = self.run_reconciler(*args)
                 self.assert_reconcile_fails(result, "tracked skillset changes are not committed")
-                self.assertIn("skills.txt", result.stderr)
+                self.assertIn("profiles/workstation.txt", result.stderr)
                 self.assertIn("run select-skills and choose Install", result.stderr)
                 self.assertEqual(list(self.home.iterdir()), [])
 
-    def test_committed_gate_allows_only_exempt_paths(self) -> None:
+    def test_committed_gate_allows_only_the_profile_being_committed(self) -> None:
         readme = self.repo / "README.md"
         readme.write_text("# Fixture\n", encoding="utf-8")
         self.commit_skillset()
-        (self.repo / "skills.txt").write_text("# edited selection\n", encoding="utf-8")
-        ensure_skillset_committed(self.repo, exempt={"skills.txt"})
-        git(["add", "skills.txt"], self.repo)
-        ensure_skillset_committed(self.repo, exempt={"skills.txt"})
+        (self.repo / "profiles/workstation.txt").write_text("# edited selection\n", encoding="utf-8")
+        ensure_skillset_committed(self.repo, "workstation", committing=True)
+        git(["add", "profiles/workstation.txt"], self.repo)
+        ensure_skillset_committed(self.repo, "workstation", committing=True)
 
         readme.write_text("# Edited fixture\n", encoding="utf-8")
         with self.assertRaises(ReconcileError) as caught:
-            ensure_skillset_committed(self.repo, exempt={"skills.txt"})
+            ensure_skillset_committed(self.repo, "workstation", committing=True)
         self.assertIn("README.md", str(caught.exception))
-        self.assertNotIn("skills.txt", str(caught.exception))
+        self.assertNotIn("profiles/workstation.txt", str(caught.exception))
         self.assertNotIn("run select-skills and choose Install", str(caught.exception))
+
+    def test_other_saved_profiles_never_block_install(self) -> None:
+        write_profile(self.repo, "llm", [self.beta])
+        self.commit_skillset("add llm profile")
+        write_profile(self.repo, "llm", ["unknown/source:gone"])
+        write_profile(self.repo, "draft", [self.beta])
+        ensure_skillset_committed(self.repo, "workstation")
+        for args in ((), ("--check",)):
+            with self.subTest(args=args):
+                result = self.run_reconciler(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_link(AGENTS_DIR, "alpha", self.source / "skills/engineering/alpha")
+        self.assertFalse((self.home / AGENTS_DIR / "beta").exists())
 
     def test_committed_gate_lists_staged_and_unstaged_paths(self) -> None:
         staged_path = "README caf\u00e9.md"
@@ -519,17 +532,17 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.commit_skillset()
         readme.write_text("# Edited fixture\n", encoding="utf-8")
         git(["add", staged_path], self.repo)
-        (self.repo / "skills.txt").write_text("# edited selection\n", encoding="utf-8")
+        (self.repo / "profiles/workstation.txt").write_text("# edited selection\n", encoding="utf-8")
 
         with self.assertRaises(ReconcileError) as caught:
-            ensure_skillset_committed(self.repo)
+            ensure_skillset_committed(self.repo, "workstation")
         self.assertIn(staged_path, str(caught.exception))
-        self.assertIn("skills.txt", str(caught.exception))
+        self.assertIn("profiles/workstation.txt", str(caught.exception))
         self.assertIn("run select-skills and choose Install", str(caught.exception))
 
-        git(["checkout", "HEAD", "--", "skills.txt"], self.repo)
+        git(["checkout", "HEAD", "--", "profiles/workstation.txt"], self.repo)
         with self.assertRaises(ReconcileError) as caught:
-            ensure_skillset_committed(self.repo)
+            ensure_skillset_committed(self.repo, "workstation")
         self.assertIn(staged_path, str(caught.exception))
         self.assertNotIn("run select-skills and choose Install", str(caught.exception))
 
@@ -575,14 +588,14 @@ raise SystemExit(m.main(sys.argv[4:]))
     def test_moved_skill_folder_relinks_without_changing_selection(self) -> None:
         installed = self.run_reconciler()
         self.assertEqual(installed.returncode, 0, installed.stderr)
-        selection = (self.repo / "skills.txt").read_text(encoding="utf-8")
+        selection = (self.repo / "profiles/workstation.txt").read_text(encoding="utf-8")
         moved = self.source / "skills/productivity/alpha"
         moved.parent.mkdir()
         (self.source / "skills/engineering/alpha").rename(moved)
         self.commit_source()
         result = self.run_reconciler()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.repo / "skills.txt").read_text(encoding="utf-8"), selection)
+        self.assertEqual((self.repo / "profiles/workstation.txt").read_text(encoding="utf-8"), selection)
         self.assertIn("removed 2 owned skill links and created 2 skill links", result.stdout)
         for install_dir in (AGENTS_DIR, CLAUDE_DIR):
             self.assert_link(install_dir, "alpha", moved)
@@ -613,7 +626,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         claude_entry = self.home / CLAUDE_DIR / "alpha"
         claude_receipt = self.home / ".claude/.skillset/receipts/alpha"
         before = claude_entry.lstat()
-        selection = (self.repo / "skills.txt").read_text(encoding="utf-8")
+        selection = (self.repo / "profiles/workstation.txt").read_text(encoding="utf-8")
         variant = write_skill(self.source, "dist/codex/alpha")
         manifest = self.repo / "sources.toml"
         manifest.write_text('["acme/skills".variants]\ncodex = "dist/codex"\n',
@@ -633,7 +646,7 @@ raise SystemExit(m.main(sys.argv[4:]))
                 self.assert_link(CLAUDE_DIR, "alpha", canonical)
                 self.assertTrue(os.path.samestat(before, claude_entry.lstat()))
                 self.assertTrue(os.path.samestat(before, claude_receipt.lstat()))
-                self.assertEqual((self.repo / "skills.txt").read_text(encoding="utf-8"), selection)
+                self.assertEqual((self.repo / "profiles/workstation.txt").read_text(encoding="utf-8"), selection)
                 self.assertEqual(self.run_reconciler("--check").returncode, 0)
 
     def test_invalid_variant_blocks_install_and_check_regardless_of_selection(self) -> None:
@@ -728,7 +741,7 @@ raise SystemExit(m.main(sys.argv[4:]))
         self.assertFalse((self.home / ".local").exists())
 
     def test_historical_commit_reconstructs_its_source_gitlink_and_selection(self) -> None:
-        original_selection = (self.repo / "skills.txt").read_text(encoding="utf-8")
+        original_selection = (self.repo / "profiles/workstation.txt").read_text(encoding="utf-8")
         old_skillset_commit = git(["rev-parse", "HEAD"], self.repo)
         old_source_commit = git(["rev-parse", "HEAD"], self.source)
         old_body = (self.source / "skills/engineering/alpha/SKILL.md").read_text()
@@ -756,7 +769,7 @@ raise SystemExit(m.main(sys.argv[4:]))
             old_source_commit,
         )
         self.assertEqual(
-            (historical / "skills.txt").read_text(encoding="utf-8"), original_selection
+            (historical / "profiles/workstation.txt").read_text(encoding="utf-8"), original_selection
         )
         restored = self.run_reconciler(repo=historical)
         self.assertEqual(restored.returncode, 0, restored.stderr)
@@ -932,7 +945,7 @@ class InstallInterfaceTests(unittest.TestCase):
         self.base = Path(temporary.name)
         self.fixture = SkillsetFixture(self.base, {
             "acme/skills": {"skills/alpha": "alpha", "skills/beta": "beta"},
-        }, ["acme/skills:alpha"])
+        }, {"workstation": ["acme/skills:alpha"]})
         self.repo = self.fixture.repo
         self.home = self.fixture.home
         environment = patch.dict(os.environ, {"HOME": str(self.home)})
@@ -987,17 +1000,25 @@ class InstallInterfaceTests(unittest.TestCase):
 
     def test_install_blocker_allows_clean_checkout_and_saved_selection(self) -> None:
         self.assertIsNone(selection_install_blocker(self.repo))
-        write_selection(self.repo, ["acme/skills:beta"])
+        write_profile(self.repo, "workstation", ["acme/skills:beta"])
+        self.assertIsNone(selection_install_blocker(self.repo))
+
+    def test_install_blocker_allows_every_saved_profile(self) -> None:
+        write_profile(self.repo, "llm", ["acme/skills:alpha"])
+        git(["add", "-A"], self.repo)
+        git(["commit", "-qm", "add llm profile"], self.repo)
+        write_profile(self.repo, "llm", ["acme/skills:beta"])
+        write_profile(self.repo, "workstation", ["acme/skills:beta"])
         self.assertIsNone(selection_install_blocker(self.repo))
 
     def test_install_blocker_names_other_tracked_changes(self) -> None:
         readme = self.commit_readme()
         readme.write_text("Uncommitted edit\n", encoding="utf-8")
-        write_selection(self.repo, ["acme/skills:beta"])
+        write_profile(self.repo, "workstation", ["acme/skills:beta"])
         blocker = selection_install_blocker(self.repo)
         self.assertIn("tracked skillset changes are not committed", blocker)
         self.assertIn("README.md", blocker)
-        self.assertNotIn("skills.txt", blocker)
+        self.assertNotIn("profiles/workstation.txt", blocker)
 
     def test_install_blocker_refuses_detached_head(self) -> None:
         git(["checkout", "-q", "--detach"], self.repo)

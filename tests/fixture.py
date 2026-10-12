@@ -63,22 +63,24 @@ def write_skill(repo: Path, path: str, *, identity: str | None = None) -> Path:
     return skill_dir
 
 
-def write_selection(repo: Path, selection: list[str]) -> None:
+def write_profile(repo: Path, name: str, selection: list[str]) -> None:
     content = "# fixture selection\n" + "".join(f"{line}\n" for line in selection)
-    (repo / "skills.txt").write_text(content, encoding="utf-8")
+    path = repo / "profiles" / f"{name}.txt"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(content, encoding="utf-8")
 
 
 class SkillsetFixture:
     """Build a committed skillset with sources keyed by owner/repo.
 
-    Each source maps source-relative skill paths to frontmatter names; selection
-    contains owner/repo:name lines independently of those paths. Pass
+    Each source maps source-relative skill paths to frontmatter names; each
+    profile maps its name to owner/repo:name lines, independently of those paths. Pass
     ``env`` to subprocesses so local source URLs remain usable by Git helpers.
     The caller owns the temporary base directory and its cleanup.
     """
 
     def __init__(
-        self, base: Path, sources: dict[str, dict[str, str]], selection: list[str],
+        self, base: Path, sources: dict[str, dict[str, str]], profiles: dict[str, list[str]],
         *, sources_toml: str = "",
     ) -> None:
         self.base = base
@@ -103,7 +105,8 @@ class SkillsetFixture:
         self.sources: dict[str, Path] = {}
         for name, skills in sources.items():
             self.add_source(name, skills)
-        write_selection(self.repo, selection)
+        for name, selection in profiles.items():
+            write_profile(self.repo, name, selection)
         (self.repo / "sources.toml").write_text(sources_toml, encoding="utf-8")
         git(["add", "-A"], self.repo)
         git(["commit", "-qm", "initial skillset"], self.repo)

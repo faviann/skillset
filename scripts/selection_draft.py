@@ -26,19 +26,20 @@ class Store(Protocol):
 
 
 class CheckoutStore:
-    """skills.txt in a checkout, with HEAD's copy read through Git."""
+    """A profile's file in a checkout, with HEAD's copy read through Git."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, profile: str) -> None:
         self.root = root
+        self.profile = profile
 
     def read(self) -> str:
-        return skill_catalog.read_selection_text(self.root)
+        return skill_catalog.read_selection_text(self.root, self.profile)
 
     def write(self, content: str) -> None:
-        (self.root / skill_catalog.SELECTION_PATH).write_bytes(content.encode("utf-8"))
+        (self.root / skill_catalog.profile_path(self.profile)).write_bytes(content.encode("utf-8"))
 
     def head(self) -> str:
-        return skill_catalog.git(["show", f"HEAD:{skill_catalog.SELECTION_PATH}"], cwd=self.root)
+        return skill_catalog.git(["show", f"HEAD:{skill_catalog.profile_path(self.profile)}"], cwd=self.root)
 
 
 class MemoryStore:

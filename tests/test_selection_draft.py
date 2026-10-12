@@ -202,15 +202,15 @@ class SelectionDraftTests(unittest.TestCase):
 class CheckoutStoreTests(unittest.TestCase):
     def test_reads_head_and_writes_skills_txt(self) -> None:
         with tempfile.TemporaryDirectory(prefix="skillset-draft-test-") as temp:
-            fixture = SkillsetFixture(Path(temp), {}, ["acme/skills:alpha"])
-            store = CheckoutStore(fixture.repo)
+            fixture = SkillsetFixture(Path(temp), {}, {"workstation": ["acme/skills:alpha"]})
+            store = CheckoutStore(fixture.repo, "workstation")
             committed = "# fixture selection\nacme/skills:alpha\n"
             self.assertEqual(store.read(), committed)
             store.write("# new\r\nzebra/tools:omega\n")
-            self.assertEqual((fixture.repo / "skills.txt").read_bytes(), b"# new\r\nzebra/tools:omega\n")
+            self.assertEqual((fixture.repo / "profiles/workstation.txt").read_bytes(), b"# new\r\nzebra/tools:omega\n")
             self.assertEqual(store.read(), "# new\r\nzebra/tools:omega\n")
             self.assertEqual(store.head(), committed.rstrip("\n"))
-            self.assertIn("skills.txt", git(["status", "--porcelain"], fixture.repo))
+            self.assertIn("profiles/workstation.txt", git(["status", "--porcelain"], fixture.repo))
 
 
 if __name__ == "__main__":

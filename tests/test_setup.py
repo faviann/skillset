@@ -24,7 +24,7 @@ class SetupTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="skillset-setup-")
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name)
-        self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}}, [])
+        self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}}, {"workstation": []})
         self.repo = self.fixture.repo
         self.home = self.fixture.home
         self.bin = self.base / "bin"

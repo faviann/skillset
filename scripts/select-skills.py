@@ -591,10 +591,11 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         super().__init__()
         self.root = (root or Path(__file__).resolve().parent.parent).resolve()
         # Browsing needs source validation, not the reconciler's deployment gate.
+        self.profile = reconcile_skills.active_profile()
         self.selection_catalog = skill_catalog.load_catalog(self.root)
         self.catalog = display_catalog(self.selection_catalog)
-        self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
-        self.not_installed = skill_catalog.selection_uncommitted(self.root)
+        self.draft = SelectionDraft.load(CheckoutStore(self.root, self.profile), self.selection_catalog)
+        self.not_installed = skill_catalog.selection_uncommitted(self.root, self.profile)
         self.install_error: str | None = None
         self.install_check = None
         self.markers: dict[str, str] = {}
@@ -781,7 +782,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             line = self.draft.off_catalog[key]
             self.query_one("#skill-name", Static).update(Text(line.value, style=name_style))
             metadata.update(Text.assemble(
-                (f"skills.txt:{line.number}", SECONDARY), "\n\n", line.error,
+                (f"{skill_catalog.profile_path(self.profile)}:{line.number}", SECONDARY), "\n\n", line.error,
             ))
             foot.update(Text("Can be deselected only.", style=SECONDARY))
             self.query_one("#skill-body", SkillBody).show("")
@@ -899,7 +900,8 @@ class SelectorApp(App[Callable[[Path], int] | None]):
                 elif choice == 2:
                     self.save_selection(overwrite=outcome, install=install)
 
-            self.push_screen(ChoiceDialog("skills.txt changed on disk", ["Reload", "Overwrite"],
+            self.push_screen(ChoiceDialog(f"{skill_catalog.profile_path(self.profile)} changed on disk",
+                                          ["Reload", "Overwrite"],
                                           "Reload drops your unsaved changes. Overwrite replaces the file."),
                              conflict_choice)
             return
@@ -909,7 +911,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         if install:
             self.exit(install_saved_selection)
             return
-        self.not_installed = skill_catalog.selection_uncommitted(self.root)
+        self.not_installed = skill_catalog.selection_uncommitted(self.root, self.profile)
         if not self.not_installed:
             self.install_check = self.run_worker(self.check_install_status, thread=True)
         self.refresh_title()
@@ -917,12 +919,12 @@ class SelectorApp(App[Callable[[Path], int] | None]):
 
     def reload_selection(self) -> None:
         try:
-            self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
+            self.draft = SelectionDraft.load(CheckoutStore(self.root, self.profile), self.selection_catalog)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
             return
         self.source = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
-        self.not_installed = skill_catalog.selection_uncommitted(self.root)
+        self.not_installed = skill_catalog.selection_uncommitted(self.root, self.profile)
         self.install_error = None
         self.install_check = None
         if not self.not_installed:
@@ -930,7 +932,8 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.refresh_title()
         self.fill_sources()
         self.fill_skills()
-        self.query_one("#message", Static).update("⎿ Reloaded skills.txt. Unsaved changes discarded.")
+        self.query_one("#message", Static).update(
+            Text(f"⎿ Reloaded {skill_catalog.profile_path(self.profile)}. Unsaved changes discarded."))
 
     def action_update(self) -> None:
         reason = ("the selection has unsaved changes; save and install first" if self.draft.unsaved
@@ -952,11 +955,11 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         try:
             self.selection_catalog = skill_catalog.load_catalog(self.root)
             self.catalog = display_catalog(self.selection_catalog)
-            self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
+            self.draft = SelectionDraft.load(CheckoutStore(self.root, self.profile), self.selection_catalog)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
             return
-        self.not_installed = skill_catalog.selection_uncommitted(self.root)
+        self.not_installed = skill_catalog.selection_uncommitted(self.root, self.profile)
         self.install_error = None
         self.install_check = None
         if not self.not_installed:
@@ -1017,25 +1020,27 @@ def shell_path_env() -> dict[str, str]:
 
 def install_saved_selection(root: Path) -> int:
     """Run only after the TUI closes, with hooks and signing in the terminal."""
+    profile = reconcile_skills.active_profile()
+    path = skill_catalog.profile_path(profile)
     if reason := reconcile_skills.selection_install_blocker(root):
-        print(f"Could not commit: {reason}. skills.txt stays saved; nothing was committed or installed.")
+        print(f"Could not commit: {reason}. {path} stays saved; nothing was committed or installed.")
         return 1
     try:
-        changes = Changes.between(skill_catalog.git(["show", "HEAD:skills.txt"], cwd=root),
-                                  skill_catalog.read_selection_text(root))
-        message = f"Update skill selection ({changes.summary})"
+        changes = Changes.between(skill_catalog.git(["show", f"HEAD:{path}"], cwd=root),
+                                  skill_catalog.read_selection_text(root, profile))
+        message = f"Update {profile} profile ({changes.summary})"
         # Match the checkout inspected by the catalog's Git reads, while
         # retaining terminal streams for hooks and interactive signing.
-        if skill_catalog.selection_uncommitted(root):
+        if skill_catalog.selection_uncommitted(root, profile):
             commit = subprocess.run(
-                ["git", "commit", "-m", message, "-m", "\n".join(changes.lines()), "--only", "--", "skills.txt"],
+                ["git", "commit", "-m", message, "-m", "\n".join(changes.lines()), "--only", "--", path],
                 cwd=root, env=skill_catalog.git_env(interactive=True), check=False,
             )
             if commit.returncode:
-                print("Commit failed. skills.txt stays saved; nothing was committed or installed.")
+                print(f"Commit failed. {path} stays saved; nothing was committed or installed.")
                 return commit.returncode
     except (reconcile_skills.ReconcileError, OSError) as error:
-        print(f"Could not commit: {error}. skills.txt stays saved; nothing was committed or installed.")
+        print(f"Could not commit: {error}. {path} stays saved; nothing was committed or installed.")
         return 1
     try:
         result = subprocess.run([str(root / "scripts/reconcile-skills.sh")], cwd=root,

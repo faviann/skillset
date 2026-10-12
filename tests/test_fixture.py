@@ -18,22 +18,24 @@ class FixtureTests(unittest.TestCase):
         self.fixture = SkillsetFixture(self.base, {
             "acme/skills": {"nested/alpha": "alpha", "unselected": "unselected"},
             "other/beta": {".": "beta"},
-        }, self.selection)
+        }, {"workstation": self.selection, "llm": []})
 
-    def test_builds_committed_sources_selection_and_shipped_files(self) -> None:
+    def test_builds_committed_sources_profiles_and_shipped_files(self) -> None:
         repo = self.fixture.repo
         shipped = set(git(
             ["ls-files", "-z", "--", "scripts", "setup.sh", ".gitignore"], CHECKOUT,
         ).split("\0")) - {""}
         self.assertEqual(set(git(["ls-files", "-z"], repo).split("\0")) - {""}, shipped | {
-            ".gitmodules", "skills.txt", "sources.toml", "sources/acme/skills", "sources/other/beta",
+            ".gitmodules", "profiles/llm.txt", "profiles/workstation.txt", "sources.toml",
+            "sources/acme/skills", "sources/other/beta",
         })
         for name in shipped:
             with self.subTest(file=name):
                 self.assertEqual((repo / name).read_bytes(), (CHECKOUT / name).read_bytes())
                 self.assertEqual((repo / name).stat().st_mode, (CHECKOUT / name).stat().st_mode)
-        self.assertEqual((repo / "skills.txt").read_text(),
+        self.assertEqual((repo / "profiles/workstation.txt").read_text(),
                          "# fixture selection\n" + "\n".join(self.selection) + "\n")
+        self.assertEqual((repo / "profiles/llm.txt").read_text(), "# fixture selection\n")
         self.assertEqual((repo / "sources.toml").read_text(), "")
         for path, name in zip(self.paths, ("alpha", "beta")):
             with self.subTest(skill=path):
