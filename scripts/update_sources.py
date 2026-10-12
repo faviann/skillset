@@ -29,6 +29,7 @@ from skill_catalog import (
     load_catalog,
     parse_modules,
     path_prefixes,
+    profile_problems,
     PROFILES_DIR,
     profile_path,
     read_selection_text,
@@ -237,22 +238,12 @@ def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog, l
              f"sources/{update.name}", "sources.toml"], worktree, log, interactive=True)
 
 
-def check_profiles(worktree: Path, catalog: Catalog) -> None:
-    """Refuse when any profile at HEAD fails to resolve, so no home pulls a pin it cannot install."""
-    problems = []
-    for profile in list_profiles(worktree):
-        try:
-            catalog.resolve(read_selection_text(worktree, profile)).install_targets(profile)
-        except ReconcileError as error:
-            problems.append(str(error))
-    if problems:
-        raise ReconcileError("\n".join(problems))
-
-
 def check_installable(worktree: Path, catalog: Catalog) -> None:
     if profile := home_profile(worktree):
         ensure_skillset_committed(worktree, profile)
-    check_profiles(worktree, catalog)
+    # Every profile, not only this home's: the pushed pin reaches every home.
+    if problems := [problem for found in profile_problems(worktree, catalog).values() for problem in found]:
+        raise ReconcileError("\n".join(problems))
     if stale := stale_upstreams(catalog):
         raise ReconcileError("\n".join(stale))
 
