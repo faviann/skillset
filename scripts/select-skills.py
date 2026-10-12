@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
 from pathlib import Path
+from typing import TypeVar
 
 # A symlink in PATH must still import from the checkout containing this script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -56,6 +57,7 @@ AUTOMATIC = "green"
 NOT_IN_CATALOG = "Not in catalog"
 LOOKUP_TIMEOUT_SECONDS = 5
 TITLE_PREFIX = "Skill selector  "
+DialogResult = TypeVar("DialogResult")
 
 
 @dataclass
@@ -235,11 +237,11 @@ class CatalogList(VerticalScroll, can_focus=True):
         self.redraw()
 
 
-class ChoiceDialog(ModalScreen[int | None]):
-    """The same numbered, cancellable choices for replacement, saving and quitting."""
+class Dialog(ModalScreen[DialogResult]):
+    """A box at the bottom of the screen with a title, details and a hint; Esc dismisses it with None."""
 
     DEFAULT_CSS = """
-    ChoiceDialog { align: center bottom; background: transparent; }
+    Dialog { align: center bottom; background: transparent; }
     #dialog { height: auto; max-height: 85%; margin: 0 2 2 2; padding: 1 2; border: round #D77757; }
     #dialog-title { height: auto; color: #D77757; margin-bottom: 1; }
     #dialog-review { height: 1fr; max-height: 12; margin-bottom: 1; }
@@ -247,9 +249,17 @@ class ChoiceDialog(ModalScreen[int | None]):
     #choices { height: auto; max-height: 6; }
     #dialog-hint { height: 1; margin-top: 1; color: #999999; }
     """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ChoiceDialog(Dialog[int | None]):
+    """The same numbered, cancellable choices for replacement, saving and quitting."""
+
     BINDINGS = [
         Binding("enter", "confirm", show=False),
-        Binding("escape", "cancel", show=False),
         *(Binding(str(number), f"choose({number})", show=False) for number in range(1, 10)),
     ]
 
@@ -290,20 +300,16 @@ class ChoiceDialog(ModalScreen[int | None]):
     def action_confirm(self) -> None:
         self.dismiss(self.query_one("#choices", CatalogList).current)
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
-
-class NameDialog(ModalScreen[str | None]):
+class NameDialog(Dialog[str | None]):
     """Ask for a profile name until it follows the skill-name rules and is not taken."""
 
-    DEFAULT_CSS = ChoiceDialog.DEFAULT_CSS.replace("ChoiceDialog", "NameDialog") + """
+    DEFAULT_CSS = """
     #name-box { height: 3; margin-top: 1; border: round #999999; }
     #name-input { height: 1; padding: 0; border: none; background: transparent; }
     #name-input:focus { border: none; }
     #name-error { height: auto; color: red; }
     """
-    BINDINGS = [Binding("escape", "cancel", show=False)]
 
     def __init__(self, title: str, details: str, taken: Collection[str], *, value: str = "") -> None:
         super().__init__()
@@ -331,9 +337,6 @@ class NameDialog(ModalScreen[str | None]):
             self.query_one("#name-error", Static).update(Text(f"{name} already exists"))
         else:
             self.dismiss(name)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
 
 class ProfilePicker(ModalScreen[tuple[str, str] | None]):
