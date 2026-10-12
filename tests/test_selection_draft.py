@@ -12,7 +12,7 @@ from fixture import CHECKOUT, SkillsetFixture, git
 
 sys.path.insert(0, str(CHECKOUT / "scripts"))
 from selection_draft import (
-    INSTALL_BLOCKED,
+    COMMIT_BLOCKED,
     Blocked,
     Changes,
     CheckoutStore,
@@ -162,25 +162,25 @@ class SelectionDraftTests(unittest.TestCase):
         self.assertEqual(draft.unsaved, 0)
         self.assertEqual(draft.save(), Saved(True))
 
-    def test_install_with_nothing_unsaved_keeps_the_stored_bytes(self) -> None:
+    def test_commit_with_nothing_unsaved_keeps_the_stored_bytes(self) -> None:
         content = "# my comment\r\nacme/skills:alpha\r\n"
         draft, store = self.load(content)
-        self.assertEqual(draft.save(install=True), Saved(False))
+        self.assertEqual(draft.save(committing=True), Saved(False))
         self.assertEqual(store.read(), content)
 
-    def test_install_after_overwrite_writes(self) -> None:
+    def test_commit_after_overwrite_writes(self) -> None:
         draft, store = self.load(selection("acme/skills:alpha"))
         store.disk = "# edited\nacme/skills:alpha\n"
-        conflict = draft.save(install=True)
+        conflict = draft.save(committing=True)
         self.assertIsInstance(conflict, Conflict)
-        self.assertEqual(draft.save(install=True, overwrite=conflict), Saved(True))
+        self.assertEqual(draft.save(committing=True, overwrite=conflict), Saved(True))
         self.assertEqual(store.read(), selection("acme/skills:alpha"))
-        self.assertEqual(draft.save(install=True), Saved(False))
+        self.assertEqual(draft.save(committing=True), Saved(False))
 
-    def test_install_with_unsaved_changes_writes(self) -> None:
+    def test_commit_with_unsaved_changes_writes(self) -> None:
         draft, store = self.load("# my comment\nacme/skills:alpha\n")
         draft.toggle("acme/skills:beta")
-        self.assertEqual(draft.save(install=True), Saved(True))
+        self.assertEqual(draft.save(committing=True), Saved(True))
         self.assertEqual(store.read(), selection("acme/skills:alpha", "acme/skills:beta"))
 
     def test_store_write_failure_leaves_the_draft_unchanged(self) -> None:
@@ -199,7 +199,7 @@ class SelectionDraftTests(unittest.TestCase):
         draft.toggle("acme/skills:beta")
         self.assertEqual(draft.unsaved, 2)
         draft.toggle("acme/skills:beta")
-        self.assertEqual(draft.save(install=True), Saved(True))
+        self.assertEqual(draft.save(committing=True), Saved(True))
         self.assertEqual(store.read(), selection("acme/skills:alpha"))
         self.assertEqual(draft.unsaved, 0)
 
@@ -207,11 +207,11 @@ class SelectionDraftTests(unittest.TestCase):
         draft = SelectionDraft.load(MemoryStore(SELECTION_HEADER + "\n"), CATALOG, new=True)
         self.assertEqual((len(draft), draft.unsaved), (0, 1))
 
-    def test_install_is_blocked_while_an_off_catalog_line_is_selected(self) -> None:
+    def test_commit_is_blocked_while_an_off_catalog_line_is_selected(self) -> None:
         draft, _ = self.load(selection("acme/skills:alpha", "unknown/source:x"))
-        self.assertEqual(draft.install_blocker, INSTALL_BLOCKED)
+        self.assertEqual(draft.commit_blocker, COMMIT_BLOCKED)
         draft.toggle(3)
-        self.assertIsNone(draft.install_blocker)
+        self.assertIsNone(draft.commit_blocker)
 
 
 class CheckoutStoreTests(unittest.TestCase):

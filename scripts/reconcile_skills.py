@@ -153,8 +153,8 @@ def ensure_skillset_committed(root: Path, profile: str, *, committing: bool = Fa
         raise ReconcileError("untracked install input is present")
 
 
-def selection_install_blocker(root: Path, profile: str | None = None) -> str | None:
-    """Why the selector cannot commit the profile (by default the active one) and install it, or None."""
+def selection_commit_blocker(root: Path, profile: str | None = None) -> str | None:
+    """Why the selector cannot commit the profile (by default the active one), and so cannot install it, or None."""
     try:
         require_primary_checkout(root)
         for marker, operation in (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase")):

@@ -14,7 +14,7 @@ from skill_catalog import Catalog, ResolvedLine
 # A catalog skill is keyed by its "owner/repo:name" value, an off-catalog line by its line number.
 Key = str | int
 
-INSTALL_BLOCKED = "deselect the skills under Not in catalog"
+COMMIT_BLOCKED = "deselect the skills under Not in catalog"
 
 
 class Store(Protocol):
@@ -209,9 +209,9 @@ class SelectionDraft:
         return tuple(sorted(name for name, count in names.items() if count > 1))
 
     @property
-    def install_blocker(self) -> str | None:
-        """INSTALL_BLOCKED while an off-catalog line is selected."""
-        return INSTALL_BLOCKED if any(key in self._selected for key in self._off_catalog) else None
+    def commit_blocker(self) -> str | None:
+        """COMMIT_BLOCKED while an off-catalog line is selected."""
+        return COMMIT_BLOCKED if any(key in self._selected for key in self._off_catalog) else None
 
     def toggle(self, key: Key, *, replace: bool = False) -> Toggled | Refused | Replace:
         """Deselect a selected key, or select one.
@@ -235,13 +235,13 @@ class SelectionDraft:
         self._selected[key] = key
         return Toggled()
 
-    def save(self, *, install: bool = False, overwrite: Conflict | None = None) -> Saved | Conflict | Blocked:
+    def save(self, *, committing: bool = False, overwrite: Conflict | None = None) -> Saved | Conflict | Blocked:
         """Write the draft in the selector's format and make it the new baseline.
 
         Blocked while duplicates exist. Conflict when the store no longer holds
-        the loaded content, or `overwrite.disk` when given. With `install`,
+        the loaded content, or `overwrite.disk` when given. With `committing`,
         nothing unsaved and the store unchanged, nothing is written, so saved
-        bytes such as comments reach the install commit as they are. A store
+        bytes such as comments reach the commit as they are. A store
         error propagates and leaves the draft unchanged.
         """
         if duplicates := self.duplicates:
@@ -250,7 +250,7 @@ class SelectionDraft:
         if disk != (self._content if overwrite is None else overwrite.disk):
             return Conflict(disk)
         content = disk
-        wrote = not install or bool(self.unsaved) or disk != self._content
+        wrote = not committing or bool(self.unsaved) or disk != self._content
         if wrote:
             content = skill_catalog.format_selection(self._selected.values())
             self._store.write(content)

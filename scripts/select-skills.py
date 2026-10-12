@@ -988,7 +988,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             return "save or discard the unsaved changes first"
         if name not in skill_catalog.list_profiles(self.root) or name in skill_catalog.uncommitted_profiles(self.root):
             return f"{skill_catalog.profile_path(name)} is not committed; save and commit it first"
-        return reconcile_skills.selection_install_blocker(self.root, name)
+        return reconcile_skills.selection_commit_blocker(self.root, name)
 
     def rename_profile(self, name: str) -> None:
         """Ask for the new name, then close for the terminal handoff to commit the rename."""
@@ -1250,7 +1250,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
 
     def handoff_blocker(self) -> str | None:
         """Why Save cannot commit the edited profile, or install it when this home uses it, or None."""
-        return (self.draft.install_blocker or reconcile_skills.selection_install_blocker(self.root, self.profile)
+        return (self.draft.commit_blocker or reconcile_skills.selection_commit_blocker(self.root, self.profile)
                 or (self.install_error if self.profile == self.active and not self.draft.changes else None))
 
     def save_selection(self, overwrite: Conflict | None = None, *, after: After) -> None:
@@ -1260,7 +1260,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             self.query_one("#message", Static).update(Text(f"⎿ Cannot {action}: {reason}"))
             return
         try:
-            outcome = self.draft.save(install=after is not After.SAVE_ONLY, overwrite=overwrite)
+            outcome = self.draft.save(committing=after is not After.SAVE_ONLY, overwrite=overwrite)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not save: {error}"))
             return
@@ -1385,7 +1385,7 @@ def commit_profile(root: Path, profile: str, after: After) -> int:
     """Run only after the TUI closes, with hooks and signing in the terminal."""
     path = skill_catalog.profile_path(profile)
     kept = f"{path} stays saved; nothing was committed or installed."
-    if reason := reconcile_skills.selection_install_blocker(root, profile):
+    if reason := reconcile_skills.selection_commit_blocker(root, profile):
         print(f"Could not commit: {reason}. {kept}")
         return 1
     try:

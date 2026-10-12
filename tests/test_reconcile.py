@@ -24,7 +24,7 @@ from reconcile_skills import (
     build_plan,
     ensure_skillset_committed,
     install_status,
-    selection_install_blocker,
+    selection_commit_blocker,
 )
 
 
@@ -1156,49 +1156,49 @@ class InstallInterfaceTests(unittest.TestCase):
         self.assertIn("Permission denied", status.problem)
         self.assertIn(str(directory), status.problem)
 
-    def test_install_blocker_allows_clean_checkout_and_saved_selection(self) -> None:
-        self.assertIsNone(selection_install_blocker(self.repo))
+    def test_commit_blocker_allows_clean_checkout_and_saved_selection(self) -> None:
+        self.assertIsNone(selection_commit_blocker(self.repo))
         write_profile(self.repo, "workstation", ["acme/skills:beta"])
-        self.assertIsNone(selection_install_blocker(self.repo))
+        self.assertIsNone(selection_commit_blocker(self.repo))
 
-    def test_install_blocker_allows_every_saved_profile(self) -> None:
+    def test_commit_blocker_allows_every_saved_profile(self) -> None:
         write_profile(self.repo, "llm", ["acme/skills:alpha"])
         git(["add", "-A"], self.repo)
         git(["commit", "-qm", "add llm profile"], self.repo)
         write_profile(self.repo, "llm", ["acme/skills:beta"])
         write_profile(self.repo, "workstation", ["acme/skills:beta"])
-        self.assertIsNone(selection_install_blocker(self.repo))
+        self.assertIsNone(selection_commit_blocker(self.repo))
 
-    def test_install_blocker_names_other_tracked_changes(self) -> None:
+    def test_commit_blocker_names_other_tracked_changes(self) -> None:
         readme = self.commit_readme()
         readme.write_text("Uncommitted edit\n", encoding="utf-8")
         write_profile(self.repo, "workstation", ["acme/skills:beta"])
-        blocker = selection_install_blocker(self.repo)
+        blocker = selection_commit_blocker(self.repo)
         self.assertIn("tracked skillset changes are not committed", blocker)
         self.assertIn("README.md", blocker)
         self.assertNotIn("profiles/workstation.txt", blocker)
 
-    def test_install_blocker_refuses_detached_head(self) -> None:
+    def test_commit_blocker_refuses_detached_head(self) -> None:
         git(["checkout", "-q", "--detach"], self.repo)
-        self.assertEqual(selection_install_blocker(self.repo),
+        self.assertEqual(selection_commit_blocker(self.repo),
                          "checkout is on a detached HEAD; switch to a branch")
 
-    def test_install_blocker_refuses_merge_in_progress(self) -> None:
+    def test_commit_blocker_refuses_merge_in_progress(self) -> None:
         self.conflicting_branches()
         git(["merge", "--no-edit", "competing"], self.repo, ok=False)
-        self.assertEqual(selection_install_blocker(self.repo),
+        self.assertEqual(selection_commit_blocker(self.repo),
                          "a merge is in progress; finish it first")
 
-    def test_install_blocker_refuses_rebase_in_progress(self) -> None:
+    def test_commit_blocker_refuses_rebase_in_progress(self) -> None:
         self.conflicting_branches()
         git(["rebase", "competing"], self.repo, ok=False)
-        self.assertEqual(selection_install_blocker(self.repo),
+        self.assertEqual(selection_commit_blocker(self.repo),
                          "a rebase is in progress; finish it first")
 
-    def test_install_blocker_refuses_linked_worktree(self) -> None:
+    def test_commit_blocker_refuses_linked_worktree(self) -> None:
         worktree = self.base / "linked-worktree"
         git(["worktree", "add", "-q", "-b", "fixture-linked", str(worktree)], self.repo)
-        self.assertIn("skill links belong to the primary checkout", selection_install_blocker(worktree))
+        self.assertIn("skill links belong to the primary checkout", selection_commit_blocker(worktree))
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from reconcile_skills import (
     ensure_skillset_committed,
     home_path,
     require_primary_checkout,
-    selection_install_blocker,
+    selection_commit_blocker,
     stale_upstreams,
 )
 from skill_catalog import (
@@ -121,7 +121,7 @@ def off_main(root: Path) -> str | None:
 
 def update_blocker(root: Path) -> str | None:
     """Why the update cannot start, or None."""
-    if reason := off_main(root) or selection_install_blocker(root):
+    if reason := off_main(root) or selection_commit_blocker(root):
         return reason
     # The update validates profiles as committed; an uncommitted one could be broken by it unseen.
     if changed := uncommitted_profile_files(root):
