@@ -96,8 +96,8 @@ Install with its reason. After an install failure, run the skill selector again
 and choose Install.
 
 Saving a profile this home doesn't use never installs it here unless asked. The
-dialog names the profile this home uses and offers **Save and commit**, which
-commits only that file as above and installs nothing; **Save, commit and use it
+dialog names the profile this home uses and offers **Save and commit (nothing
+installed here)**, which commits only that file as above; **Save, commit and use it
 here**, which then runs `scripts/reconcile-skills.sh --profile <name>`; and
 **Save only**. Committing a new profile adds its file as `Add <name> profile (+N -0)`. The title marks such a profile **not committed** while its file
 differs from HEAD.

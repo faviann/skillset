@@ -1245,7 +1245,8 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             where = (f"This home uses {self.active}; saving {self.profile} doesn't change what's installed here."
                      if self.active else "This home has no profile yet.")
             dialog = ChoiceDialog(f"Save {self.profile}?",
-                                  ["Save and commit", "Save, commit and use it here", "Save only"],
+                                  ["Save and commit (nothing installed here)", "Save, commit and use it here",
+                                   "Save only"],
                                   f"{review}\n\n{where}", disabled={1: reason, 2: reason} if reason else None)
             afters = {1: After.NOTHING, 2: After.USE_HERE, 3: None}
 

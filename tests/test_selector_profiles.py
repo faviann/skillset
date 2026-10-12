@@ -139,7 +139,8 @@ class OtherProfileSaveTests(ProfileCase):
         await pilot.press("right", "space", "ctrl+s")
         self.assertEqual(self.text(app, "#dialog-title"), "Save llm?")
         self.assertEqual(self.lines(app, "choices"),
-                         ["1. Save and commit", "2. Save, commit and use it here", "3. Save only"])
+                         ["1. Save and commit (nothing installed here)", "2. Save, commit and use it here",
+                          "3. Save only"])
         self.assertEqual(self.text(app, "#dialog-details"),
                          "+ mattpocock/skills:prototype\n\n"
                          "This home uses workstation; saving llm doesn't change what's installed here.")
@@ -339,7 +340,8 @@ class NewProfileTests(ProfileCase):
         await pilot.press("ctrl+s")
         self.assertEqual(self.text(app, "#dialog-title"), "Save laptop?")
         self.assertEqual(self.lines(app, "choices"),
-                         ["1. Save and commit", "2. Save, commit and use it here", "3. Save only"])
+                         ["1. Save and commit (nothing installed here)", "2. Save, commit and use it here",
+                          "3. Save only"])
         self.assertEqual(self.text(app, "#dialog-details"),
                          "+ mattpocock/skills:tdd\n\n"
                          "This home uses workstation; saving laptop doesn't change what's installed here.")
@@ -748,7 +750,8 @@ class FreshHomeTests(ProfileCase):
             await pilot.press("escape", "right", "space", "ctrl+s")
             self.assertEqual(self.text(app, "#dialog-title"), "Save llm?")
             self.assertEqual(self.lines(app, "choices"),
-                             ["1. Save and commit", "2. Save, commit and use it here", "3. Save only"])
+                             ["1. Save and commit (nothing installed here)", "2. Save, commit and use it here",
+                              "3. Save only"])
             self.assertEqual(self.text(app, "#dialog-details"),
                              "+ mattpocock/skills:prototype\n\nThis home has no profile yet.")
             await pilot.press("2")
