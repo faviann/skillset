@@ -88,11 +88,12 @@ class UpdateCase(unittest.TestCase):
 
 class UpdateStartTests(UpdateCase):
     def assert_refused(self, reason: str, script: Path | None = None) -> None:
+        subjects = self.origin_subjects()
         self.assertIn(reason, self.update(ok=False, script=script))
         self.assertFalse(self.worktree.exists())
         self.assertFalse((self.home / ".agents/skills").exists())
         self.assertFalse((self.home / ".claude").exists())
-        self.assertEqual(self.origin_subjects(), ["initial skillset"])
+        self.assertEqual(self.origin_subjects(), subjects)
 
     def test_refuses_a_home_without_a_valid_record(self) -> None:
         record = self.home / ".agents/.skillset/profile"
@@ -125,6 +126,14 @@ class UpdateStartTests(UpdateCase):
         linked = self.base / "linked"
         git(["worktree", "add", "-q", str(linked)], self.repo)
         self.assert_refused("belong to the primary checkout", linked / "scripts/update-sources.sh")
+
+    def test_refuses_while_any_profile_file_has_uncommitted_changes(self) -> None:
+        self.add_profile("llm", ["zebra/tools:gamma"])
+        (self.repo / "profiles/llm.txt").write_text("# unsaved\n", encoding="utf-8")
+        self.assert_refused("profiles/llm.txt has uncommitted changes")
+        git(["checkout", "-q", "--", "profiles/llm.txt"], self.repo)
+        write_profile(self.repo, "review", ["acme/skills:alpha"])
+        self.assert_refused("profiles/review.txt has uncommitted changes")
 
     def test_rerun_restores_sources_an_interrupted_finish_left_behind(self) -> None:
         self.update()

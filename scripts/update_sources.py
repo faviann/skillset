@@ -29,9 +29,8 @@ from skill_catalog import (
     load_catalog,
     parse_modules,
     path_prefixes,
-    profile_path,
+    PROFILES_DIR,
     read_selection_text,
-    selection_uncommitted,
     update_marker,
     UPDATE_AVAILABLE,
 )
@@ -122,8 +121,12 @@ def update_blocker(root: Path) -> str | None:
     """Why the update cannot start, or None."""
     if reason := off_main(root) or selection_install_blocker(root):
         return reason
-    if selection_uncommitted(root, profile := active_profile(root)):
-        return f"{profile_path(profile)} has uncommitted changes; save and install first"
+    # The update validates profiles as committed; an uncommitted one could be broken by it unseen.
+    status = git(["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all", "--", f"{PROFILES_DIR}/"],
+                 cwd=root)
+    if changed := sorted(entry[3:] for entry in status.split("\0") if entry):
+        return (f"{', '.join(changed)} {'has' if len(changed) == 1 else 'have'} uncommitted changes; "
+                "commit or discard them first")
     return None
 
 
