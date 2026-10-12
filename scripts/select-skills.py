@@ -1229,7 +1229,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             install_label = "Save and install" if self.draft.unsaved else "Install"
             dialog = ChoiceDialog("Save these changes?", [install_label, "Save only", "Keep editing"], review,
                                   disabled={1: reason} if reason else None)
-            afters = {1: After.INSTALL, 2: None}
+            afters = {1: After.INSTALL, 2: After.SAVE_ONLY}
         else:
             if not self.draft.unsaved and not self.not_committed:
                 self.query_one("#message", Static).update("⎿ No changes to save.")
@@ -1240,7 +1240,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
                                   ["Save and commit (nothing installed here)", "Save, commit and use it here",
                                    "Save only"],
                                   f"{review}\n\n{where}", disabled={1: reason, 2: reason} if reason else None)
-            afters = {1: After.NOTHING, 2: After.USE_HERE, 3: None}
+            afters = {1: After.NOTHING, 2: After.USE_HERE, 3: After.SAVE_ONLY}
 
         def save_choice(choice: int | None) -> None:
             if choice in afters:
@@ -1253,14 +1253,14 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         return (self.draft.install_blocker or reconcile_skills.selection_install_blocker(self.root, self.profile)
                 or (self.install_error if self.profile == self.active and not self.draft.changes else None))
 
-    def save_selection(self, overwrite: Conflict | None = None, *, after: After | None = None) -> None:
-        """Save the draft, then close for the terminal handoff to commit it unless `after` is None (Save only)."""
-        if after is not None and (reason := self.handoff_blocker()):
+    def save_selection(self, overwrite: Conflict | None = None, *, after: After) -> None:
+        """Save the draft, then close for the terminal handoff to commit it unless `after` is SAVE_ONLY."""
+        if after is not After.SAVE_ONLY and (reason := self.handoff_blocker()):
             action = "install" if after is After.INSTALL else "commit"
             self.query_one("#message", Static).update(Text(f"⎿ Cannot {action}: {reason}"))
             return
         try:
-            outcome = self.draft.save(install=after is not None, overwrite=overwrite)
+            outcome = self.draft.save(install=after is not After.SAVE_ONLY, overwrite=overwrite)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not save: {error}"))
             return
@@ -1279,7 +1279,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         if isinstance(outcome, Blocked):
             self.query_one("#message", Static).update(Text("⎿ Cannot save: " + outcome.reason))
             return
-        if after is not None:
+        if after is not After.SAVE_ONLY:
             self.exit(partial(commit_profile, profile=self.profile, after=after))
             return
         self.refresh_file_status()
@@ -1373,11 +1373,12 @@ def shell_path_env() -> dict[str, str]:
 
 
 class After(Enum):
-    """What the terminal handoff does once the edited profile is committed."""
+    """What a save, rename, delete or use here does next. All but SAVE_ONLY close for the terminal handoff."""
 
-    NOTHING = auto()  # Save and commit: nothing is installed here.
-    INSTALL = auto()  # Save and install the profile this home uses.
-    USE_HERE = auto()  # Save, commit and use it here: reconcile-skills.sh --profile <name>.
+    SAVE_ONLY = auto()  # Save only: the selector stays open and nothing is committed.
+    NOTHING = auto()  # Commit only, install nothing here: Save and commit, or renaming or deleting another profile.
+    INSTALL = auto()  # Then install the profile this home uses: Save and install, or Install.
+    USE_HERE = auto()  # Then reconcile-skills.sh --profile <name>: using a profile here, or renaming this home's.
 
 
 def commit_profile(root: Path, profile: str, after: After) -> int:
@@ -1448,7 +1449,7 @@ def commit_handoff(root: Path, paths: list[str], message: list[str], *, stage: l
 def finish_handoff(root: Path, profile: str, after: After) -> int:
     """Install profile here as `after` says, once it is committed, and point out an unpushed commit."""
     code = 0
-    if after is not After.NOTHING:
+    if after in (After.INSTALL, After.USE_HERE):
         command = [str(root / "scripts/reconcile-skills.sh")]
         if after is After.USE_HERE:
             command += ["--profile", profile]
