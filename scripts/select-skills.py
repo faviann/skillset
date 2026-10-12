@@ -1017,7 +1017,8 @@ class SelectorApp(App[Callable[[Path], int] | None]):
 
     def delete_profile(self, name: str) -> None:
         """Confirm, then close for the terminal handoff to commit the deletion."""
-        reason = ("it is the last profile" if self.profile_names() == [name]
+        # A profile saved but not committed is not counted: the deletion's commit would leave HEAD with none.
+        reason = ("it is the last profile" if skill_catalog.list_profiles(self.root) == [name]
                   else "this home uses it; choose another here first" if name == self.active
                   else self.file_operation_blocker(name))
         if reason:

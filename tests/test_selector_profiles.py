@@ -570,6 +570,22 @@ class DeleteTests(ProfileCase):
             self.assertFalse(app.screen.is_modal)
             self.assertEqual(self.text(app, "#message"), "⎿ Cannot delete workstation: it is the last profile")
 
+    async def test_a_profile_saved_but_not_committed_does_not_count_toward_the_last(self) -> None:
+        git(["rm", "-q", "profiles/llm.txt", "profiles/zeroshot-review.txt"], self.repo)
+        git(["commit", "-qm", "keep only workstation"], self.repo)
+        (self.home / ".agents/.skillset/profile").unlink()
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("escape", "ctrl+p", "n", *"llm", "enter")
+            await self.started(pilot)
+            await pilot.press("ctrl+s", "3")
+            await self.started(pilot)
+            self.assertEqual(self.text(app, "#message"), "⎿ Saved profiles/llm.txt. Not committed.")
+            await pilot.press("ctrl+p", "down", "d")
+            self.assertFalse(app.screen.is_modal)
+            self.assertEqual(self.text(app, "#message"), "⎿ Cannot delete workstation: it is the last profile")
+
 
 class RejectedCommitTests(ProfileCase):
     """A commit hook that refuses leaves the profile where it was."""
