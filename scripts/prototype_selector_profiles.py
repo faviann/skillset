@@ -55,6 +55,7 @@ class State:
     active: str | None = "workstation"
     editing: str = "workstation"
     variant: str = "A"
+    dropdown: bool = True
     message: str = ""
 
 
@@ -156,6 +157,35 @@ class ProfilePicker(ModalScreen[tuple[str, str] | None]):
         self.dismiss(None)
 
 
+class ProfileDropdown(ProfilePicker):
+    """The same picker, dropped down under the profile name in the title instead of docked at the bottom."""
+
+    DEFAULT_CSS = """
+    ProfileDropdown { align: left top; background: transparent; }
+    #dialog { width: auto; height: auto; margin: 2 0 0 18; padding: 0 1; border: round #D77757;
+              background: ansi_default; }
+    #choices { height: auto; max-height: 16; width: 100%; }
+    #dialog-hint { height: 2; margin-top: 1; color: #999999; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield CatalogList(activate_on_click=True, id="choices")
+            yield Static("enter edit · u use here · esc close\nn new · c copy · r rename · d delete",
+                         id="dialog-hint")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        widest = max(sel.cell_len(line.plain) for row in self.query_one("#choices", CatalogList).rows
+                     for line in row.lines)
+        # Pointer 2, padding 2, border 2; never narrower than the two-line hint.
+        self.query_one("#dialog").styles.width = max(widest + 6, 40)
+
+    def on_click(self, event) -> None:
+        if not self.query_one("#dialog").region.contains(event.screen_x, event.screen_y):
+            self.dismiss(None)
+
+
 class ProfilesApp(sel.SelectorApp):
     CSS = sel.SelectorApp.CSS + """
     /* The app's `Screen { background: ansi_default }` also paints every dialog screen opaque,
@@ -167,7 +197,7 @@ class ProfilesApp(sel.SelectorApp):
     """
     BINDINGS = [*sel.SelectorApp.BINDINGS,
                 Binding("f2", "variant(-1)", show=False), Binding("f3", "variant(1)", show=False),
-                Binding("f6", "external_edit", show=False), Binding("f7", "fresh_home", show=False),
+                Binding("f4", "placement", show=False), Binding("f6", "external_edit", show=False), Binding("f7", "fresh_home", show=False),
                 Binding("ctrl+p", "profiles", show=False)]
 
     def __init__(self, root: Path, state: State) -> None:
@@ -257,7 +287,8 @@ class ProfilesApp(sel.SelectorApp):
             elif self.uncommitted(name):
                 notes.append(("not committed", SECONDARY))
             info = Text("  ").join(Text(text, style=style) for text, style in notes)
-            rows.append(Row(name, [label, Text("  ") + info] if two_lines else [label + Text("   ") + info]))
+            pad = Text(" " * (max(map(len, self.state.stores)) - len(name) + 3))
+            rows.append(Row(name, [label, Text("  ") + info] if two_lines else [label + pad + info]))
         return rows
 
     def refresh_title(self) -> None:
@@ -296,6 +327,7 @@ class ProfilesApp(sel.SelectorApp):
             self.query_one("#tabs", Static).update(Text("   ").join(parts) + legend)
         proto = Text.assemble(
             ("PROTOTYPE  ", "bold"), f"F2 ◀ {self.variant} · {VARIANTS[self.variant]} ▶ F3",
+            f"   F4 picker: {'dropdown' if self.state.dropdown else 'bottom'}" if self.variant == "A" else "",
             "   F6 edit file on disk · F7 fresh home",
         )
         self.query_one("#proto", Static).update(proto)
@@ -331,6 +363,12 @@ class ProfilesApp(sel.SelectorApp):
         if self.draft.unsaved:
             self.state.message = "Prototype: switching layout dropped the unsaved draft."
         self.exit("restart")
+
+    def action_placement(self) -> None:
+        self.state.dropdown = not self.state.dropdown
+        self.refresh_profiles()
+        where = "drops down under the title" if self.state.dropdown else "docks at the bottom"
+        self.say(f"Picker now {where}. ctrl+p to open.")
 
     def action_external_edit(self) -> None:
         self.store.disk += "# edited elsewhere\n"
@@ -394,7 +432,8 @@ class ProfilesApp(sel.SelectorApp):
 
     def action_profiles(self) -> None:
         if self.variant == "A":
-            self.push_screen(ProfilePicker(self), lambda picked: picked and self.profile_op(*picked))
+            picker = ProfileDropdown if self.state.dropdown else ProfilePicker
+            self.push_screen(picker(self), lambda picked: picked and self.profile_op(*picked))
         elif self.variant == "C":
             name = self.state.editing
             ops = ["use", "new", "copy", "rename", "delete"]
