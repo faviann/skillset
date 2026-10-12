@@ -332,6 +332,21 @@ raise SystemExit(m.main(sys.argv[4:]))
         ])
         self.assertEqual(self.home_entries(), before)
 
+    def test_check_reports_files_under_profiles_that_are_not_profiles_and_install_ignores_them(self) -> None:
+        profiles = self.repo / "profiles"
+        for other in ("Bad.txt", "notes.md", "nested/deep.txt"):
+            (profiles / other).parent.mkdir(exist_ok=True)
+            (profiles / other).write_text("", encoding="utf-8")
+        self.commit_skillset("add files that are not profiles")
+        installed = self.run_reconciler()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+
+        check = self.run_reconciler("--check")
+        self.assertEqual(check.returncode, 1)
+        rule = "not a profile; name a profile profiles/<name>.txt, with 1-64 lowercase letters, digits or single hyphens"
+        self.assertEqual(check.stderr.splitlines(),
+                         [f"profiles/{path}: {rule}" for path in ("Bad.txt", "nested", "notes.md")])
+
     def test_check_reports_a_broken_active_profile_beside_the_others(self) -> None:
         write_profile(self.repo, "llm", ["acme/skills:gone"])
         self.selection = [self.alpha, "acme/skills:missing"]

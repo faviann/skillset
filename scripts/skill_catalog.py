@@ -25,6 +25,7 @@ PROFILES_DIR = "profiles"
 SELECTION_HEADER = "# Written by the skill selector. Comments and ordering are not kept."
 UPDATE_AVAILABLE = "update available"
 FORK_BEHIND_UPSTREAM = "fork behind upstream"
+NOT_A_PROFILE = "not a profile; name a profile profiles/<name>.txt, with 1-64 lowercase letters, digits or single hyphens"
 
 
 class ReconcileError(Exception):
@@ -179,9 +180,9 @@ def selection_uncommitted(root: Path, profile: str) -> bool:
     return bool(git(["diff", "--name-only", "--no-ext-diff", "HEAD", "--", profile_path(profile)], cwd=root))
 
 
-def list_profiles(root: Path) -> list[str]:
-    """Names of the profiles committed at HEAD, sorted. Other files under profiles/ are not profiles."""
-    names = []
+def committed_profiles(root: Path) -> tuple[list[str], list[str]]:
+    """Names of the profiles committed at HEAD, and the paths of every other entry under profiles/ there, sorted."""
+    names, others = [], []
     for row in git(["ls-tree", "-z", "HEAD", "--", f"{PROFILES_DIR}/"], cwd=root).split("\0"):
         if not row:
             continue
@@ -189,7 +190,14 @@ def list_profiles(root: Path) -> list[str]:
         name = Path(path).name.removesuffix(".txt")
         if metadata.split()[0] in ("100644", "100755") and path == f"{PROFILES_DIR}/{name}.txt" and valid_name(name):
             names.append(name)
-    return sorted(names)
+        else:
+            others.append(path)
+    return sorted(names), sorted(others)
+
+
+def list_profiles(root: Path) -> list[str]:
+    """Names of the profiles committed at HEAD, sorted. Other files under profiles/ are not profiles."""
+    return committed_profiles(root)[0]
 
 
 def parse_modules(root: Path) -> dict[str, Module]:
@@ -515,12 +523,14 @@ def committed_selection_text(root: Path, profile: str) -> str:
 def profile_problems(root: Path, catalog: Catalog) -> list[str]:
     """Validate every profile committed at HEAD of root against catalog.
 
-    Returns every problem, profile by profile, each located at
+    Returns every problem: first each other entry under profiles/ at HEAD,
+    which installs ignore, then each profile's, located at
     profiles/<name>.txt:<line>. Profiles are read as committed, because that is
     what every home installs; uncommitted edits are not checked.
     """
-    problems = []
-    for profile in list_profiles(root):
+    names, others = committed_profiles(root)
+    problems = [f"{path}: {NOT_A_PROFILE}" for path in others]
+    for profile in names:
         try:
             problems += catalog.resolve(committed_selection_text(root, profile)).problems(profile)
         except ReconcileError as error:

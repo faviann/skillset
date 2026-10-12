@@ -264,6 +264,18 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(profile_problems(self.repo, load_catalog(self.repo)),
                          ["profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:gone"])
 
+    def test_profile_problems_names_each_file_under_profiles_that_is_not_a_profile(self) -> None:
+        write_profile(self.repo, "llm", ["acme/skills:gone"])
+        (self.repo / "profiles/Bad.txt").write_text("", encoding="utf-8")
+        git(["add", "-A"], self.repo)
+        git(["commit", "-qm", "add a profile and a stray file"], self.repo)
+        (self.repo / "profiles/notes.md").write_text("", encoding="utf-8")
+        self.assertEqual(profile_problems(self.repo, load_catalog(self.repo)), [
+            "profiles/Bad.txt: not a profile; name a profile profiles/<name>.txt, "
+            "with 1-64 lowercase letters, digits or single hyphens",
+            "profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:gone",
+        ])
+
     def test_selection_writer_sorts_and_round_trips_even_without_catalog_entries(self) -> None:
         self.selection_text("# handwritten choices\nretired/tools:gone\n\nacme/skills:alpha\n")
         selection = self.selection()
