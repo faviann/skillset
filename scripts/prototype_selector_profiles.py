@@ -158,6 +158,9 @@ class ProfilePicker(ModalScreen[tuple[str, str] | None]):
 
 class ProfilesApp(sel.SelectorApp):
     CSS = sel.SelectorApp.CSS + """
+    /* The app's `Screen { background: ansi_default }` also paints every dialog screen opaque,
+       which hides the selector behind it. A transparent dialog screen lets it show through. */
+    ModalScreen { background: transparent; }
     #profile-column { border-right: solid #999999; width: 26; }
     #tabs { height: 1; margin: 0 2 1 2; text-wrap: nowrap; text-overflow: ellipsis; }
     #proto { height: 1; padding: 0 2; background: #D77757; color: black; text-wrap: nowrap; }
