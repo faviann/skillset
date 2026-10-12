@@ -785,7 +785,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.push_screen(ChoiceDialog(
             "This home has no profile yet. Which one should it use?", [*names, "New profile"],
             (f"{self.record_problem}\n\n" if self.record_problem else "")
-            + "The choice is saved in ~/.agents/.skillset/profile on this machine only, "
+            + "The choice is saved in ~/.agents/.skillset/profile for this home only, "
             "then that profile is installed.\nEsc to browse first and decide when you save.",
             disabled=disabled), chosen)
 

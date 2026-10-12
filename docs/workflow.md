@@ -5,7 +5,7 @@ live checkout through `select-skills`. Source pin changes happen through
 `scripts/update-sources.sh`, which publishes each update you accept and then
 brings it into the live checkout.
 
-## Set up a machine
+## Set up a home
 
 Clone skillset to the path that becomes the live checkout, then run setup:
 
@@ -198,7 +198,7 @@ same way. Rerunning after an interrupted run is always safe, because finished
 sources show nothing to do. If `origin/main` renamed or deleted this home's
 profile, the command says so at the start. Updates still go through, since
 every profile is validated, but the install at the end fails closed until you
-[choose a profile](#set-up-a-machine) again.
+[choose a profile](#set-up-a-home) again.
 
 The command refuses to start, with the reason, outside the primary checkout,
 off `main`, on a detached `HEAD`, during a merge or rebase, with uncommitted
@@ -349,7 +349,7 @@ Run `scripts/reconcile-skills.sh` to install this home's profile,
 it, and `scripts/reconcile-skills.sh --check` for a read-only check of every
 profile and this home's install. After a
 successful install, with or without `--profile`, the script also links `select-skills` and its lockfile in
-`~/.local/bin` to the live checkout, as setup does, so a machine whose dotfiles
+`~/.local/bin` to the live checkout, as setup does, so a home whose dotfiles
 hook installs skills also gets the selector command. The skillset
 commit SHA identifies the selection and source pins used for the install.
 It does not make linked source contents immutable: another process can modify

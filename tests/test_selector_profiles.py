@@ -719,7 +719,7 @@ class FreshHomeTests(ProfileCase):
             self.assertEqual(self.lines(app, "choices"),
                              ["1. llm", "2. workstation", "3. zeroshot-review", "4. New profile"])
             self.assertEqual(self.text(app, "#dialog-details"),
-                             "The choice is saved in ~/.agents/.skillset/profile on this machine only, "
+                             "The choice is saved in ~/.agents/.skillset/profile for this home only, "
                              "then that profile is installed.\nEsc to browse first and decide when you save.")
             self.assertEqual(app.screen_stack[0].query_one("#title", selector.Static).content.plain,
                              "✻ Skill selector  llm  · this home has no profile   1 selected · 0 unsaved")
@@ -800,7 +800,7 @@ class FreshHomeTests(ProfileCase):
             self.assertEqual(self.lines(app, "choices")[2], "3. zeroshot-review")
             self.assertEqual(self.text(app, "#dialog-details"),
                              "this home's profile gone is not a profile at HEAD\n\n"
-                             "The choice is saved in ~/.agents/.skillset/profile on this machine only, "
+                             "The choice is saved in ~/.agents/.skillset/profile for this home only, "
                              "then that profile is installed.\nEsc to browse first and decide when you save.\n\n"
                              "zeroshot-review unavailable: profiles/zeroshot-review.txt is not committed; save and commit it first")
             await pilot.press("3")
