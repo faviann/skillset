@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
@@ -296,6 +296,48 @@ class ChoiceDialog(ModalScreen[int | None]):
         self.dismiss(None)
 
 
+class NameDialog(ModalScreen[str | None]):
+    """Ask for a profile name until it follows the skill-name rules and is not taken."""
+
+    DEFAULT_CSS = ChoiceDialog.DEFAULT_CSS.replace("ChoiceDialog", "NameDialog") + """
+    #name-box { height: 3; margin-top: 1; border: round #999999; }
+    #name-input { height: 1; padding: 0; border: none; background: transparent; }
+    #name-input:focus { border: none; }
+    #name-error { height: auto; color: red; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, title: str, details: str, taken: Collection[str], *, value: str = "") -> None:
+        super().__init__()
+        self.heading = title
+        self.details = details
+        self.taken = taken
+        self.value = value
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static(Text(self.heading), id="dialog-title")
+            yield Static(Text(self.details), id="dialog-details")
+            with Horizontal(id="name-box"):
+                yield Static(">", id="search-prompt")
+                yield Input(self.value, placeholder="profile name", select_on_focus=False, id="name-input")
+            yield Static(id="name-error")
+            yield Static("Enter to confirm · Esc to cancel", id="dialog-hint")
+
+    @on(Input.Submitted, "#name-input")
+    def submitted(self, event: Input.Submitted) -> None:
+        name = event.value.strip()
+        if not skill_catalog.valid_name(name):
+            self.query_one("#name-error", Static).update("use 1-64 lowercase letters, digits or single hyphens")
+        elif name in self.taken:
+            self.query_one("#name-error", Static).update(Text(f"{name} already exists"))
+        else:
+            self.dismiss(name)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class ProfilePicker(ModalScreen[tuple[str, str] | None]):
     """Every profile, in a list dropped down under the edited profile's name in the title.
 
@@ -311,8 +353,10 @@ class ProfilePicker(ModalScreen[tuple[str, str] | None]):
     BINDINGS = [
         Binding("escape", "cancel", show=False),
         Binding("enter", "pick('edit')", show=False),
+        Binding("n", "pick('new')", show=False),
+        Binding("c", "pick('copy')", show=False),
     ]
-    HINT = "enter edit · esc close"
+    HINT = "enter edit · n new · c copy · esc close"
 
     def __init__(self, rows: list[Row], current: str, *, under: Offset) -> None:
         super().__init__()
@@ -665,7 +709,8 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         # Browsing needs source validation, not the reconciler's deployment gate.
         self.selection_catalog = skill_catalog.load_catalog(self.root)
         self.catalog = display_catalog(self.selection_catalog)
-        self.draft = SelectionDraft.load(CheckoutStore(self.root, self.profile), self.selection_catalog)
+        self.store = CheckoutStore(self.root, self.profile)
+        self.draft = SelectionDraft.load(self.store, self.selection_catalog)
         self.not_installed = False
         self.not_committed = False
         self.install_error: str | None = None
@@ -784,8 +829,9 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         rows = []
         for name in names:
             try:
-                count = len(skill_catalog.parse_selection(skill_catalog.read_selection_text(self.root, name)))
-            except reconcile_skills.ReconcileError:
+                text = self.store.read() if name == self.profile else skill_catalog.read_selection_text(self.root, name)
+                count = len(skill_catalog.parse_selection(text))
+            except (reconcile_skills.ReconcileError, OSError):
                 count = 0
             notes = [("● used here", ACCENT)] if name == self.active else []
             notes.append((f"{count} skill{'' if count == 1 else 's'}", SECONDARY))
@@ -810,19 +856,23 @@ class SelectorApp(App[Callable[[Path], int] | None]):
     def profile_operation(self, operation: str, name: str) -> None:
         if operation == "edit":
             self.switch_to(name)
+        elif operation in ("new", "copy"):
+            self.new_profile(copy_from=name if operation == "copy" else None)
 
-    def switch_to(self, name: str) -> None:
+    def switch_to(self, name: str, edit: Callable[[], None] | None = None) -> None:
+        """Edit name, through `edit` if given, after asking whether to drop unsaved changes."""
+        edit = edit or partial(self.edit_profile, name)
         if name == self.profile:
             return
         if not self.draft.unsaved:
-            self.edit_profile(name)
+            edit()
             return
 
         async def choice(number: int | None) -> None:
             if number == 2:
                 await self.action_save()
             elif number == 3:
-                self.edit_profile(name)
+                edit()
 
         self.push_screen(ChoiceDialog(f"Switch to {name} with unsaved changes?",
                                       ["Keep editing", "Review and save", "Discard and switch"],
@@ -835,13 +885,41 @@ class SelectorApp(App[Callable[[Path], int] | None]):
                  else f" This home uses {self.active}.")
         self.query_one("#message", Static).update(Text(f"⎿ Editing {name}.{where}"))
 
-    def load_profile(self, name: str, failure: str) -> bool:
-        """Edit the saved file of name, dropping unsaved changes, or show why it cannot be read."""
+    def new_profile(self, *, copy_from: str | None = None) -> None:
+        """Name a profile that starts empty or as a copy of a saved one, and edit it unsaved."""
         try:
-            self.draft = SelectionDraft.load(CheckoutStore(self.root, name), self.selection_catalog)
+            start = (skill_catalog.read_selection_text(self.root, copy_from) if copy_from
+                     else skill_catalog.SELECTION_HEADER + "\n")
+        except reconcile_skills.ReconcileError as error:
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot copy {copy_from}: {error}"))
+            return
+        details = (f"Starts as a copy of {copy_from}; the two stay independent afterwards." if copy_from
+                   else "Starts empty.") + " It exists only in the selector until you save it."
+
+        def named(name: str | None) -> None:
+            if name:
+                self.switch_to(name, partial(self.create_profile, name, start))
+
+        self.push_screen(NameDialog(f"Copy {copy_from} as" if copy_from else "New profile", details,
+                                    self.profile_names()), named)
+
+    def create_profile(self, name: str, start: str) -> None:
+        if self.load_profile(name, "Could not create", start=start):
+            self.query_one("#message", Static).update(
+                Text(f"⎿ Created {name}. It exists only in the selector until you save it."))
+
+    def load_profile(self, name: str, failure: str, *, start: str | None = None) -> bool:
+        """Edit the saved file of name, dropping unsaved changes, or show why it cannot be read.
+
+        With `start`, name has no file yet: the draft starts from that content, unsaved.
+        """
+        try:
+            store = CheckoutStore(self.root, name, start=start)
+            self.draft = SelectionDraft.load(store, self.selection_catalog, new=start is not None)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ {failure}: {error}"))
             return False
+        self.store = store
         self.profile = name
         self.source = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
         self.refresh_file_status()
@@ -1137,10 +1215,12 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         try:
             self.selection_catalog = skill_catalog.load_catalog(self.root)
             self.catalog = display_catalog(self.selection_catalog)
-            self.draft = SelectionDraft.load(CheckoutStore(self.root, self.profile), self.selection_catalog)
+            store = CheckoutStore(self.root, self.profile)
+            self.draft = SelectionDraft.load(store, self.selection_catalog)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
             return
+        self.store = store
         self.refresh_file_status()
         self.refresh_title()
         self.fill_sources(keep_cursor=True)
@@ -1213,9 +1293,13 @@ def commit_profile(root: Path, profile: str, after: After) -> int:
         print(f"Could not commit: {reason}. {path} stays saved; nothing was committed or installed.")
         return 1
     try:
-        changes = Changes.between(skill_catalog.git(["show", f"HEAD:{path}"], cwd=root),
-                                  skill_catalog.read_selection_text(root, profile))
+        store = CheckoutStore(root, profile)
+        changes = Changes.between(store.head(), store.read())
         message = f"Update {profile} profile ({changes.summary})"
+        if not skill_catalog.git(["ls-files", "--", path], cwd=root):
+            # A new profile: `commit --only` takes only paths Git already knows.
+            skill_catalog.git(["add", "--", path], cwd=root)
+            message = f"Add {profile} profile ({changes.summary})"
         # Match the checkout inspected by the catalog's Git reads, while
         # retaining terminal streams for hooks and interactive signing.
         if skill_catalog.selection_uncommitted(root, profile):
