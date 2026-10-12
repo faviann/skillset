@@ -534,8 +534,16 @@ class SkillBody(Static):
 class SelectorApp(App[Callable[[Path], int] | None]):
     TITLE = "Skill selector"
     ENABLE_COMMAND_PALETTE = False
+    # Textual's own ANSI rule renders the screen behind a dialog dim.
+    SUSPENDED_SCREEN_CLASS = "-screen-suspended"
     CSS = """
     Screen { background: ansi_default; color: ansi_default; }
+    /* The Screen rule above also paints dialog screens opaque, hiding the selector behind them. */
+    ModalScreen { background: transparent; }
+    /* Dim fades text but not border colours, so grey the borders behind a dialog here. */
+    Screen.-screen-suspended #search-box { border: round #5f5f5f; }
+    Screen.-screen-suspended #source-column, Screen.-screen-suspended #skill-column { border-right: solid #5f5f5f; }
+    Screen.-screen-suspended #skill-foot { border-bottom: solid #5f5f5f; }
     #title { height: 1; margin: 1 2; }
     #search-box { height: 3; margin: 0 2 1 2; border: round #999999; }
     #search-prompt { width: 2; }
