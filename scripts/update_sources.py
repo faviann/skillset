@@ -25,6 +25,7 @@ from skill_catalog import (
     canonical_url,
     git,
     git_env,
+    list_profiles,
     load_catalog,
     parse_modules,
     path_prefixes,
@@ -209,10 +210,21 @@ def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog, l
              f"sources/{update.name}", "sources.toml"], worktree, log, interactive=True)
 
 
+def check_profiles(worktree: Path, catalog: Catalog) -> None:
+    """Refuse when any profile at HEAD fails to resolve, so no home pulls a pin it cannot install."""
+    problems = []
+    for profile in list_profiles(worktree):
+        try:
+            catalog.resolve(read_selection_text(worktree, profile)).install_targets(profile)
+        except ReconcileError as error:
+            problems.append(str(error))
+    if problems:
+        raise ReconcileError("\n".join(problems))
+
+
 def check_installable(worktree: Path, catalog: Catalog) -> None:
-    profile = active_profile(worktree)
-    ensure_skillset_committed(worktree, profile)
-    catalog.resolve(read_selection_text(worktree, profile)).install_targets(profile)
+    ensure_skillset_committed(worktree, active_profile(worktree))
+    check_profiles(worktree, catalog)
     if stale := stale_upstreams(catalog):
         raise ReconcileError("\n".join(stale))
 

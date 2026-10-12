@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fixture import SkillsetFixture, configure_git, git, write_skill
+from fixture import SkillsetFixture, configure_git, git, write_profile, write_skill
 
 
 class UpdateCase(unittest.TestCase):
@@ -68,6 +68,12 @@ class UpdateCase(unittest.TestCase):
         (other / "profiles/workstation.txt").write_text(selection, encoding="utf-8")
         git(["commit", "-qam", subject], other)
         git(["push", "-q", "origin", "main"], other)
+
+    def add_profile(self, name: str, selection: list[str]) -> None:
+        write_profile(self.repo, name, selection)
+        git(["add", "--", f"profiles/{name}.txt"], self.repo)
+        git(["commit", "-qm", f"Add {name} profile"], self.repo)
+        git(["push", "-q", "origin", "main"], self.repo)
 
     def add_canonical(self, source: str) -> Path:
         canonical = self.fixture.github / f"{source}.git"
@@ -321,6 +327,18 @@ class UpdateApplyTests(UpdateCase):
                       output)
         self.assertIn("the update adds: omega", output)
         self.assertEqual(self.origin_subjects(), ["initial skillset"])
+        self.assertEqual(self.check().returncode, 0)
+
+    def test_a_pin_that_breaks_only_a_profile_this_home_does_not_use_is_refused(self) -> None:
+        self.add_profile("llm", ["zebra/tools:gamma", "acme/skills:unselected"])
+        head = git(["rev-parse", "HEAD"], self.repo)
+        git(["rm", "-rq", "skills/unselected"], self.fixture.origins["acme/skills"])
+        self.advance("acme/skills", "remove unselected")
+        output = self.update("a\n", ok=False)
+        self.assertIn("acme/skills: skipped: profiles/llm.txt:3: name is missing at the pinned commit: "
+                      "acme/skills:unselected", output)
+        self.assertEqual(self.origin_subjects(), ["Add llm profile", "initial skillset"])
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
         self.assertEqual(self.check().returncode, 0)
 
     def test_main_that_moves_during_the_run_is_merged_validated_and_pushed(self) -> None:
