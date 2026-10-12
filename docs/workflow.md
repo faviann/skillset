@@ -100,6 +100,18 @@ changes. Entries that no longer resolve appear first under **Not in catalog**
 with their reasons; deselect them to remove them, or leave them to preserve them
 on save. Duplicate selected names must be resolved before saving.
 
+In the Ctrl+P list, `r` renames and `d` deletes the highlighted profile. Both
+are refused while anything is unsaved or the profile's file differs from HEAD,
+and for the same reasons that disable Save and install. Rename asks for a new
+name, which follows the skill-name rules and must not be taken. Delete asks for
+confirmation; it refuses the last profile and the profile this home uses, so
+choose another here first. Each closes the selector and commits only the change,
+as `Rename <old> profile to <new>` with `git mv` or `Delete <name> profile` with
+`git rm`. If the commit fails, the file is put back. Renaming the profile this
+home uses then runs `scripts/reconcile-skills.sh --profile <new>`. The selector
+can't see other homes: any that use the old name stop installing until they
+choose a profile with `scripts/reconcile-skills.sh --profile <name>`.
+
 You can also edit a profile by hand. Uncommitted changes to profiles other than
 this home's never block committing or installing, but they block a source
 update, which validates every profile as committed. Each selection line is
