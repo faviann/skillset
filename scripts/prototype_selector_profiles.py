@@ -56,6 +56,7 @@ class State:
     editing: str = "workstation"
     variant: str = "A"
     dropdown: bool = True
+    faint: bool = True
     message: str = ""
 
 
@@ -197,13 +198,14 @@ class ProfilesApp(sel.SelectorApp):
     """
     BINDINGS = [*sel.SelectorApp.BINDINGS,
                 Binding("f2", "variant(-1)", show=False), Binding("f3", "variant(1)", show=False),
-                Binding("f4", "placement", show=False), Binding("f6", "external_edit", show=False), Binding("f7", "fresh_home", show=False),
+                Binding("f4", "placement", show=False), Binding("f5", "faint", show=False),Binding("f6", "external_edit", show=False), Binding("f7", "fresh_home", show=False),
                 Binding("ctrl+p", "profiles", show=False)]
 
     def __init__(self, root: Path, state: State) -> None:
         self.state = state
         super().__init__(root)
         self.variant = state.variant
+        self.SUSPENDED_SCREEN_CLASS = "-screen-suspended" if state.faint else ""
         self.load_draft()
 
     # ---- state -------------------------------------------------------------------------------
@@ -328,6 +330,7 @@ class ProfilesApp(sel.SelectorApp):
         proto = Text.assemble(
             ("PROTOTYPE  ", "bold"), f"F2 ◀ {self.variant} · {VARIANTS[self.variant]} ▶ F3",
             f"   F4 picker: {'dropdown' if self.state.dropdown else 'bottom'}" if self.variant == "A" else "",
+            f"   F5 behind dialogs: {'faint' if self.state.faint else 'unchanged'}",
             "   F6 edit file on disk · F7 fresh home",
         )
         self.query_one("#proto", Static).update(proto)
@@ -363,6 +366,13 @@ class ProfilesApp(sel.SelectorApp):
         if self.draft.unsaved:
             self.state.message = "Prototype: switching layout dropped the unsaved draft."
         self.exit("restart")
+
+    def action_faint(self) -> None:
+        self.state.faint = not self.state.faint
+        # Textual's own ANSI rule renders a suspended screen with text-style: dim.
+        self.SUSPENDED_SCREEN_CLASS = "-screen-suspended" if self.state.faint else ""
+        self.refresh_profiles()
+        self.say(f"Behind dialogs: {'faint' if self.state.faint else 'unchanged'}. ctrl+p to open.")
 
     def action_placement(self) -> None:
         self.state.dropdown = not self.state.dropdown
