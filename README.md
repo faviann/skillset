@@ -105,7 +105,8 @@ tests/run.sh selector
 ```
 
 Tests use temporary homes and real local Git repositories. CI also initializes
-the committed source configuration and installs it twice in a temporary home.
+the committed source configuration and installs and checks each profile twice,
+each in its own temporary home.
 The code requires Python 3.11 or newer. The validated platform is Linux with
 Python 3.13 and Git 2.47. The selector group needs uv and uses the selector's
 locked dependencies; the stdlib group and installer need no third-party Python

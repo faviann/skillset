@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fixture import CHECKOUT, SkillsetFixture, git, write_skill
+from fixture import CHECKOUT, SkillsetFixture, git, write_profile, write_skill
 
 sys.path.insert(0, str(CHECKOUT / "scripts"))
 from skill_catalog import (
@@ -25,6 +25,7 @@ from skill_catalog import (
     parse_modules,
     parse_selection,
     profile_path,
+    profile_problems,
     read_selection_text,
     write_selection,
 )
@@ -105,6 +106,20 @@ class ResolutionTests(unittest.TestCase):
     def test_later_syntax_error_wins_over_earlier_catalog_error(self) -> None:
         with self.assertRaisesRegex(ReconcileError, r"profiles/workstation.txt:3: bad syntax"):
             self.targets("unknown/skills:alpha\nacme/skills:missing\nnot a value\n")
+
+    def test_problems_lists_every_broken_line_with_its_location(self) -> None:
+        catalog = Catalog({"acme/skills": self.acme, "other/tools": SourceCatalog({"alpha": "/tools/alpha"}, {}, {})})
+        problems = catalog.resolve(
+            "# selection\nunknown/skills:alpha\nacme/skills:alpha\nacme/skills:broken\n"
+            "not a value\nother/tools:alpha\nacme/skills:gone\n").problems("llm")
+        self.assertEqual(problems, [
+            "profiles/llm.txt:5: bad syntax; expected owner/repo:name: not a value",
+            "profiles/llm.txt:2: unknown source: unknown/skills",
+            "profiles/llm.txt:4: selected name is invalid: acme/skills:broken\n  bad frontmatter",
+            "profiles/llm.txt:6: same name selected from two sources: alpha\n  acme/skills:alpha\n  other/tools:alpha",
+            "profiles/llm.txt:7: name is missing at the pinned commit: acme/skills:gone",
+        ])
+        self.assertEqual(catalog.resolve("acme/skills:alpha\n").problems("llm"), [])
 
     def test_resolve_keeps_every_line_with_its_own_error(self) -> None:
         lines = Catalog({"acme/skills": self.acme}).resolve(
@@ -237,6 +252,18 @@ class CatalogTests(unittest.TestCase):
         (profiles / "draft.txt").write_text("", encoding="utf-8")
         (profiles / "llm.txt").unlink()
         self.assertEqual(list_profiles(self.repo), ["llm", "workstation", "zeroshot-review"])
+
+    def test_profile_problems_validates_every_profile_as_committed(self) -> None:
+        write_profile(self.repo, "llm", ["acme/skills:gone", "acme/skills:alpha"])
+        write_profile(self.repo, "review", ["acme/skills:alpha"])
+        git(["add", "-A"], self.repo)
+        git(["commit", "-qm", "add profiles"], self.repo)
+        write_profile(self.repo, "llm", ["acme/skills:alpha"])
+        write_profile(self.repo, "review", ["unknown/skills:alpha"])
+        write_profile(self.repo, "draft", ["not a value"])
+        self.assertEqual(profile_problems(self.repo, load_catalog(self.repo)), {
+            "llm": ["profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:gone"],
+        })
 
     def test_selection_writer_sorts_and_round_trips_even_without_catalog_entries(self) -> None:
         self.selection_text("# handwritten choices\nretired/tools:gone\n\nacme/skills:alpha\n")

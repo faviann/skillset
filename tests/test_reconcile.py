@@ -314,6 +314,61 @@ raise SystemExit(m.main(sys.argv[4:]))
         for install_dir in (AGENTS_DIR, CLAUDE_DIR):
             self.assertFalse((self.home / install_dir / "not-selected").exists())
 
+    def test_check_reports_every_broken_profile_that_install_ignores(self) -> None:
+        write_profile(self.repo, "llm", ["acme/skills:missing", self.beta, "unknown/skills:beta"])
+        write_profile(self.repo, "review", ["not a value"])
+        self.commit_skillset("add broken profiles")
+        installed = self.run_reconciler()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assert_link(AGENTS_DIR, "alpha", self.source / "skills/engineering/alpha")
+
+        before = self.home_entries()
+        check = self.run_reconciler("--check")
+        self.assertEqual(check.returncode, 1)
+        self.assertEqual(check.stderr.splitlines(), [
+            "profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:missing",
+            "profiles/llm.txt:4: unknown source: unknown/skills",
+            "profiles/review.txt:2: bad syntax; expected owner/repo:name: not a value",
+        ])
+        self.assertEqual(self.home_entries(), before)
+
+    def test_check_reports_a_broken_active_profile_beside_the_others(self) -> None:
+        write_profile(self.repo, "llm", ["acme/skills:gone"])
+        self.selection = [self.alpha, "acme/skills:missing"]
+        self.write_selection()
+        self.commit_skillset()
+        check = self.run_reconciler("--check")
+        self.assertEqual(check.returncode, 1)
+        self.assertEqual(check.stderr.splitlines(), [
+            "profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:gone",
+            "profiles/workstation.txt:3: name is missing at the pinned commit: acme/skills:missing",
+        ])
+        self.assertFalse((self.home / AGENTS_DIR).exists())
+
+    def test_check_reports_the_install_state_beside_broken_profiles(self) -> None:
+        write_profile(self.repo, "llm", ["acme/skills:gone"])
+        self.commit_skillset("add a broken profile")
+        check = self.run_reconciler("--check")
+        self.assertEqual(check.returncode, 1)
+        self.assertIn("profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:gone", check.stderr)
+        self.assertIn(f"missing: {self.home / AGENTS_DIR / 'alpha'}", check.stderr)
+
+    def test_collisions_are_checked_within_one_profile(self) -> None:
+        self.fixture.add_source("other/tools", {"skills/alpha": "alpha"})
+        write_profile(self.repo, "llm", [self.alpha, self.beta])
+        write_profile(self.repo, "tools", ["other/tools:alpha"])
+        self.commit_skillset("add profiles that share and rename alpha")
+        self.assertEqual(self.run_reconciler().returncode, 0)
+        check = self.run_reconciler("--check")
+        self.assertEqual(check.returncode, 0, check.stderr)
+
+        write_profile(self.repo, "tools", ["other/tools:alpha", self.alpha])
+        self.commit_skillset("select alpha twice in tools")
+        check = self.run_reconciler("--check")
+        self.assertEqual(check.returncode, 1)
+        self.assertEqual(check.stderr, "profiles/tools.txt:3: same name selected from two sources: alpha\n"
+                                       "  other/tools:alpha\n  acme/skills:alpha\n")
+
     def test_check_is_read_only_when_links_are_missing(self) -> None:
         before = set(self.home.iterdir())
         result = self.run_reconciler("--check")

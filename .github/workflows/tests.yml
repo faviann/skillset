@@ -38,14 +38,24 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Git and filesystem integration tests
         run: tests/run.sh stdlib
-      - name: Install the committed selection twice
+      - name: Install and check every profile, each in its own home
         shell: bash
         run: |
           set -euo pipefail
-          temporary_home="$(mktemp -d)"
-          trap 'rm -rf -- "$temporary_home"' EXIT
-          export HOME="$temporary_home"
-          scripts/reconcile-skills.sh --profile workstation
-          scripts/reconcile-skills.sh --check
-          scripts/reconcile-skills.sh
-          scripts/reconcile-skills.sh --check
+          profiles=()
+          while IFS= read -r -d '' path; do
+            case "$path" in profiles/*.txt) profiles+=("$(basename -- "$path" .txt)") ;; esac
+          done < <(git ls-tree -z --name-only HEAD -- profiles/)
+          (( ${#profiles[@]} )) || { echo "no profiles at HEAD" >&2; exit 1; }
+          homes="$(mktemp -d)"
+          trap 'rm -rf -- "$homes"' EXIT
+          for profile in "${profiles[@]}"; do
+            echo "::group::$profile"
+            mkdir -- "$homes/$profile"
+            export HOME="$homes/$profile"
+            scripts/reconcile-skills.sh --profile "$profile"
+            scripts/reconcile-skills.sh --check
+            scripts/reconcile-skills.sh
+            scripts/reconcile-skills.sh --check
+            echo "::endgroup::"
+          done

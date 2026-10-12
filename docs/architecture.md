@@ -189,10 +189,14 @@ at HEAD, install and `--check` fail closed. They change no links and print the
 profiles at HEAD and the `--profile` command. There is no default profile and no
 guessing from receipts. The selector and the update command refuse to start in
 that state for the same reason. Install validates only the active profile, so a
-broken profile no home here uses never blocks it. A source update validates
-every profile instead, because the pin it pushes reaches every home. If
-`origin/main` renames or deletes this home's profile, the update still goes
-ahead and the install at its end fails closed the same way.
+broken profile no home here uses never blocks it. `--check` validates every
+profile committed at HEAD, so a broken profile shows from any home. It reports
+each unresolved line, invalid skill and repeated name at its
+`profiles/<name>.txt:<line>`, then this home's install state. Repeated names are
+checked within one profile; the same skill in several profiles is expected. A
+source update validates every profile too, because the pin it pushes reaches
+every home. If `origin/main` renames or deletes this home's profile, the update
+still goes ahead and the install at its end fails closed the same way.
 
 ## Persistence and restoration
 

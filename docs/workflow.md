@@ -267,18 +267,21 @@ git add .gitmodules sources/owner/repo sources.toml profiles
 git commit -m "Update owner/repo source pin"
 ```
 
-Then validate the commit with an install into a throwaway home, once per
-profile:
+Then validate the commit with an install into a throwaway home, followed by a
+check there:
 
 ```bash
-HOME="$(mktemp -d)" scripts/reconcile-skills.sh --profile workstation
+throwaway="$(mktemp -d)"
+HOME="$throwaway" scripts/reconcile-skills.sh --profile workstation
+HOME="$throwaway" scripts/reconcile-skills.sh --check
 ```
 
-This runs the same validation as `--check`, including repeated names that no
-declared variant tree explains, invalid variant copies, and selections that no
-longer resolve. Plain `--check` here would compare against your real install
-directories, whose links point into the live checkout, and report them as
-stale. If validation fails, fix the cause and amend the commit.
+The install validates the profile it installs. The check validates every
+profile, including repeated names that no declared variant tree explains,
+invalid variant copies, and selections that no longer resolve. Plain `--check`
+in your real home would also compare against your real install directories,
+whose links point into the live checkout, and report them as stale. If
+validation fails, fix the cause and amend the commit.
 
 Publish the new source commit before publishing the skillset commit, so a fresh
 clone can obtain it.
@@ -300,7 +303,8 @@ when nothing is unsaved.
 
 Run `scripts/reconcile-skills.sh` to install this home's profile,
 `scripts/reconcile-skills.sh --profile <name>` to choose another and install
-it, and `scripts/reconcile-skills.sh --check` for a read-only check. After a
+it, and `scripts/reconcile-skills.sh --check` for a read-only check of every
+profile and this home's install. After a
 successful install, with or without `--profile`, the script also links `select-skills` and its lockfile in
 `~/.local/bin` to the live checkout, as setup does, so a machine whose dotfiles
 hook installs skills also gets the selector command. The skillset
