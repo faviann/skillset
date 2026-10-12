@@ -40,11 +40,31 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
+from textual.renderables.background_screen import BackgroundScreen
+from rich.segment import Segment
+from rich.style import Style
 
 ACCENT, SECONDARY = sel.ACCENT, sel.SECONDARY
 CatalogList, Row, ChoiceDialog = sel.CatalogList, sel.Row, sel.ChoiceDialog
 VARIANTS = {"A": "Title + picker", "B": "Profiles column", "C": "Tab strip"}
 HEADER = "# Written by the skill selector. Comments and ordering are not kept.\n"
+FADES = ["strong", "faint", "none"]
+FADE = {"mode": "strong"}
+# Strong fade: the screen behind a transparent dialog is redrawn in one muted grey, faint, whatever
+# its own colours. Textual composites that screen through BackgroundScreen.process_segments.
+_original_process = BackgroundScreen.process_segments.__func__
+
+
+def _faded(cls, segments, color):
+    if FADE["mode"] != "strong" or color.a != 0:
+        yield from _original_process(cls, segments, color)
+        return
+    faded = Style(color="#5f5f5f", dim=True)
+    for text, style, control in segments:
+        yield Segment(text, None if control else faded, control)
+
+
+BackgroundScreen.process_segments = classmethod(_faded)
 
 
 @dataclass
@@ -56,7 +76,7 @@ class State:
     editing: str = "workstation"
     variant: str = "A"
     dropdown: bool = True
-    faint: bool = True
+    fade: str = "strong"
     message: str = ""
 
 
@@ -198,14 +218,14 @@ class ProfilesApp(sel.SelectorApp):
     """
     BINDINGS = [*sel.SelectorApp.BINDINGS,
                 Binding("f2", "variant(-1)", show=False), Binding("f3", "variant(1)", show=False),
-                Binding("f4", "placement", show=False), Binding("f5", "faint", show=False),Binding("f6", "external_edit", show=False), Binding("f7", "fresh_home", show=False),
+                Binding("f4", "placement", show=False), Binding("f5", "fade", show=False), Binding("f6", "external_edit", show=False), Binding("f7", "fresh_home", show=False),
                 Binding("ctrl+p", "profiles", show=False)]
 
     def __init__(self, root: Path, state: State) -> None:
         self.state = state
         super().__init__(root)
         self.variant = state.variant
-        self.SUSPENDED_SCREEN_CLASS = "-screen-suspended" if state.faint else ""
+        self.apply_fade()
         self.load_draft()
 
     # ---- state -------------------------------------------------------------------------------
@@ -330,7 +350,7 @@ class ProfilesApp(sel.SelectorApp):
         proto = Text.assemble(
             ("PROTOTYPE  ", "bold"), f"F2 ◀ {self.variant} · {VARIANTS[self.variant]} ▶ F3",
             f"   F4 picker: {'dropdown' if self.state.dropdown else 'bottom'}" if self.variant == "A" else "",
-            f"   F5 behind dialogs: {'faint' if self.state.faint else 'unchanged'}",
+            f"   F5 fade: {self.state.fade}",
             "   F6 edit file on disk · F7 fresh home",
         )
         self.query_one("#proto", Static).update(proto)
@@ -367,12 +387,16 @@ class ProfilesApp(sel.SelectorApp):
             self.state.message = "Prototype: switching layout dropped the unsaved draft."
         self.exit("restart")
 
-    def action_faint(self) -> None:
-        self.state.faint = not self.state.faint
-        # Textual's own ANSI rule renders a suspended screen with text-style: dim.
-        self.SUSPENDED_SCREEN_CLASS = "-screen-suspended" if self.state.faint else ""
+    def apply_fade(self) -> None:
+        FADE["mode"] = self.state.fade
+        # Faint: Textual's own ANSI rule renders a suspended screen with text-style: dim.
+        self.SUSPENDED_SCREEN_CLASS = "-screen-suspended" if self.state.fade == "faint" else ""
+
+    def action_fade(self) -> None:
+        self.state.fade = FADES[(FADES.index(self.state.fade) + 1) % len(FADES)]
+        self.apply_fade()
         self.refresh_profiles()
-        self.say(f"Behind dialogs: {'faint' if self.state.faint else 'unchanged'}. ctrl+p to open.")
+        self.say(f"Fade behind dialogs: {self.state.fade}. ctrl+p to open.")
 
     def action_placement(self) -> None:
         self.state.dropdown = not self.state.dropdown
