@@ -218,9 +218,10 @@ an overlay, without closing the selector. It opens only on a source marked
 When the command would refuse, or the selection has unsaved changes, the
 selector shows the reason instead.
 
-The overlay shows the progress, then the summary. Press `a` to accept and push,
-`d` to switch between the summary and the diff of each changed selected skill,
-or Esc to discard the update. After a push, the live checkout fast-forwards and
+The overlay shows the progress, then the summary, with the diff of the
+highlighted skill beside it. Up and Down move between the skills the update
+changes, adds, or removes, used here or not; Page Up and Page Down scroll the
+diff. Press `a` to accept and push, or Esc to discard the update. After a push, the live checkout fast-forwards and
 installs, and the overlay says what happened. Esc then closes it, and the
 selector reloads in place. The overlay runs Git and the install without a
 terminal, so a credential or passphrase prompt fails instead of waiting. Run the
