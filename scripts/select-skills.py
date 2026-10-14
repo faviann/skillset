@@ -419,7 +419,10 @@ class UpdateDialog(ModalScreen[bool]):
     UpdateDialog { align: center bottom; background: transparent; }
     #update-dialog { height: 85%; margin: 0 2 2 2; padding: 1 2; border: round #D77757; }
     #update-title { height: auto; color: #D77757; margin-bottom: 1; }
-    #update-log {
+    #update-review { height: 1fr; display: none; }
+    #update-summary { width: 2fr; border-right: solid #999999; }
+    #update-diff { width: 3fr; padding-left: 1; }
+    #update-log, #update-diff {
         height: 1fr; background: transparent;
         scrollbar-size-vertical: 1;
         scrollbar-background: transparent;
@@ -431,7 +434,8 @@ class UpdateDialog(ModalScreen[bool]):
     """
     BINDINGS = [
         Binding("a", "accept", show=False),
-        Binding("d", "diff", show=False),
+        Binding("pageup", "scroll_diff(-1)", show=False),
+        Binding("pagedown", "scroll_diff(1)", show=False),
         Binding("escape", "close", show=False),
     ]
 
@@ -441,13 +445,15 @@ class UpdateDialog(ModalScreen[bool]):
         self.source = source
         self.phase = Phase.PREPARING
         self.prepared: update_sources.Prepared | None = None
-        self.showing_diff = False
         self.pushed = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="update-dialog"):
             yield Static(Text(f"Update {self.source}"), id="update-title")
             yield RichLog(wrap=True, id="update-log")
+            with Horizontal(id="update-review"):
+                yield CatalogList(id="update-summary")
+                yield RichLog(wrap=True, id="update-diff")
             yield Static(id="update-status")
             yield Static(id="update-hint")
 
@@ -459,9 +465,10 @@ class UpdateDialog(ModalScreen[bool]):
         self.phase = phase
         self.query_one("#update-status", Static).update(
             Text(status, style=ACCENT if phase is Phase.DONE else MANUAL if phase is Phase.FAILED else ""))
+        picks = "↑↓ skill · pgup/pgdn scroll diff · " if self.query_one(CatalogList).current is not None else ""
         self.query_one("#update-hint", Static).update({
             Phase.PREPARING: "Preparing the update…",
-            Phase.REVIEW: f"a accept and push · d {'summary' if self.showing_diff else 'diff'} · esc discard",
+            Phase.REVIEW: f"{picks}a accept and push · esc discard",
             Phase.PUBLISHING: "Publishing and installing…",
             Phase.DISCARDING: "Discarding the update…",
             Phase.DONE: "Esc to close",
@@ -469,7 +476,7 @@ class UpdateDialog(ModalScreen[bool]):
         }[phase])
 
     def progress(self, line: str) -> None:
-        self.app.call_from_thread(self.query_one(RichLog).write, Text(line))
+        self.app.call_from_thread(self.query_one("#update-log", RichLog).write, Text(line))
 
     def finished(self, phase: Phase, status: str) -> None:
         self.app.call_from_thread(self.enter, phase, status)
@@ -496,29 +503,46 @@ class UpdateDialog(ModalScreen[bool]):
 
     def review(self, prepared: update_sources.Prepared) -> None:
         self.prepared = prepared
-        self.show_review()
+        self.reviewing(True)
+        summary = self.query_one(CatalogList)
+        rows = prepared.summary.rows(prepared.update, named=False)
+        summary.set_rows([Row(name, [Text(line)]) for name, line in rows])
+        summary.focus()
+        self.show_diff()
         self.enter(Phase.REVIEW)
 
-    def show_review(self) -> None:
-        log = self.query_one(RichLog)
-        log.clear()
-        if not self.showing_diff:
-            log.write(Text("\n".join(self.prepared.summary.lines(self.prepared.update, named=False))))
-            return
-        for line in update_sources.diff_text(self.prepared).splitlines():
-            log.write(Text(line, style=AUTOMATIC if line.startswith("+") else MANUAL if line.startswith("-")
-                           else SECONDARY if line.startswith("@@") else ""))
+    def reviewing(self, shown: bool) -> None:
+        self.query_one("#update-review").display = shown
+        self.query_one("#update-log").display = not shown
 
-    def action_diff(self) -> None:
-        if self.phase is Phase.REVIEW:
-            self.showing_diff = not self.showing_diff
-            self.show_review()
-            self.enter(Phase.REVIEW)
+    @on(CatalogList.Highlighted, "#update-summary")
+    def show_diff(self) -> None:
+        """Show the diff of the highlighted skill beside the summary."""
+        diff = self.query_one("#update-diff", RichLog)
+        diff.clear()
+        if (name := self.query_one(CatalogList).current) is None:
+            diff.write(Text("No skill files changed.", style=SECONDARY))
+            return
+        diff.write(Text(f"{name} · {self.prepared.summary.change(name)}", style=f"bold {ACCENT}"))
+        diff.write(Text())
+        for line in update_sources.diff_text(self.prepared, {name}).splitlines():
+            diff.write(Text(line, style=AUTOMATIC if line.startswith("+") else MANUAL if line.startswith("-")
+                            else SECONDARY if line.startswith("@@") else ""))
+        diff.scroll_home(animate=False)
+
+    def action_scroll_diff(self, direction: int) -> None:
+        diff = self.query_one("#update-diff", RichLog)
+        if direction < 0:
+            diff.scroll_page_up(animate=False)
+        else:
+            diff.scroll_page_down(animate=False)
 
     def action_accept(self) -> None:
         if self.phase is Phase.REVIEW:
-            self.showing_diff = False
-            self.show_review()
+            self.reviewing(False)
+            log = self.query_one("#update-log", RichLog)
+            log.clear()
+            log.write(Text("\n".join(self.prepared.summary.lines(self.prepared.update, named=False))))
             self.enter(Phase.PUBLISHING)
             self.run_worker(self.publish, thread=True)
 
@@ -547,6 +571,7 @@ class UpdateDialog(ModalScreen[bool]):
 
     def action_close(self) -> None:
         if self.phase is Phase.REVIEW:
+            self.reviewing(False)
             self.enter(Phase.DISCARDING)
             self.run_worker(self.discard, thread=True)
         elif self.phase in (Phase.DONE, Phase.FAILED):

@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -64,36 +64,49 @@ class Summary:
     unpublished: list[str]
     others: dict[str, frozenset[str]]
 
+    def change(self, name: str) -> str:
+        """What the update does to a skill it touches."""
+        if name in self.changed:
+            return f"updated · {self.changed[name]}"
+        return "added" if name in self.added else "removed"
+
     def lines(self, update: SourceUpdate, *, named: bool = True) -> list[str]:
+        return [line for _, line in self.rows(update, named=named)]
+
+    def rows(self, update: SourceUpdate, *, named: bool = True) -> list[tuple[str | None, str]]:
+        """The summary lines, each paired with the skill it lists, if any."""
         count = len(self.commits)
         overview = f"{count} commit{'s' if count != 1 else ''} · {update.old[:7]} → {update.new[:7]}"
-        lines = [f"{update.name} · {overview}" if named else overview]
-        rows = [(name, f"updated · {stat}") for name, stat in self.changed.items()]
-        rows += [(name, "removed") for name in self.removed]
-        rows += [(name, "added") for name in self.added]
-        width = max((len(name) for name, _ in rows), default=0)
+        rows: list[tuple[str | None, str]] = [(None, f"{update.name} · {overview}" if named else overview)]
+        touched = [*self.changed, *self.removed, *self.added]
+        width = max(map(len, touched), default=0)
 
-        def section(title: str, part: list[tuple[str, str]]) -> list[str]:
-            return ["", title, *(f"  {name:<{width}}  {what}" for name, what in sorted(part))] if part else []
+        def text(*lines: str) -> list[tuple[str | None, str]]:
+            return [(None, line) for line in lines]
+
+        def section(title: str, part: list[str]) -> list[tuple[str | None, str]]:
+            if not part:
+                return []
+            return [*text("", title), *((name, f"  {name:<{width}}  {self.change(name)}") for name in sorted(part))]
 
         # Other profiles get one line each, no detail: this home doesn't install them.
         also = [f"also changes {len(names)} skill{'s' if len(names) != 1 else ''} in {profile}: {', '.join(names)}"
                 for profile, selected in sorted(self.others.items())
                 if (names := sorted(selected.intersection(self.changed)))]
-        lines += section("Skills you use", [row for row in rows if row[0] in self.selected])
-        lines += ["", *also] if also else []
-        lines += section("New skills", [row for row in rows if row[1] == "added"])
-        lines += section("Skills you don't use",
-                         [row for row in rows if row[0] not in self.selected and row[1] != "added"])
+        rows += section("Skills you use", [name for name in touched if name in self.selected])
+        rows += text("", *also) if also else []
+        rows += section("New skills", self.added)
+        rows += section("Skills you don't use",
+                        [name for name in touched if name not in self.selected and name not in self.added])
         if not self.added and not self.removed:
-            lines += ["", "No skills added or removed." if self.changed else "No skill files changed."]
+            rows += text("", "No skills added or removed." if self.changed else "No skill files changed.")
         if self.commits:
-            lines += ["", "Commits", *(f"  {line}" for line in self.commits)]
+            rows += text("", "Commits", *(f"  {line}" for line in self.commits))
         if self.unpublished:
             count = len(self.unpublished)
-            lines += ["", f"Also pushes {count} earlier commit{'s' if count != 1 else ''} not yet on GitHub",
-                      *(f"  {line}" for line in self.unpublished)]
-        return lines
+            rows += text("", f"Also pushes {count} earlier commit{'s' if count != 1 else ''} not yet on GitHub",
+                         *(f"  {line}" for line in self.unpublished))
+        return rows
 
 
 def run_command(command: list[str], cwd: Path, env: dict[str, str], log: Log) -> int:
@@ -247,7 +260,7 @@ def check_installable(worktree: Path, catalog: Catalog) -> None:
 
 
 def skill_directories(name: str, *sources: SourceCatalog) -> set[Path]:
-    return {Path(target).relative_to(source.path) for source in sources
+    return {Path(target).relative_to(source.path) for source in sources if name in source.skills
             for target in (source.skills[name], *source.targets(name).values())}
 
 
@@ -292,9 +305,13 @@ class Prepared:
     def source(self) -> SourceCatalog:
         return self.after.sources[self.update.name]
 
-    def diff_args(self) -> list[str] | None:
-        """The git diff arguments covering the changed selected skills, or None when none changed."""
-        directories = sorted({str(directory) for name in self.summary.changed if name in self.summary.selected
+    def diff_args(self, names: Collection[str] | None = None) -> list[str] | None:
+        """The git diff arguments covering the named skills the update touches, by default the selected ones,
+        or None when it touches none of them."""
+        summary = self.summary
+        names = summary.selected if names is None else names
+        touched = {*summary.changed, *summary.added, *summary.removed}
+        directories = sorted({str(directory) for name in names if name in touched
                               for directory in skill_directories(name, self.before, self.source)})
         return ["diff", self.update.old, self.update.new, "--", *directories] if directories else None
 
@@ -327,8 +344,8 @@ def prepare(worktree: Path, name: str, before: Catalog, log: Log) -> Prepared | 
         raise discard(worktree, checkpoint, error, added, log) from None
 
 
-def diff_text(prepared: Prepared) -> str:
-    args = prepared.diff_args()
+def diff_text(prepared: Prepared, names: Collection[str] | None = None) -> str:
+    args = prepared.diff_args(names)
     return git(args, cwd=prepared.source.path) if args else "no selected skill changed"
 
 

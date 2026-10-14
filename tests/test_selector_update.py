@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import SkillsetFixture, git, write_profile
+from fixture import SkillsetFixture, git, write_profile, write_skill
 from pilot import PilotTestCase, selector
 
 
@@ -47,8 +47,8 @@ class UpdateKeyTests(PilotTestCase):
             await pilot.pause()
         return dialog
 
-    def log(self, app) -> str:
-        return "\n".join(strip.text.rstrip() for strip in app.screen.query_one(selector.RichLog).lines)
+    def diff(self, app) -> str:
+        return "\n".join(strip.text.rstrip() for strip in app.screen.query_one("#update-diff", selector.RichLog).lines)
 
     def update_hint_style(self, app) -> str:
         hints = app.query_one("#hints", selector.Static).content
@@ -100,19 +100,29 @@ class UpdateKeyTests(PilotTestCase):
             self.assertEqual(app.source, "zebra/tools")
             self.assertEqual(self.update_hint_style(app), selector.SECONDARY)
 
-    async def test_review_shows_the_summary_and_diff_and_escape_discards_the_update(self) -> None:
-        old, new = git(["rev-parse", "HEAD:sources/acme/skills"], self.repo), self.advance_alpha()
+    async def test_review_shows_the_highlighted_skills_diff_beside_the_summary_and_escape_discards(self) -> None:
+        old = git(["rev-parse", "HEAD:sources/acme/skills"], self.repo)
+        origin = self.fixture.origins["acme/skills"]
+        write_skill(origin, "epsilon")
+        git(["add", "-A"], origin)
+        new = self.advance_alpha()
         head = git(["rev-parse", "HEAD"], self.repo)
         app = selector.SelectorApp(root=self.repo)
         async with app.run_test() as pilot:
             await self.started(pilot)
             await pilot.press("ctrl+u")
             dialog = await self.until(pilot, selector.Phase.REVIEW)
-            self.assertRegex(self.log(app), f"^1 commit · {old[:7]} → {new[:7]}\n\n"
-                          "Skills you use\n  alpha  updated · 1 file")
-            await pilot.press("d")
-            self.assertIs(app.screen, dialog)
-            self.assertIn("+Rewritten instructions.", self.log(app))
+            self.assertEqual(self.lines(app, "update-summary")[:7], [
+                f"1 commit · {old[:7]} → {new[:7]}", "", "Skills you use", "alpha    updated · 1 file +2 −0",
+                "", "New skills", "epsilon  added"])
+            self.assertIn("+Rewritten instructions.", self.diff(app))
+            await pilot.press("down")
+            self.assertTrue(self.diff(app).startswith("epsilon · added"))
+            self.assertIn("+name: epsilon", self.diff(app))
+            self.assertNotIn("Rewritten", self.diff(app))
+            # The commit lines below list no skill, so the cursor stays on the last skill.
+            await pilot.press("down")
+            self.assertEqual(dialog.query_one(selector.CatalogList).current, "epsilon")
             await pilot.press("escape")
             while app.screen is dialog:
                 await pilot.pause()
