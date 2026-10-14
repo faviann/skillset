@@ -21,14 +21,28 @@ INSTALL_HARNESSES = {
     AGENTS_DIR: ("codex", "pi", "opencode"),
     CLAUDE_DIR: ("claude-code", "opencode"),
 }
-SELECTION_PATH = "skills.txt"
+PROFILES_DIR = "profiles"
 SELECTION_HEADER = "# Written by the skill selector. Comments and ordering are not kept."
 UPDATE_AVAILABLE = "update available"
 FORK_BEHIND_UPSTREAM = "fork behind upstream"
+NOT_A_PROFILE = ("not a profile; name a profile profiles/<name>.txt, "
+                 "with 1-64 lowercase letters, digits or single hyphens")
 
 
 class ReconcileError(Exception):
     pass
+
+
+def valid_name(name: str) -> bool:
+    """The skill-name rule, shared by profile names."""
+    return len(name) <= 64 and NAME_PATTERN.fullmatch(name) is not None
+
+
+def profile_path(name: str) -> str:
+    """The repository-relative file of the named profile."""
+    if not valid_name(name):
+        raise ReconcileError(f"invalid profile name: {name!r}; use 1-64 lowercase letters, digits or single hyphens")
+    return f"{PROFILES_DIR}/{name}.txt"
 
 
 @dataclass(frozen=True)
@@ -78,24 +92,30 @@ class ResolvedLine:
 class Resolution:
     lines: tuple[ResolvedLine, ...]
 
-    def install_targets(self) -> dict[tuple[Path, str], str]:
-        """Raise the first syntax error, else the first catalog or same-name error."""
-        for line in self.lines:
-            if line.syntax_error:
-                raise ReconcileError(f"{SELECTION_PATH}:{line.number}: {line.error}")
+    def problems(self, profile: str) -> list[str]:
+        """Every syntax error, then every catalog or same-name error, located in the profile."""
+        path = profile_path(profile)
+        problems = [f"{path}:{line.number}: {line.error}" for line in self.lines if line.syntax_error]
         names: dict[str, str] = {}
-        result = {}
         for line in self.lines:
-            location = f"{SELECTION_PATH}:{line.number}"
+            location = f"{path}:{line.number}"
+            if line.syntax_error:
+                continue
             if line.error:
-                raise ReconcileError(f"{location}: {line.error}")
-            if line.name in names:
-                raise ReconcileError(f"{location}: same name selected from two sources: {line.name}\n"
-                                     f"  {names[line.name]}\n  {line.value}")
-            names[line.name] = line.value
-            for directory, target in line.targets.items():
-                result[directory, line.name] = target
-        return dict(sorted(result.items()))
+                problems.append(f"{location}: {line.error}")
+            elif line.name in names:
+                problems.append(f"{location}: same name selected from two sources: {line.name}\n"
+                                f"  {names[line.name]}\n  {line.value}")
+            else:
+                names[line.name] = line.value
+        return problems
+
+    def install_targets(self, profile: str) -> dict[tuple[Path, str], str]:
+        """Raise the first problem, else map each install directory and name to its target."""
+        if problems := self.problems(profile):
+            raise ReconcileError(problems[0])
+        return dict(sorted(((directory, line.name), target) for line in self.lines
+                           for directory, target in line.targets.items()))
 
 
 @dataclass(frozen=True)
@@ -157,8 +177,51 @@ def git(args: list[str], cwd: Path, *, check: bool = True) -> str:
     return result.stdout.rstrip("\n") if result.returncode == 0 else ""
 
 
-def selection_uncommitted(root: Path) -> bool:
-    return bool(git(["diff", "--name-only", "--no-ext-diff", "HEAD", "--", SELECTION_PATH], cwd=root))
+def selection_uncommitted(root: Path, profile: str) -> bool:
+    return bool(git(["diff", "--name-only", "--no-ext-diff", "HEAD", "--", profile_path(profile)], cwd=root))
+
+
+def committed_profiles(root: Path) -> tuple[list[str], list[str]]:
+    """Names of the profiles committed at HEAD, and the paths of every other entry under profiles/ there, sorted."""
+    names, others = [], []
+    for row in git(["ls-tree", "-z", "HEAD", "--", f"{PROFILES_DIR}/"], cwd=root).split("\0"):
+        if not row:
+            continue
+        metadata, path = row.split("\t", 1)
+        name = Path(path).name.removesuffix(".txt")
+        if metadata.split()[0] in ("100644", "100755") and path == f"{PROFILES_DIR}/{name}.txt" and valid_name(name):
+            names.append(name)
+        else:
+            others.append(path)
+    return sorted(names), sorted(others)
+
+
+def list_profiles(root: Path) -> list[str]:
+    """Names of the profiles committed at HEAD, sorted. Other files under profiles/ are not profiles."""
+    return committed_profiles(root)[0]
+
+
+def profile_names(root: Path) -> list[str]:
+    """Profiles committed at HEAD or saved on disk, sorted; a saved one may not be committed yet."""
+    names = set(list_profiles(root))
+    directory = root / PROFILES_DIR
+    if directory.is_dir() and not directory.is_symlink():
+        names.update(path.stem for path in directory.glob("*.txt")
+                     if valid_name(path.stem) and path.is_file() and not path.is_symlink())
+    return sorted(names)
+
+
+def uncommitted_profile_files(root: Path) -> list[str]:
+    """Paths under profiles/ that differ from HEAD, files Git does not track yet included, sorted."""
+    status = git(["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all",
+                  "--", f"{PROFILES_DIR}/"], cwd=root)
+    return sorted(entry[3:] for entry in status.split("\0") if entry)
+
+
+def uncommitted_profiles(root: Path) -> set[str]:
+    """Profiles whose file differs from HEAD, including files Git does not track yet."""
+    paths = set(uncommitted_profile_files(root))
+    return {name for name in profile_names(root) if profile_path(name) in paths}
 
 
 def parse_modules(root: Path) -> dict[str, Module]:
@@ -316,7 +379,7 @@ def identity(file: Path) -> str:
         if last_key in keys:
             raise ReconcileError(f"unsupported duplicate or ambiguous identity key in {file}")
         keys.add(last_key)
-    if name is None or len(name) > 64 or not NAME_PATTERN.fullmatch(name):
+    if name is None or not valid_name(name):
         raise ReconcileError(f"invalid or missing skill name in {file}")
     return name
 
@@ -456,15 +519,47 @@ def update_marker(name: str, source: SourceCatalog, tip: Callable[[str, str], st
     return FORK_BEHIND_UPSTREAM
 
 
-def read_selection_text(root: Path) -> str:
-    """Read the exact file content, including comments and line endings."""
-    selection = root / SELECTION_PATH
+def read_selection_text(root: Path, profile: str) -> str:
+    """Read the profile's exact file content, including comments and line endings."""
+    path = profile_path(profile)
+    selection = root / path
     if selection.is_symlink() or not selection.is_file():
-        raise ReconcileError(f"{SELECTION_PATH} is missing or is not a regular file")
+        raise ReconcileError(f"{path} is missing or is not a regular file")
     try:
         return selection.read_bytes().decode("utf-8")
     except (OSError, UnicodeError) as error:
-        raise ReconcileError(f"could not read {SELECTION_PATH} as UTF-8") from error
+        raise ReconcileError(f"could not read {path} as UTF-8") from error
+
+
+def committed_selection_text(root: Path, profile: str) -> str:
+    """Read the profile's content as committed at HEAD, whatever is on disk."""
+    path = profile_path(profile)
+    result = subprocess.run(["git", "cat-file", "blob", f"HEAD:{path}"], cwd=root, env=git_env(),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode:
+        raise ReconcileError(f"could not read {path} at HEAD: {result.stderr.decode(errors='replace').strip()}")
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeError as error:
+        raise ReconcileError(f"could not read {path} at HEAD as UTF-8") from error
+
+
+def profile_problems(root: Path, catalog: Catalog) -> list[str]:
+    """Validate every profile committed at HEAD of root against catalog.
+
+    Returns every problem: first each other entry under profiles/ at HEAD,
+    which installs ignore, then each profile's, located at
+    profiles/<name>.txt:<line>. Profiles are read as committed, because that is
+    what every home installs; uncommitted edits are not checked.
+    """
+    names, others = committed_profiles(root)
+    problems = [f"{path}: {NOT_A_PROFILE}" for path in others]
+    for profile in names:
+        try:
+            problems += catalog.resolve(committed_selection_text(root, profile)).problems(profile)
+        except ReconcileError as error:
+            problems.append(str(error))
+    return problems
 
 
 def parse_selection(content: str) -> list[SelectionLine]:
@@ -492,8 +587,8 @@ def format_selection(selection: Iterable[str]) -> str:
     return "\n".join([SELECTION_HEADER, *sorted(selection)]) + "\n"
 
 
-def write_selection(root: Path, selection: Iterable[str]) -> str:
-    """Write selection lines in the selector's stable format and return that text."""
+def write_selection(root: Path, profile: str, selection: Iterable[str]) -> str:
+    """Write the profile's selection lines in the selector's stable format and return that text."""
     content = format_selection(selection)
-    (root / SELECTION_PATH).write_text(content, encoding="utf-8")
+    (root / profile_path(profile)).write_text(content, encoding="utf-8")
     return content

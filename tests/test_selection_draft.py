@@ -12,7 +12,7 @@ from fixture import CHECKOUT, SkillsetFixture, git
 
 sys.path.insert(0, str(CHECKOUT / "scripts"))
 from selection_draft import (
-    INSTALL_BLOCKED,
+    COMMIT_BLOCKED,
     Blocked,
     Changes,
     CheckoutStore,
@@ -162,25 +162,25 @@ class SelectionDraftTests(unittest.TestCase):
         self.assertEqual(draft.unsaved, 0)
         self.assertEqual(draft.save(), Saved(True))
 
-    def test_install_with_nothing_unsaved_keeps_the_stored_bytes(self) -> None:
+    def test_commit_with_nothing_unsaved_keeps_the_stored_bytes(self) -> None:
         content = "# my comment\r\nacme/skills:alpha\r\n"
         draft, store = self.load(content)
-        self.assertEqual(draft.save(install=True), Saved(False))
+        self.assertEqual(draft.save(committing=True), Saved(False))
         self.assertEqual(store.read(), content)
 
-    def test_install_after_overwrite_writes(self) -> None:
+    def test_commit_after_overwrite_writes(self) -> None:
         draft, store = self.load(selection("acme/skills:alpha"))
         store.disk = "# edited\nacme/skills:alpha\n"
-        conflict = draft.save(install=True)
+        conflict = draft.save(committing=True)
         self.assertIsInstance(conflict, Conflict)
-        self.assertEqual(draft.save(install=True, overwrite=conflict), Saved(True))
+        self.assertEqual(draft.save(committing=True, overwrite=conflict), Saved(True))
         self.assertEqual(store.read(), selection("acme/skills:alpha"))
-        self.assertEqual(draft.save(install=True), Saved(False))
+        self.assertEqual(draft.save(committing=True), Saved(False))
 
-    def test_install_with_unsaved_changes_writes(self) -> None:
+    def test_commit_with_unsaved_changes_writes(self) -> None:
         draft, store = self.load("# my comment\nacme/skills:alpha\n")
         draft.toggle("acme/skills:beta")
-        self.assertEqual(draft.save(install=True), Saved(True))
+        self.assertEqual(draft.save(committing=True), Saved(True))
         self.assertEqual(store.read(), selection("acme/skills:alpha", "acme/skills:beta"))
 
     def test_store_write_failure_leaves_the_draft_unchanged(self) -> None:
@@ -192,25 +192,52 @@ class SelectionDraftTests(unittest.TestCase):
         self.assertEqual(draft.unsaved, 1)
         self.assertIn("acme/skills:beta", draft)
 
-    def test_install_is_blocked_while_an_off_catalog_line_is_selected(self) -> None:
+    def test_a_new_draft_counts_its_unwritten_file_as_unsaved_until_saved(self) -> None:
+        store = MemoryStore(selection("acme/skills:alpha"))
+        draft = SelectionDraft.load(store, CATALOG, new=True)
+        self.assertEqual(draft.unsaved, 1)
+        draft.toggle("acme/skills:beta")
+        self.assertEqual(draft.unsaved, 2)
+        draft.toggle("acme/skills:beta")
+        self.assertEqual(draft.save(committing=True), Saved(True))
+        self.assertEqual(store.read(), selection("acme/skills:alpha"))
+        self.assertEqual(draft.unsaved, 0)
+
+    def test_an_empty_new_draft_is_still_unsaved(self) -> None:
+        draft = SelectionDraft.load(MemoryStore(SELECTION_HEADER + "\n"), CATALOG, new=True)
+        self.assertEqual((len(draft), draft.unsaved), (0, 1))
+
+    def test_commit_is_blocked_while_an_off_catalog_line_is_selected(self) -> None:
         draft, _ = self.load(selection("acme/skills:alpha", "unknown/source:x"))
-        self.assertEqual(draft.install_blocker, INSTALL_BLOCKED)
+        self.assertEqual(draft.commit_blocker, COMMIT_BLOCKED)
         draft.toggle(3)
-        self.assertIsNone(draft.install_blocker)
+        self.assertIsNone(draft.commit_blocker)
 
 
 class CheckoutStoreTests(unittest.TestCase):
     def test_reads_head_and_writes_skills_txt(self) -> None:
         with tempfile.TemporaryDirectory(prefix="skillset-draft-test-") as temp:
-            fixture = SkillsetFixture(Path(temp), {}, ["acme/skills:alpha"])
-            store = CheckoutStore(fixture.repo)
+            fixture = SkillsetFixture(Path(temp), {}, {"workstation": ["acme/skills:alpha"]})
+            store = CheckoutStore(fixture.repo, "workstation")
             committed = "# fixture selection\nacme/skills:alpha\n"
             self.assertEqual(store.read(), committed)
             store.write("# new\r\nzebra/tools:omega\n")
-            self.assertEqual((fixture.repo / "skills.txt").read_bytes(), b"# new\r\nzebra/tools:omega\n")
+            self.assertEqual((fixture.repo / "profiles/workstation.txt").read_bytes(), b"# new\r\nzebra/tools:omega\n")
             self.assertEqual(store.read(), "# new\r\nzebra/tools:omega\n")
-            self.assertEqual(store.head(), committed.rstrip("\n"))
-            self.assertIn("skills.txt", git(["status", "--porcelain"], fixture.repo))
+            self.assertEqual(store.head(), committed)
+            self.assertIn("profiles/workstation.txt", git(["status", "--porcelain"], fixture.repo))
+
+
+    def test_a_profile_without_a_file_reads_its_start_content_and_has_no_head(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="skillset-draft-test-") as temp:
+            fixture = SkillsetFixture(Path(temp), {}, {"workstation": ["acme/skills:alpha"]})
+            store = CheckoutStore(fixture.repo, "llm", start=selection("acme/skills:beta"))
+            self.assertEqual(store.read(), selection("acme/skills:beta"))
+            self.assertEqual(store.head(), "")
+            self.assertFalse((fixture.repo / "profiles/llm.txt").exists())
+            store.write("acme/skills:alpha\n")
+            self.assertEqual(store.read(), "acme/skills:alpha\n")
+            self.assertEqual(CheckoutStore(fixture.repo, "llm").head(), "")
 
 
 if __name__ == "__main__":

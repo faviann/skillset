@@ -34,9 +34,14 @@ were loaded from and against the committed selection.
 _Avoid_: Working selection, pending changes
 
 **Profile**:
-A named selection. Which machine, person, or harness uses a profile is a
-separate concern; v1 has exactly one profile, which is unnamed.
+A named selection of skills, kept as its own file. Profiles are independent;
+none builds on another. Which home uses a profile is a separate concern.
 _Avoid_: Config, preset
+
+**Home**:
+One user account's install directories and their receipts. A home has exactly
+one active profile and is installed from its own live checkout.
+_Avoid_: Machine, host
 
 **Harness**:
 An agent environment that reads skills from one or more install directories:
@@ -55,8 +60,8 @@ directory gets a variant only when a harness that reads it has one.
 _Avoid_: Port, harness copy, mirror
 
 **Install**:
-Make every install directory match the committed selection, adding and removing
-skill links.
+Make every install directory of a home match its active profile's committed
+selection, adding and removing skill links.
 _Avoid_: Deploy, reconcile, sync
 
 **Live checkout**:

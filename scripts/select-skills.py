@@ -13,11 +13,12 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
 from pathlib import Path
+from typing import TypeVar
 
 # A symlink in PATH must still import from the checkout containing this script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -37,7 +38,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Click, Key
-from textual.geometry import Region
+from textual.geometry import Offset, Region
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, RichLog, Static
@@ -55,6 +56,8 @@ MANUAL = "red"
 AUTOMATIC = "green"
 NOT_IN_CATALOG = "Not in catalog"
 LOOKUP_TIMEOUT_SECONDS = 5
+TITLE_PREFIX = "Skill selector  "
+DialogResult = TypeVar("DialogResult")
 
 
 @dataclass
@@ -234,11 +237,11 @@ class CatalogList(VerticalScroll, can_focus=True):
         self.redraw()
 
 
-class ChoiceDialog(ModalScreen[int | None]):
-    """The same numbered, cancellable choices for replacement, saving and quitting."""
+class Dialog(ModalScreen[DialogResult]):
+    """A box at the bottom of the screen with a title, details and a hint; Esc dismisses it with None."""
 
     DEFAULT_CSS = """
-    ChoiceDialog { align: center bottom; background: transparent; }
+    Dialog { align: center bottom; background: transparent; }
     #dialog { height: auto; max-height: 85%; margin: 0 2 2 2; padding: 1 2; border: round #D77757; }
     #dialog-title { height: auto; color: #D77757; margin-bottom: 1; }
     #dialog-review { height: 1fr; max-height: 12; margin-bottom: 1; }
@@ -246,12 +249,18 @@ class ChoiceDialog(ModalScreen[int | None]):
     #choices { height: auto; max-height: 6; }
     #dialog-hint { height: 1; margin-top: 1; color: #999999; }
     """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ChoiceDialog(Dialog[int | None]):
+    """The same numbered, cancellable choices for replacement, saving and quitting."""
+
     BINDINGS = [
         Binding("enter", "confirm", show=False),
-        Binding("escape", "cancel", show=False),
-        Binding("1", "choose(1)", show=False),
-        Binding("2", "choose(2)", show=False),
-        Binding("3", "choose(3)", show=False),
+        *(Binding(str(number), f"choose({number})", show=False) for number in range(1, 10)),
     ]
 
     def __init__(self, title: str, choices: list[str], details: str = "", *,
@@ -291,8 +300,104 @@ class ChoiceDialog(ModalScreen[int | None]):
     def action_confirm(self) -> None:
         self.dismiss(self.query_one("#choices", CatalogList).current)
 
+
+class NameDialog(Dialog[str | None]):
+    """Ask for a profile name until it follows the skill-name rules and is not taken."""
+
+    DEFAULT_CSS = """
+    #name-box { height: 3; margin-top: 1; border: round #999999; }
+    #name-input { height: 1; padding: 0; border: none; background: transparent; }
+    #name-input:focus { border: none; }
+    #name-error { height: auto; color: red; }
+    """
+
+    def __init__(self, title: str, details: str, taken: Collection[str], *, value: str = "") -> None:
+        super().__init__()
+        self.heading = title
+        self.details = details
+        self.taken = taken
+        self.value = value
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static(Text(self.heading), id="dialog-title")
+            yield Static(Text(self.details), id="dialog-details")
+            with Horizontal(id="name-box"):
+                yield Static(">", id="search-prompt")
+                yield Input(self.value, placeholder="profile name", select_on_focus=False, id="name-input")
+            yield Static(id="name-error")
+            yield Static("Enter to confirm · Esc to cancel", id="dialog-hint")
+
+    @on(Input.Submitted, "#name-input")
+    def submitted(self, event: Input.Submitted) -> None:
+        name = event.value.strip()
+        if not skill_catalog.valid_name(name):
+            self.query_one("#name-error", Static).update("use 1-64 lowercase letters, digits or single hyphens")
+        elif name in self.taken:
+            self.query_one("#name-error", Static).update(Text(f"{name} already exists"))
+        else:
+            self.dismiss(name)
+
+
+class ProfilePicker(ModalScreen[tuple[str, str] | None]):
+    """Every profile, in a list dropped down under the edited profile's name in the title.
+
+    Dismisses with (operation, profile) for the highlighted row, or None.
+    """
+
+    DEFAULT_CSS = """
+    ProfilePicker { align: left top; background: transparent; }
+    #dialog { height: auto; padding: 0 1; border: round #D77757; background: ansi_default; }
+    #choices { height: auto; max-height: 16; }
+    #dialog-hint { height: auto; margin-top: 1; color: #999999; }
+    """
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("enter", "pick('edit')", show=False),
+        Binding("n", "pick('new')", show=False),
+        Binding("c", "pick('copy')", show=False),
+        Binding("r", "pick('rename')", show=False),
+        Binding("d", "pick('delete')", show=False),
+        Binding("u", "pick('use')", show=False),
+    ]
+    HINT = "enter edit · u use here · esc close\nn new · c copy · r rename · d delete"
+
+    def __init__(self, rows: list[Row], current: str, *, under: Offset) -> None:
+        super().__init__()
+        self.rows = rows
+        self.current = current
+        self.under = under
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield CatalogList(activate_on_click=True, id="choices")
+            yield Static(self.HINT, id="dialog-hint")
+
+    def on_mount(self) -> None:
+        choices = self.query_one("#choices", CatalogList)
+        choices.set_rows(self.rows)
+        choices.cursor = next(i for i, row in enumerate(self.rows) if row.key == self.current)
+        choices.redraw()
+        choices.focus()
+        # Border, padding and pointer take 6 cells; the names line up under the cell `under`.
+        widest = max(cell_len(line.plain) for row in self.rows for line in row.lines)
+        dialog = self.query_one("#dialog")
+        dialog.styles.width = max(widest, *map(cell_len, self.HINT.splitlines())) + 6
+        dialog.styles.margin = (self.under.y + 1, 0, 0, self.under.x - 4)
+
+    @on(CatalogList.Activated, "#choices")
+    def activated(self) -> None:
+        self.action_pick("edit")
+
+    def action_pick(self, operation: str) -> None:
+        self.dismiss((operation, self.query_one("#choices", CatalogList).current))
+
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def on_click(self, event: Click) -> None:
+        if not self.query_one("#dialog").region.contains(event.screen_x, event.screen_y):
+            self.dismiss(None)
 
 
 class Phase(Enum):
@@ -532,10 +637,20 @@ class SkillBody(Static):
 
 
 class SelectorApp(App[Callable[[Path], int] | None]):
+    """Edit one profile at a time. Exits with the terminal handoff that commits it, if any."""
+
     TITLE = "Skill selector"
     ENABLE_COMMAND_PALETTE = False
+    # Textual's own ANSI rule renders the screen behind a dialog dim.
+    SUSPENDED_SCREEN_CLASS = "-screen-suspended"
     CSS = """
     Screen { background: ansi_default; color: ansi_default; }
+    /* The Screen rule above also paints dialog screens opaque, hiding the selector behind them. */
+    ModalScreen { background: transparent; }
+    /* Dim fades text but not border colours, so grey the borders behind a dialog here. */
+    Screen.-screen-suspended #search-box { border: round #5f5f5f; }
+    Screen.-screen-suspended #source-column, Screen.-screen-suspended #skill-column { border-right: solid #5f5f5f; }
+    Screen.-screen-suspended #skill-foot { border-bottom: solid #5f5f5f; }
     #title { height: 1; margin: 1 2; }
     #search-box { height: 3; margin: 0 2 1 2; border: round #999999; }
     #search-prompt { width: 2; }
@@ -584,17 +699,33 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         Binding("space", "toggle", show=False),
         Binding("ctrl+s", "save", show=False),
         Binding("ctrl+u", "update", show=False),
+        Binding("ctrl+p", "profiles", show=False),
         Binding("escape", "quit", show=False),
     ]
 
     def __init__(self, root: Path | None = None) -> None:
         super().__init__()
         self.root = (root or Path(__file__).resolve().parent.parent).resolve()
+        self.record_problem = ""
+        try:
+            self.active: str | None = reconcile_skills.active_profile(self.root)
+        except reconcile_skills.ReconcileError as error:
+            # The launch prompt asks which profile to use; until then the first one is edited.
+            self.active = None
+            # A broken or stale record says why at the prompt; a missing one is simply a fresh home.
+            self.record_problem = (str(error).partition("\n")[0]
+                                   if os.path.lexists(reconcile_skills.record_path()) else "")
+            if not skill_catalog.list_profiles(self.root):
+                raise
+        # The profile being edited; the picker switches it to any other.
+        self.profile = self.active or skill_catalog.list_profiles(self.root)[0]
         # Browsing needs source validation, not the reconciler's deployment gate.
         self.selection_catalog = skill_catalog.load_catalog(self.root)
         self.catalog = display_catalog(self.selection_catalog)
-        self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
-        self.not_installed = skill_catalog.selection_uncommitted(self.root)
+        self.store = CheckoutStore(self.root, self.profile)
+        self.draft = SelectionDraft.load(self.store, self.selection_catalog)
+        self.not_installed = False
+        self.not_committed = False
         self.install_error: str | None = None
         self.install_check = None
         self.markers: dict[str, str] = {}
@@ -629,14 +760,37 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         # Pointer, scrollbar, padding and divider take 6 cells; past the cap, rows truncate.
         names = [NOT_IN_CATALOG, *self.catalog]
         self.query_one("#source-column").styles.width = min(max(map(cell_len, names)) + 6, 49)
+        self.refresh_file_status()
         self.refresh_title()
         self.fill_sources()
         self.fill_skills()
         self.query_one("#sources", CatalogList).focus()
-        if not self.not_installed:
-            self.install_check = self.run_worker(self.check_install_status, thread=True)
         for name, source in self.selection_catalog.sources.items():
             self.run_worker(partial(self.find_update, name, source), thread=True)
+        if self.active is None:
+            self.call_after_refresh(self.choose_profile_here)
+
+    def choose_profile_here(self) -> None:
+        """Ask a home with no profile which one to use, as setup opens the selector on a fresh home."""
+        names = self.profile_names()
+        disabled = {number: reason for number, name in enumerate(names, 1)
+                    if (reason := self.file_operation_blocker(name))}
+
+        def chosen(choice: int | None) -> None:
+            if choice is None:
+                self.query_one("#message", Static).update(
+                    "⎿ Browsing without a profile for this home. Saving offers to use the edited one here.")
+            elif choice > len(names):
+                self.new_profile()
+            else:
+                self.exit(partial(finish_handoff, profile=names[choice - 1], after=After.USE_HERE))
+
+        self.push_screen(ChoiceDialog(
+            "This home has no profile yet. Which one should it use?", [*names, "New profile"],
+            (f"{self.record_problem}\n\n" if self.record_problem else "")
+            + "The choice is saved in ~/.agents/.skillset/profile for this home only, "
+            "then that profile is installed.\nEsc to browse first and decide when you save.",
+            disabled=disabled), chosen)
 
     def find_update(self, name: str, source: skill_catalog.SourceCatalog) -> None:
         worker = get_current_worker()
@@ -657,7 +811,22 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         status = reconcile_skills.install_status(self.root)
         self.call_from_thread(self.show_install_status, not status.installed, status.problem)
 
+    def refresh_file_status(self) -> None:
+        """Mark the edited profile's saved file not installed or not committed, or check installation in a thread.
+
+        Only the profile this home uses can be installed here; any other is only committed.
+        """
+        used_here = self.profile == self.active
+        self.not_installed = used_here and skill_catalog.selection_uncommitted(self.root, self.profile)
+        self.not_committed = not used_here and self.profile in skill_catalog.uncommitted_profiles(self.root)
+        self.install_error = None
+        self.install_check = None
+        if used_here and not self.not_installed:
+            self.install_check = self.run_worker(self.check_install_status, thread=True)
+
     def show_install_status(self, not_installed: bool, error: str | None) -> None:
+        if self.profile != self.active:
+            return
         self.not_installed = not_installed
         self.install_error = error
         self.refresh_title()
@@ -665,11 +834,203 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             self.query_one("#message", Static).update(Text(f"⎿ {error}"))
 
     def refresh_title(self) -> None:
+        where = (("  · used here", ACCENT) if self.profile == self.active
+                 else ("  · this home has no profile", ACCENT) if self.active is None
+                 else (f"  · this home uses {self.active}", SECONDARY))
         self.query_one("#title", Static).update(Text.assemble(
-            ("✻ ", ACCENT), ("Skill selector", "bold"),
+            ("✻ ", ACCENT), (TITLE_PREFIX, "bold"), (self.profile, f"bold {ACCENT}"), where,
             (f"   {len(self.draft)} selected · {self.draft.unsaved} unsaved", SECONDARY),
-            (" · not installed" if self.not_installed else "", ACCENT),
+            (" · not installed" if self.not_installed else " · not committed" if self.not_committed else "", ACCENT),
         ))
+
+    def profile_names(self) -> list[str]:
+        """Profiles at HEAD or on disk, and the edited one, sorted."""
+        return sorted({self.profile, *skill_catalog.profile_names(self.root)})
+
+    def profile_rows(self) -> list[Row]:
+        names = self.profile_names()
+        uncommitted = skill_catalog.uncommitted_profiles(self.root)
+        width = max(map(cell_len, names)) + 3
+        rows = []
+        for name in names:
+            try:
+                text = self.store.read() if name == self.profile else skill_catalog.read_selection_text(self.root, name)
+                count = len(skill_catalog.parse_selection(text))
+            except (reconcile_skills.ReconcileError, OSError):
+                count = 0
+            notes = [("● used here", ACCENT)] if name == self.active else []
+            notes.append((f"{count} skill{'' if count == 1 else 's'}", SECONDARY))
+            if name == self.profile and self.draft.unsaved:
+                notes.append((f"{self.draft.unsaved} unsaved", ACCENT))
+            elif name in uncommitted:
+                notes.append(("not committed", SECONDARY))
+            label = Text(name, style=f"bold {ACCENT}" if name == self.profile else "default")
+            label.pad_right(width - cell_len(name))
+            rows.append(Row(name, [label + Text("  ").join(Text(text, style=style) for text, style in notes)]))
+        return rows
+
+    def action_profiles(self) -> None:
+        def picked(choice: tuple[str, str] | None) -> None:
+            if choice:
+                self.profile_operation(*choice)
+
+        title = self.query_one("#title").region
+        name = Offset(title.x + cell_len("✻ " + TITLE_PREFIX), title.y)
+        self.push_screen(ProfilePicker(self.profile_rows(), self.profile, under=name), picked)
+
+    def profile_operation(self, operation: str, name: str) -> None:
+        if operation == "edit":
+            self.switch_to(name)
+        elif operation in ("new", "copy"):
+            self.new_profile(copy_from=name if operation == "copy" else None)
+        elif operation == "rename":
+            self.rename_profile(name)
+        elif operation == "delete":
+            self.delete_profile(name)
+        elif operation == "use":
+            self.use_here(name)
+
+    def switch_to(self, name: str, edit: Callable[[], None] | None = None) -> None:
+        """Edit name, through `edit` if given, after asking whether to drop unsaved changes."""
+        edit = edit or partial(self.edit_profile, name)
+        if name == self.profile:
+            return
+        if not self.draft.unsaved:
+            edit()
+            return
+
+        async def choice(number: int | None) -> None:
+            if number == 2:
+                await self.action_save()
+            elif number == 3:
+                edit()
+
+        self.push_screen(ChoiceDialog(f"Switch to {name} with unsaved changes?",
+                                      ["Keep editing", "Review and save", "Discard and switch"],
+                                      "\n".join(self.draft.changes.lines())), choice)
+
+    def edit_profile(self, name: str) -> None:
+        if not self.load_profile(name, "Could not edit"):
+            return
+        where = ("" if name == self.active else " This home has no profile." if self.active is None
+                 else f" This home uses {self.active}.")
+        self.query_one("#message", Static).update(Text(f"⎿ Editing {name}.{where}"))
+
+    def use_here(self, name: str) -> None:
+        """Ask, then close for the terminal handoff to make name this home's profile."""
+        if name == self.active:
+            self.query_one("#message", Static).update(Text(f"⎿ This home already uses {name}."))
+            return
+        # --profile installs the file at HEAD, and closing would drop unsaved changes.
+        if reason := self.file_operation_blocker(name):
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot use {name} here: {reason}"))
+            return
+        where = self.home_note("skills only it selects are uninstalled here")
+
+        def confirmed(choice: int | None) -> None:
+            if choice == 1:
+                self.exit(partial(finish_handoff, profile=name, after=After.USE_HERE))
+
+        self.push_screen(ChoiceDialog(f"Use {name} in this home?", [f"Use {name} and install", "Cancel"],
+                                      f"{where}\nOther homes are not affected."), confirmed)
+
+    def home_note(self, consequence: str) -> str:
+        """For a dialog's details: the profile this home uses and `consequence` of that, or that it has none."""
+        return f"This home uses {self.active}; {consequence}." if self.active else "This home has no profile yet."
+
+    def new_profile(self, *, copy_from: str | None = None) -> None:
+        """Name a profile that starts empty or as a copy of a saved one, and edit it unsaved."""
+        try:
+            start = (skill_catalog.read_selection_text(self.root, copy_from) if copy_from
+                     else skill_catalog.SELECTION_HEADER + "\n")
+        except reconcile_skills.ReconcileError as error:
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot copy {copy_from}: {error}"))
+            return
+        details = (f"Starts as a copy of {copy_from}; the two stay independent afterwards." if copy_from
+                   else "Starts empty.") + " It exists only in the selector until you save it."
+
+        def named(name: str | None) -> None:
+            if name:
+                self.switch_to(name, partial(self.create_profile, name, start))
+
+        self.push_screen(NameDialog(f"Copy {copy_from} as" if copy_from else "New profile", details,
+                                    self.profile_names()), named)
+
+    def create_profile(self, name: str, start: str) -> None:
+        if self.load_profile(name, "Could not create", start=start):
+            self.query_one("#message", Static).update(
+                Text(f"⎿ Created {name}. It exists only in the selector until you save it."))
+
+    def load_profile(self, name: str, failure: str, *, start: str | None = None, keep_cursor: bool = False) -> bool:
+        """Edit the saved file of name, dropping unsaved changes, or show why it cannot be read.
+
+        With `start`, name has no file yet: the draft starts from that content, unsaved.
+        With `keep_cursor`, the highlighted source and skill stay highlighted where they still exist.
+        """
+        try:
+            store = CheckoutStore(self.root, name, start=start)
+            self.draft = SelectionDraft.load(store, self.selection_catalog, new=start is not None)
+        except (reconcile_skills.ReconcileError, OSError) as error:
+            self.query_one("#message", Static).update(Text(f"⎿ {failure}: {error}"))
+            return False
+        self.store = store
+        self.profile = name
+        if not keep_cursor:
+            self.source = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
+        self.refresh_file_status()
+        self.refresh_title()
+        self.fill_sources(keep_cursor=keep_cursor)
+        if keep_cursor:
+            self.source = self.query_one("#sources", CatalogList).current
+        self.fill_skills(keep_cursor=keep_cursor)
+        return True
+
+    def file_operation_blocker(self, name: str) -> str | None:
+        """Why name cannot be renamed, deleted or used here now, or None.
+
+        Each closes the selector and acts on name's file as it is at HEAD, so nothing may be unsaved or uncommitted.
+        """
+        if self.draft.unsaved:
+            return "save or discard the unsaved changes first"
+        if name not in skill_catalog.list_profiles(self.root) or name in skill_catalog.uncommitted_profiles(self.root):
+            return f"{skill_catalog.profile_path(name)} is not committed; save and commit it first"
+        return reconcile_skills.selection_commit_blocker(self.root, name)
+
+    def rename_profile(self, name: str) -> None:
+        """Ask for the new name, then close for the terminal handoff to commit the rename."""
+        if reason := self.file_operation_blocker(name):
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot rename {name}: {reason}"))
+            return
+        details = (f"Other homes that use {name} stop installing until they run "
+                   "reconcile-skills.sh --profile <new name> again; this selector can't see them.")
+        if name == self.active:
+            details += "\nThis home uses it, so its record is updated too."
+
+        def named(new: str | None) -> None:
+            if new and new != name:
+                self.exit(partial(commit_rename, profile=name, new=new,
+                                  after=After.USE_HERE if name == self.active else After.NOTHING))
+
+        self.push_screen(NameDialog(f"Rename {name}", details, set(self.profile_names()) - {name}, value=name), named)
+
+    def delete_profile(self, name: str) -> None:
+        """Confirm, then close for the terminal handoff to commit the deletion."""
+        # A profile saved but not committed is not counted: the deletion's commit would leave HEAD with none.
+        reason = ("it is the last profile" if skill_catalog.list_profiles(self.root) == [name]
+                  else "this home uses it; choose another here first" if name == self.active
+                  else self.file_operation_blocker(name))
+        if reason:
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot delete {name}: {reason}"))
+            return
+
+        def confirmed(choice: int | None) -> None:
+            if choice == 1:
+                self.exit(partial(commit_delete, profile=name))
+
+        self.push_screen(ChoiceDialog(f"Delete {name}?", [f"Delete {name}", "Keep it"],
+                                      f"Other homes that use {name} stop installing until they choose another "
+                                      "profile with reconcile-skills.sh --profile <name>; this selector can't see "
+                                      "them."), confirmed)
 
     def fill_sources(self, *, keep_cursor: bool = False) -> None:
         rows = []
@@ -781,7 +1142,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             line = self.draft.off_catalog[key]
             self.query_one("#skill-name", Static).update(Text(line.value, style=name_style))
             metadata.update(Text.assemble(
-                (f"skills.txt:{line.number}", SECONDARY), "\n\n", line.error,
+                (f"{skill_catalog.profile_path(self.profile)}:{line.number}", SECONDARY), "\n\n", line.error,
             ))
             foot.update(Text("Can be deselected only.", style=SECONDARY))
             self.query_one("#skill-body", SkillBody).show("")
@@ -865,30 +1226,46 @@ class SelectorApp(App[Callable[[Path], int] | None]):
             ))
             return
         changes = self.draft.changes
-        if not changes and not self.draft.unsaved and not self.not_installed:
-            self.query_one("#message", Static).update("⎿ No changes to save.")
-            return
-        reason = self.install_unavailable_reason()
-        install_label = "Save and install" if self.draft.unsaved else "Install"
-        self.push_screen(ChoiceDialog("Save these changes?", [install_label, "Save only", "Keep editing"],
-                                      "\n".join(changes.lines()) or "No changes from the last commit.",
-                                      disabled={1: reason} if reason else None),
-                         self.save_choice)
+        review = "\n".join(changes.lines()) or "No changes from the last commit."
+        reason = self.handoff_blocker()
+        if self.profile == self.active:
+            if not changes and not self.draft.unsaved and not self.not_installed:
+                self.query_one("#message", Static).update("⎿ No changes to save.")
+                return
+            install_label = "Save and install" if self.draft.unsaved else "Install"
+            dialog = ChoiceDialog("Save these changes?", [install_label, "Save only", "Keep editing"], review,
+                                  disabled={1: reason} if reason else None)
+            afters = {1: After.INSTALL, 2: After.SAVE_ONLY}
+        else:
+            if not self.draft.unsaved and not self.not_committed:
+                self.query_one("#message", Static).update("⎿ No changes to save.")
+                return
+            where = self.home_note(f"saving {self.profile} doesn't change what's installed here")
+            dialog = ChoiceDialog(f"Save {self.profile}?",
+                                  ["Save and commit (nothing installed here)", "Save, commit and use it here",
+                                   "Save only"],
+                                  f"{review}\n\n{where}", disabled={1: reason, 2: reason} if reason else None)
+            afters = {1: After.NOTHING, 2: After.USE_HERE, 3: After.SAVE_ONLY}
 
-    def install_unavailable_reason(self) -> str | None:
-        return (self.draft.install_blocker or reconcile_skills.selection_install_blocker(self.root)
-                or (self.install_error if not self.draft.changes else None))
+        def save_choice(choice: int | None) -> None:
+            if choice in afters:
+                self.save_selection(after=afters[choice])
 
-    def save_choice(self, choice: int | None) -> None:
-        if choice in (1, 2):
-            self.save_selection(install=choice == 1)
+        self.push_screen(dialog, save_choice)
 
-    def save_selection(self, overwrite: Conflict | None = None, *, install: bool = False) -> None:
-        if install and (reason := self.install_unavailable_reason()):
-            self.query_one("#message", Static).update(Text(f"⎿ Cannot install: {reason}"))
+    def handoff_blocker(self) -> str | None:
+        """Why Save cannot commit the edited profile, or install it when this home uses it, or None."""
+        return (self.draft.commit_blocker or reconcile_skills.selection_commit_blocker(self.root, self.profile)
+                or (self.install_error if self.profile == self.active and not self.draft.changes else None))
+
+    def save_selection(self, overwrite: Conflict | None = None, *, after: After) -> None:
+        """Save the draft, then close for the terminal handoff to commit it unless `after` is SAVE_ONLY."""
+        if after is not After.SAVE_ONLY and (reason := self.handoff_blocker()):
+            action = "install" if after is After.INSTALL else "commit"
+            self.query_one("#message", Static).update(Text(f"⎿ Cannot {action}: {reason}"))
             return
         try:
-            outcome = self.draft.save(install=install, overwrite=overwrite)
+            outcome = self.draft.save(committing=after is not After.SAVE_ONLY, overwrite=overwrite)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not save: {error}"))
             return
@@ -897,43 +1274,35 @@ class SelectorApp(App[Callable[[Path], int] | None]):
                 if choice == 1:
                     self.reload_selection()
                 elif choice == 2:
-                    self.save_selection(overwrite=outcome, install=install)
+                    self.save_selection(overwrite=outcome, after=after)
 
-            self.push_screen(ChoiceDialog("skills.txt changed on disk", ["Reload", "Overwrite"],
+            self.push_screen(ChoiceDialog(f"{skill_catalog.profile_path(self.profile)} changed on disk",
+                                          ["Reload", "Overwrite"],
                                           "Reload drops your unsaved changes. Overwrite replaces the file."),
                              conflict_choice)
             return
         if isinstance(outcome, Blocked):
             self.query_one("#message", Static).update(Text("⎿ Cannot save: " + outcome.reason))
             return
-        if install:
-            self.exit(install_saved_selection)
+        if after is not After.SAVE_ONLY:
+            self.exit(partial(commit_profile, profile=self.profile, after=after))
             return
-        self.not_installed = skill_catalog.selection_uncommitted(self.root)
-        if not self.not_installed:
-            self.install_check = self.run_worker(self.check_install_status, thread=True)
+        self.refresh_file_status()
         self.refresh_title()
-        self.query_one("#message", Static).update("⎿ Saved. Not installed yet.")
+        self.query_one("#message", Static).update(
+            "⎿ Saved. Not installed yet." if self.profile == self.active
+            else Text(f"⎿ Saved {skill_catalog.profile_path(self.profile)}. Not committed."))
 
     def reload_selection(self) -> None:
-        try:
-            self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
-        except (reconcile_skills.ReconcileError, OSError) as error:
-            self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
+        if not self.load_profile(self.profile, "Could not reload"):
             return
-        self.source = NOT_IN_CATALOG if self.draft.off_catalog else next(iter(self.catalog), None)
-        self.not_installed = skill_catalog.selection_uncommitted(self.root)
-        self.install_error = None
-        self.install_check = None
-        if not self.not_installed:
-            self.install_check = self.run_worker(self.check_install_status, thread=True)
-        self.refresh_title()
-        self.fill_sources()
-        self.fill_skills()
-        self.query_one("#message", Static).update("⎿ Reloaded skills.txt. Unsaved changes discarded.")
+        self.query_one("#message", Static).update(
+            Text(f"⎿ Reloaded {skill_catalog.profile_path(self.profile)}. Unsaved changes discarded."))
 
     def action_update(self) -> None:
-        reason = ("the selection has unsaved changes; save and install first" if self.draft.unsaved
+        # The update refuses any profile file that differs from HEAD, so saving alone is not enough.
+        then = "install" if self.profile == self.active else "commit"
+        reason = (f"the selection has unsaved changes; save and {then} first" if self.draft.unsaved
                   else update_sources.update_blocker(self.root))
         message = self.query_one("#message", Static)
         if reason:
@@ -952,20 +1321,11 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         try:
             self.selection_catalog = skill_catalog.load_catalog(self.root)
             self.catalog = display_catalog(self.selection_catalog)
-            self.draft = SelectionDraft.load(CheckoutStore(self.root), self.selection_catalog)
         except (reconcile_skills.ReconcileError, OSError) as error:
             self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
             return
-        self.not_installed = skill_catalog.selection_uncommitted(self.root)
-        self.install_error = None
-        self.install_check = None
-        if not self.not_installed:
-            self.install_check = self.run_worker(self.check_install_status, thread=True)
-        self.refresh_title()
-        self.fill_sources(keep_cursor=True)
-        self.source = self.query_one("#sources", CatalogList).current
-        self.fill_skills(keep_cursor=True)
-        self.refresh_hints()
+        if self.load_profile(self.profile, "Could not reload", keep_cursor=True):
+            self.refresh_hints()
 
     def action_quit(self) -> None:
         search = self.query_one("#search", Input)
@@ -998,14 +1358,16 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         update = Text("ctrl+u update",
                       style=ACCENT if self.markers.get(self.source) == skill_catalog.UPDATE_AVAILABLE else SECONDARY)
         if self.focused is self.query_one("#search"):
-            hint = Text("↓ or enter skills · esc clear or leave search · ctrl+s save")
+            hint = Text("↓ or enter skills · esc clear or leave search · ctrl+s save · ctrl+p profiles")
         elif self.focused is self.query_one("#details"):
-            hint = Text.assemble("↑↓ scroll · ← sources · → skills · ctrl+s save · ", update, " · esc quit")
+            hint = Text.assemble("↑↓ scroll · ← sources · → skills · ctrl+s save · ctrl+p profiles · ", update,
+                                 " · esc quit")
         elif self.focused is self.query_one("#skills"):
-            hint = Text.assemble("↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save · ",
-                                 update, " · esc quit")
+            hint = Text.assemble("↑↓ move · space or enter toggle · ← sources · tab details · ctrl+s save · "
+                                 "ctrl+p profiles · ", update, " · esc quit")
         else:
-            hint = Text.assemble("↑↓ move · → skills · space toggle · ctrl+s save · ", update, " · esc quit")
+            hint = Text.assemble("↑↓ move · → skills · space toggle · ctrl+s save · ctrl+p profiles · ", update,
+                                 " · esc quit")
         self.query_one("#hints", Static).update(hint)
 
 
@@ -1015,40 +1377,98 @@ def shell_path_env() -> dict[str, str]:
     return dict(os.environ, PATH=os.pathsep.join(entry for entry in path if Path(entry) != selector_bin))
 
 
-def install_saved_selection(root: Path) -> int:
+class After(Enum):
+    """What a save, rename, delete or use here does next. All but SAVE_ONLY close for the terminal handoff."""
+
+    SAVE_ONLY = auto()  # Save only: the selector stays open and nothing is committed.
+    NOTHING = auto()  # Commit only, install nothing here: Save and commit, or renaming or deleting another profile.
+    INSTALL = auto()  # Then install the profile this home uses: Save and install, or Install.
+    USE_HERE = auto()  # Then reconcile-skills.sh --profile <name>: using a profile here, or renaming this home's.
+
+
+def commit_profile(root: Path, profile: str, after: After) -> int:
     """Run only after the TUI closes, with hooks and signing in the terminal."""
-    if reason := reconcile_skills.selection_install_blocker(root):
-        print(f"Could not commit: {reason}. skills.txt stays saved; nothing was committed or installed.")
+    path = skill_catalog.profile_path(profile)
+    kept = f"{path} stays saved; nothing was committed or installed."
+    if reason := reconcile_skills.selection_commit_blocker(root, profile):
+        print(f"Could not commit: {reason}. {kept}")
         return 1
     try:
-        changes = Changes.between(skill_catalog.git(["show", "HEAD:skills.txt"], cwd=root),
-                                  skill_catalog.read_selection_text(root))
-        message = f"Update skill selection ({changes.summary})"
+        store = CheckoutStore(root, profile)
+        changes = Changes.between(store.head(), store.read())
+        # A new profile is staged first: `commit --only` takes only paths Git already knows.
+        new = not skill_catalog.git(["ls-files", "--", path], cwd=root)
+        unchanged = not new and not skill_catalog.selection_uncommitted(root, profile)
+    except (reconcile_skills.ReconcileError, OSError) as error:
+        print(f"Could not commit: {error}. {kept}")
+        return 1
+    if unchanged:
+        return finish_handoff(root, profile, after)
+    return commit_handoff(root, [path], [f"{'Add' if new else 'Update'} {profile} profile ({changes.summary})",
+                                         "\n".join(changes.lines())],
+                          stage=["add", "--", path] if new else None, failed=kept, profile=profile, after=after)
+
+
+def commit_rename(root: Path, profile: str, new: str, after: After) -> int:
+    """Rename a committed profile with git mv and commit only that, then use it here if `after` says so."""
+    path, new_path = skill_catalog.profile_path(profile), skill_catalog.profile_path(new)
+    return commit_handoff(root, [path, new_path], [f"Rename {profile} profile to {new}"],
+                          stage=["mv", "--", path, new_path], undo=["mv", "--", new_path, path],
+                          failed=f"{path} was not renamed.", profile=new, after=after)
+
+
+def commit_delete(root: Path, profile: str) -> int:
+    """Delete a committed profile with git rm and commit only that."""
+    path = skill_catalog.profile_path(profile)
+    return commit_handoff(root, [path], [f"Delete {profile} profile"],
+                          stage=["rm", "-q", "--", path], undo=["checkout", "HEAD", "--", path],
+                          failed=f"{path} was not deleted.", profile=profile, after=After.NOTHING)
+
+
+def commit_handoff(root: Path, paths: list[str], message: list[str], *, stage: list[str] | None = None,
+                   undo: list[str] | None = None, failed: str, profile: str, after: After) -> int:
+    """Stage with the Git arguments `stage`, commit only `paths`, then finish the handoff for profile.
+
+    `message` holds the commit's paragraphs. If the commit fails (a hook,
+    signing), `undo` restores the files; either failure prints `failed`, which
+    says what was left as it was.
+    """
+    try:
+        if stage:
+            skill_catalog.git(stage, cwd=root)
         # Match the checkout inspected by the catalog's Git reads, while
         # retaining terminal streams for hooks and interactive signing.
-        if skill_catalog.selection_uncommitted(root):
-            commit = subprocess.run(
-                ["git", "commit", "-m", message, "-m", "\n".join(changes.lines()), "--only", "--", "skills.txt"],
-                cwd=root, env=skill_catalog.git_env(interactive=True), check=False,
-            )
-            if commit.returncode:
-                print("Commit failed. skills.txt stays saved; nothing was committed or installed.")
-                return commit.returncode
+        commit = subprocess.run(["git", "commit", *(f"--message={part}" for part in message), "--only", "--", *paths],
+                                cwd=root, env=skill_catalog.git_env(interactive=True), check=False)
+        if commit.returncode:
+            if undo:
+                skill_catalog.git(undo, cwd=root)
+            print(f"Commit failed. {failed}")
+            return commit.returncode
     except (reconcile_skills.ReconcileError, OSError) as error:
-        print(f"Could not commit: {error}. skills.txt stays saved; nothing was committed or installed.")
+        print(f"Could not commit: {error}. {failed}")
         return 1
-    try:
-        result = subprocess.run([str(root / "scripts/reconcile-skills.sh")], cwd=root,
-                                env=shell_path_env(), check=False)
-        code = result.returncode
-    except OSError as error:
-        print(f"Could not install: {error}. The selection commit was kept.")
-        code = 1
+    return finish_handoff(root, profile, after)
+
+
+def finish_handoff(root: Path, profile: str, after: After) -> int:
+    """Install profile here as `after` says, once it is committed, and point out an unpushed commit."""
+    code = 0
+    if after in (After.INSTALL, After.USE_HERE):
+        command = [str(root / "scripts/reconcile-skills.sh")]
+        if after is After.USE_HERE:
+            command += ["--profile", profile]
+        try:
+            code = subprocess.run(command, cwd=root, env=shell_path_env(), check=False).returncode
+        except OSError as error:
+            print(f"Could not install: {error}. The selection commit was kept.")
+            code = 1
     if skill_catalog.git(["rev-parse", "--verify", "@{upstream}"], cwd=root, check=False):
         if int(skill_catalog.git(["rev-list", "--count", "@{upstream}..HEAD"], cwd=root)):
             print("Not pushed yet. To back it up: git push")
     if code:
-        print("run the skill selector again and choose Install")
+        print(f"run scripts/reconcile-skills.sh --profile {profile} again" if after is After.USE_HERE
+              else "run the skill selector again and choose Install")
     return code
 
 

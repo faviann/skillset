@@ -9,24 +9,40 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fixture import CHECKOUT, SkillsetFixture, git, write_skill
+from fixture import CHECKOUT, SkillsetFixture, git, write_profile, write_skill
 
 sys.path.insert(0, str(CHECKOUT / "scripts"))
 from skill_catalog import (
     AGENTS_DIR,
     CLAUDE_DIR,
-    SELECTION_PATH,
     Catalog,
     InvalidSkill,
     ReconcileError,
     SourceCatalog,
     discover_catalog,
+    list_profiles,
     load_catalog,
     parse_modules,
     parse_selection,
+    profile_path,
+    profile_problems,
     read_selection_text,
     write_selection,
 )
+
+
+class ProfileNameTests(unittest.TestCase):
+    def test_profile_path_is_derived_from_the_name(self) -> None:
+        for name in ("workstation", "zeroshot-review", "llm2", "a" * 64):
+            with self.subTest(name=name):
+                self.assertEqual(profile_path(name), f"profiles/{name}.txt")
+
+    def test_names_follow_the_skill_name_rules(self) -> None:
+        for name in ("", "Workstation", "-llm", "llm-", "zeroshot--review", "a" * 65, "work station",
+                     "llm_2", "work.station", "../workstation", "profiles/llm", "caf\u00e9"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ReconcileError, "invalid profile name"):
+                    profile_path(name)
 
 
 class ResolutionTests(unittest.TestCase):
@@ -37,13 +53,13 @@ class ResolutionTests(unittest.TestCase):
 
     def targets(self, text: str, **sources: SourceCatalog) -> dict[tuple[Path, str], str]:
         catalog = Catalog({"acme/skills": self.acme, **{f"other/{name}": source for name, source in sources.items()}})
-        return catalog.resolve(text).install_targets()
+        return catalog.resolve(text).install_targets("workstation")
 
     def test_comments_and_blank_lines_are_skipped(self) -> None:
         resolution = Catalog({"acme/skills": self.acme}).resolve(
             "\n# chosen skills\n  # another comment\n\n acme/skills:alpha \n")
         self.assertEqual([(line.value, line.number) for line in resolution.lines], [("acme/skills:alpha", 5)])
-        self.assertEqual(resolution.install_targets(), {
+        self.assertEqual(resolution.install_targets("workstation"), {
             (AGENTS_DIR, "alpha"): "/acme/alpha", (CLAUDE_DIR, "alpha"): "/acme/alpha",
         })
 
@@ -52,36 +68,58 @@ class ResolutionTests(unittest.TestCase):
                      "acme/skills:alpha:extra", "acme:team/skills:alpha",
                      "acme/skills:", "acme//skills:alpha", "../skills:alpha"):
             with self.subTest(line=line):
-                with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: bad syntax"):
+                with self.assertRaisesRegex(ReconcileError, r"profiles/workstation.txt:3: bad syntax"):
                     self.targets(f"# selection\n\n{line}\n")
 
     def test_duplicate_selection_line_has_line_number(self) -> None:
-        with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: duplicate selection line"):
+        with self.assertRaisesRegex(ReconcileError, r"profiles/workstation.txt:3: duplicate selection line"):
             self.targets("acme/skills:alpha\n# repeat\nacme/skills:alpha\n")
 
     def test_unknown_source_has_line_number(self) -> None:
-        with self.assertRaisesRegex(ReconcileError, r"skills.txt:2: unknown source: unknown/skills"):
+        with self.assertRaisesRegex(ReconcileError, r"profiles/workstation.txt:2: unknown source: unknown/skills"):
             self.targets("# selection\nunknown/skills:alpha\n")
 
     def test_missing_name_has_line_number(self) -> None:
-        with self.assertRaisesRegex(ReconcileError, r"skills.txt:2: name is missing at the pinned commit: acme/skills:missing"):
+        with self.assertRaisesRegex(ReconcileError, r"profiles/workstation.txt:2: name is missing at the pinned commit: acme/skills:missing"):
             self.targets("\nacme/skills:missing\n")
 
     def test_variant_only_name_is_missing(self) -> None:
         self.acme.variants = {"codex": {"only-variant": "/acme/dist/codex/only-variant"}}
-        with self.assertRaisesRegex(ReconcileError, "skills.txt:1: name is missing at the pinned commit"):
+        with self.assertRaisesRegex(ReconcileError, "profiles/workstation.txt:1: name is missing at the pinned commit"):
             self.targets("acme/skills:only-variant\n")
 
     def test_same_name_selected_from_two_sources_has_line_number(self) -> None:
         with self.assertRaises(ReconcileError) as caught:
             self.targets("acme/skills:alpha\n\nother/tools:alpha\n",
                          tools=SourceCatalog({"alpha": "/tools/alpha"}, {}, {}))
-        self.assertEqual(str(caught.exception), "skills.txt:3: same name selected from two sources: alpha\n"
+        self.assertEqual(str(caught.exception), "profiles/workstation.txt:3: same name selected from two sources: alpha\n"
                                                 "  acme/skills:alpha\n  other/tools:alpha")
 
+    def test_errors_point_at_the_named_profile(self) -> None:
+        with self.assertRaisesRegex(ReconcileError, r"\Aprofiles/llm.txt:2: unknown source: unknown/skills"):
+            Catalog({"acme/skills": self.acme}).resolve("# selection\nunknown/skills:alpha\n").install_targets("llm")
+
+    def test_empty_profile_installs_nothing(self) -> None:
+        self.assertEqual(self.targets(""), {})
+        self.assertEqual(self.targets("# only a comment\n"), {})
+
     def test_later_syntax_error_wins_over_earlier_catalog_error(self) -> None:
-        with self.assertRaisesRegex(ReconcileError, r"skills.txt:3: bad syntax"):
+        with self.assertRaisesRegex(ReconcileError, r"profiles/workstation.txt:3: bad syntax"):
             self.targets("unknown/skills:alpha\nacme/skills:missing\nnot a value\n")
+
+    def test_problems_lists_every_broken_line_with_its_location(self) -> None:
+        catalog = Catalog({"acme/skills": self.acme, "other/tools": SourceCatalog({"alpha": "/tools/alpha"}, {}, {})})
+        problems = catalog.resolve(
+            "# selection\nunknown/skills:alpha\nacme/skills:alpha\nacme/skills:broken\n"
+            "not a value\nother/tools:alpha\nacme/skills:gone\n").problems("llm")
+        self.assertEqual(problems, [
+            "profiles/llm.txt:5: bad syntax; expected owner/repo:name: not a value",
+            "profiles/llm.txt:2: unknown source: unknown/skills",
+            "profiles/llm.txt:4: selected name is invalid: acme/skills:broken\n  bad frontmatter",
+            "profiles/llm.txt:6: same name selected from two sources: alpha\n  acme/skills:alpha\n  other/tools:alpha",
+            "profiles/llm.txt:7: name is missing at the pinned commit: acme/skills:gone",
+        ])
+        self.assertEqual(catalog.resolve("acme/skills:alpha\n").problems("llm"), [])
 
     def test_resolve_keeps_every_line_with_its_own_error(self) -> None:
         lines = Catalog({"acme/skills": self.acme}).resolve(
@@ -129,7 +167,7 @@ class CatalogTests(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.fixture = SkillsetFixture(self.base, {
             "acme/skills": {"skills/engineering/alpha": "alpha"},
-        }, [])
+        }, {"workstation": []})
         self.repo = self.fixture.repo
         self.source = self.fixture.sources["acme/skills"]
         self.alpha = self.source / "skills/engineering/alpha"
@@ -142,13 +180,13 @@ class CatalogTests(unittest.TestCase):
         return catalog.sources["acme/skills"]
 
     def targets(self, text: str) -> dict[tuple[Path, str], str]:
-        return load_catalog(self.repo).resolve(text).install_targets()
+        return load_catalog(self.repo).resolve(text).install_targets("workstation")
 
     def selection_text(self, text: str) -> None:
-        (self.repo / SELECTION_PATH).write_text(text, encoding="utf-8")
+        (self.repo / "profiles/workstation.txt").write_text(text, encoding="utf-8")
 
     def selection(self) -> list[str]:
-        return [line.value for line in parse_selection(read_selection_text(self.repo))]
+        return [line.value for line in parse_selection(read_selection_text(self.repo, "workstation"))]
 
     def commit_source(self) -> None:
         git(["add", "-A"], self.source)
@@ -195,20 +233,59 @@ class CatalogTests(unittest.TestCase):
         self.write_metadata('name: "alpha"')
         with self.assertRaises(ReconcileError) as caught:
             self.targets("# selection\nacme/skills:alpha\n")
-        self.assertIn("skills.txt:2: selected name is invalid: acme/skills:alpha", str(caught.exception))
+        self.assertIn("profiles/workstation.txt:2: selected name is invalid: acme/skills:alpha", str(caught.exception))
         self.assertIn("unsupported frontmatter identity", str(caught.exception))
         self.assertIn(str(self.alpha / "SKILL.md"), str(caught.exception))
+
+    def test_lists_the_profiles_committed_at_head(self) -> None:
+        self.assertEqual(list_profiles(self.repo), ["workstation"])
+        profiles = self.repo / "profiles"
+        (profiles / "zeroshot-review.txt").write_text("", encoding="utf-8")
+        (profiles / "llm.txt").write_text("acme/skills:alpha\n", encoding="utf-8")
+        for other in ("README.md", "Bad.txt", "nested/deep.txt"):
+            (profiles / other).parent.mkdir(exist_ok=True)
+            (profiles / other).write_text("", encoding="utf-8")
+        git(["add", "-A"], self.repo)
+        git(["commit", "-qm", "add profiles"], self.repo)
+        self.assertEqual(list_profiles(self.repo), ["llm", "workstation", "zeroshot-review"])
+
+        (profiles / "draft.txt").write_text("", encoding="utf-8")
+        (profiles / "llm.txt").unlink()
+        self.assertEqual(list_profiles(self.repo), ["llm", "workstation", "zeroshot-review"])
+
+    def test_profile_problems_validates_every_profile_as_committed(self) -> None:
+        write_profile(self.repo, "llm", ["acme/skills:gone", "acme/skills:alpha"])
+        write_profile(self.repo, "review", ["acme/skills:alpha"])
+        git(["add", "-A"], self.repo)
+        git(["commit", "-qm", "add profiles"], self.repo)
+        write_profile(self.repo, "llm", ["acme/skills:alpha"])
+        write_profile(self.repo, "review", ["unknown/skills:alpha"])
+        write_profile(self.repo, "draft", ["not a value"])
+        self.assertEqual(profile_problems(self.repo, load_catalog(self.repo)),
+                         ["profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:gone"])
+
+    def test_profile_problems_names_each_file_under_profiles_that_is_not_a_profile(self) -> None:
+        write_profile(self.repo, "llm", ["acme/skills:gone"])
+        (self.repo / "profiles/Bad.txt").write_text("", encoding="utf-8")
+        git(["add", "-A"], self.repo)
+        git(["commit", "-qm", "add a profile and a stray file"], self.repo)
+        (self.repo / "profiles/notes.md").write_text("", encoding="utf-8")
+        self.assertEqual(profile_problems(self.repo, load_catalog(self.repo)), [
+            "profiles/Bad.txt: not a profile; name a profile profiles/<name>.txt, "
+            "with 1-64 lowercase letters, digits or single hyphens",
+            "profiles/llm.txt:2: name is missing at the pinned commit: acme/skills:gone",
+        ])
 
     def test_selection_writer_sorts_and_round_trips_even_without_catalog_entries(self) -> None:
         self.selection_text("# handwritten choices\nretired/tools:gone\n\nacme/skills:alpha\n")
         selection = self.selection()
-        write_selection(self.repo, selection)
-        self.assertEqual((self.repo / SELECTION_PATH).read_text(encoding="utf-8"),
+        write_selection(self.repo, "workstation", selection)
+        self.assertEqual((self.repo / "profiles/workstation.txt").read_text(encoding="utf-8"),
                          "# Written by the skill selector. Comments and ordering are not kept.\n"
                          "acme/skills:alpha\nretired/tools:gone\n")
         self.assertEqual(set(self.selection()), set(selection))
-        write_selection(self.repo, [])
-        self.assertEqual((self.repo / SELECTION_PATH).read_text(encoding="utf-8"),
+        write_selection(self.repo, "workstation", [])
+        self.assertEqual((self.repo / "profiles/workstation.txt").read_text(encoding="utf-8"),
                          "# Written by the skill selector. Comments and ordering are not kept.\n")
         self.assertEqual(self.selection(), [])
 

@@ -23,7 +23,11 @@ by faviann live in the first-party source `faviann/agent-skills`, at
 `.gitmodules` records the fetch URL, the tracked branch and the canonical source
 path. Every entry must declare `branch`. The superproject gitlink is the only
 source-commit lock; the tracked branch never changes which commit is installed.
-`skills.txt` lists selected skills as
+Each profile, `profiles/<name>.txt`, is a complete, independent selection; none
+builds on another. Profile names follow the skill-name rules: 1-64 lowercase
+ASCII letters, digits or hyphens, with no leading, trailing or consecutive
+hyphens. A profile may be empty. Each home installs the one profile its
+[record](#the-homes-profile) names. A profile lists selected skills as
 `owner/repo:name`, where `owner/repo` is the source folder under `sources/` and
 `name` is the frontmatter identity. Path selections are rejected. The catalog
 resolves these identities at the pinned commit, so moving a skill within its
@@ -86,9 +90,10 @@ lookup shows no marker.
 worktree of the live checkout, `~/worktrees/skillset/update-sources`, which it
 forces back to the live `HEAD` and merges `origin/main` into on every run.
 There it fetches each source's tracked branch, commits one pin per source,
-validates the result with the install's read-only checks, and pushes each
-accepted commit to `main`. The worktree validates but never installs. An
-install rejects linked worktrees, and the links point into the live checkout.
+validates the result with the install's read-only checks against every profile,
+not only this home's, and pushes each accepted commit to `main`. The worktree
+validates but never installs. An install rejects linked worktrees, and the
+links point into the live checkout.
 The live checkout changes only at the end of a run, by fast-forward, after
 which its sources are restored and the selection is installed. Because the
 worktree starts from the live checkout, a selection committed locally but not
@@ -168,11 +173,39 @@ promise protection against malicious same-user filesystem races. Do not run
 other installers or mutate source checkouts concurrently. An I/O failure may
 leave partial progress; rerun after repairing the cause.
 
+## The home's profile
+
+Each home records its active profile in `~/.agents/.skillset/profile`, one line
+holding the name, beside the receipts and the lock. It is never committed.
+`scripts/reconcile-skills.sh --profile <name>` checks that `profiles/<name>.txt`
+exists at HEAD, writes the record, then installs. Writing first means a failed
+install converges on the new profile when a plain install reruns. Every later
+install and `--check` reads the record. Switching profiles needs no special
+case: the owned links the new profile doesn't want are removed through the
+receipts like any deselected skill.
+
+If the record is missing, holds an invalid name, or names a profile that isn't
+at HEAD, install and `--check` fail closed. They change no links and print the
+profiles at HEAD and the `--profile` command. There is no default profile and no
+guessing from receipts. The update command refuses to start in that state for
+the same reason. The selector opens and asks which profile this home should use;
+it never writes the record itself, and every change to this home's profile runs
+`--profile` after the selector closes. Install validates only the active profile, so a
+broken profile no home here uses never blocks it. `--check` validates every
+profile committed at HEAD, so a broken profile shows from any home. It reports
+any other file or folder under `profiles/` by its path, since installs ignore
+it, then each unresolved line, invalid skill and repeated name at its
+`profiles/<name>.txt:<line>`, then this home's install state. Repeated names are
+checked within one profile; the same skill in several profiles is expected. A
+source update validates every profile too, because the pin it pushes reaches
+every home. If `origin/main` renames or deletes this home's profile, the update
+still goes ahead and the install at its end fails closed the same way.
+
 ## Persistence and restoration
 
 The workstation persists `~/.agents` and `~/.claude` through an LXC rebuild,
-but does not persist every directory under `~/.local/state`. Receipts therefore
-live beside the install directories. Each install directory has its own receipt
+but does not persist every directory under `~/.local/state`. Receipts and the
+profile record therefore live beside the install directories. Each install directory has its own receipt
 directory, so publication does not cross their separate bind mounts.
 
 Backup and restore must preserve the hard-link relationship between receipts
@@ -202,7 +235,8 @@ than hiding a possible collision. Project skills, plugins, built-ins and cloud
 skill stores are outside this directory-level check.
 
 An install rejects linked worktrees, symlinked destination/state parents,
-uncommitted tracked superproject files (including staged gitlinks), missing or
+uncommitted tracked superproject files (including staged gitlinks) other than
+profiles the home does not install, missing or
 wrong-revision sources, dirty sources, and ignored/untracked selected content.
 Nested source submodules are deliberately unsupported for now; rejecting them
 is smaller and safer than claiming incomplete recursive validation.

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import SkillsetFixture, git
+from fixture import SkillsetFixture, git, write_profile
 from pilot import PilotTestCase, selector
 
 
@@ -18,7 +18,7 @@ class UpdateKeyTests(PilotTestCase):
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name)
         self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}, "zebra/tools": {"gamma": "gamma"}},
-                                       ["acme/skills:alpha"])
+                                       {"workstation": ["acme/skills:alpha"]}, record="workstation")
         self.repo = self.fixture.repo
         self.origin = self.base / "origin.git"
         git(["init", "-q", "--bare", "-b", "main", str(self.origin)], self.base)
@@ -71,6 +71,16 @@ class UpdateKeyTests(PilotTestCase):
             self.assertTrue(app.is_running)
             self.assertEqual(self.text(app, "#message"),
                              f"⎿ Cannot update sources: {selector.update_sources.update_blocker(self.repo)}")
+
+    async def test_update_key_refuses_while_another_profile_file_is_uncommitted(self) -> None:
+        write_profile(self.repo, "llm", ["zebra/tools:gamma"])
+        app = selector.SelectorApp(root=self.repo)
+        async with app.run_test() as pilot:
+            await self.started(pilot)
+            await pilot.press("ctrl+u")
+            self.assertEqual(len(app.screen_stack), 1)
+            self.assertEqual(self.text(app, "#message"), "⎿ Cannot update sources: profiles/llm.txt has "
+                             "uncommitted changes; commit or discard them first")
 
     async def test_update_key_on_a_source_without_an_update_only_says_so(self) -> None:
         app = selector.SelectorApp(root=self.repo)

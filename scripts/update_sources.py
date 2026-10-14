@@ -11,26 +11,30 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from reconcile_skills import (
+    active_profile,
     ensure_skillset_committed,
     home_path,
     require_primary_checkout,
-    selection_install_blocker,
+    selection_commit_blocker,
     stale_upstreams,
 )
 from skill_catalog import (
+    UPDATE_AVAILABLE,
     Catalog,
     ReconcileError,
     SourceCatalog,
     canonical_url,
     git,
     git_env,
+    list_profiles,
     load_catalog,
     parse_modules,
     path_prefixes,
+    profile_path,
+    profile_problems,
     read_selection_text,
-    selection_uncommitted,
+    uncommitted_profile_files,
     update_marker,
-    UPDATE_AVAILABLE,
 )
 
 BRANCH = "update-sources"
@@ -58,6 +62,7 @@ class Summary:
     changed: dict[str, str]
     selected: frozenset[str]
     unpublished: list[str]
+    others: dict[str, frozenset[str]]
 
     def lines(self, update: SourceUpdate, *, named: bool = True) -> list[str]:
         count = len(self.commits)
@@ -67,13 +72,19 @@ class Summary:
         rows += [(name, "removed") for name in self.removed]
         rows += [(name, "added") for name in self.added]
         width = max((len(name) for name, _ in rows), default=0)
-        for title, section in (
-            ("Skills you use", [row for row in rows if row[0] in self.selected]),
-            ("New skills", [row for row in rows if row[1] == "added"]),
-            ("Skills you don't use", [row for row in rows if row[0] not in self.selected and row[1] != "added"]),
-        ):
-            if section:
-                lines += ["", title, *(f"  {name:<{width}}  {what}" for name, what in sorted(section))]
+
+        def section(title: str, part: list[tuple[str, str]]) -> list[str]:
+            return ["", title, *(f"  {name:<{width}}  {what}" for name, what in sorted(part))] if part else []
+
+        # Other profiles get one line each, no detail: this home doesn't install them.
+        also = [f"also changes {len(names)} skill{'s' if len(names) != 1 else ''} in {profile}: {', '.join(names)}"
+                for profile, selected in sorted(self.others.items())
+                if (names := sorted(selected.intersection(self.changed)))]
+        lines += section("Skills you use", [row for row in rows if row[0] in self.selected])
+        lines += ["", *also] if also else []
+        lines += section("New skills", [row for row in rows if row[1] == "added"])
+        lines += section("Skills you don't use",
+                         [row for row in rows if row[0] not in self.selected and row[1] != "added"])
         if not self.added and not self.removed:
             lines += ["", "No skills added or removed." if self.changed else "No skill files changed."]
         if self.commits:
@@ -110,10 +121,12 @@ def off_main(root: Path) -> str | None:
 
 def update_blocker(root: Path) -> str | None:
     """Why the update cannot start, or None."""
-    if reason := off_main(root) or selection_install_blocker(root):
+    if reason := off_main(root) or selection_commit_blocker(root):
         return reason
-    if selection_uncommitted(root):
-        return "skills.txt has uncommitted changes; save and install first"
+    # The update validates profiles as committed; an uncommitted one could be broken by it unseen.
+    if changed := uncommitted_profile_files(root):
+        return (f"{', '.join(changed)} {'has' if len(changed) == 1 else 'have'} uncommitted changes; "
+                "commit or discard them first")
     return None
 
 
@@ -168,7 +181,23 @@ def start(root: Path, log: Log) -> Path:
     restore_sources(root, log)
     if reason := update_blocker(root):
         raise ReconcileError(reason)
-    return prepare_worktree(root, log)
+    worktree = prepare_worktree(root, log)
+    if home_profile(worktree) is None:
+        log(f"origin/main has no {profile_path(active_profile(root))}, which this home uses; "
+            "the install at the end stops until you choose a profile")
+    return worktree
+
+
+def home_profile(worktree: Path) -> str | None:
+    """This home's profile, or None when origin/main renamed or deleted it.
+
+    Updates still go ahead, since every profile is validated, and the install at
+    the end fails closed with the choose-a-profile message.
+    """
+    try:
+        return active_profile(worktree)
+    except ReconcileError:
+        return None
 
 
 def reset_worktree(worktree: Path, checkpoint: str, log: Log) -> None:
@@ -208,8 +237,11 @@ def commit_update(worktree: Path, update: SourceUpdate, source: SourceCatalog, l
 
 
 def check_installable(worktree: Path, catalog: Catalog) -> None:
-    ensure_skillset_committed(worktree)
-    catalog.resolve(read_selection_text(worktree)).install_targets()
+    if profile := home_profile(worktree):
+        ensure_skillset_committed(worktree, profile)
+    # Every profile, not only this home's: the pushed pin reaches every home.
+    if problems := profile_problems(worktree, catalog):
+        raise ReconcileError("\n".join(problems))
     if stale := stale_upstreams(catalog):
         raise ReconcileError("\n".join(stale))
 
@@ -230,7 +262,7 @@ def diffstat(path: Path, old: str, new: str, directories: set[Path]) -> str:
 
 
 def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after: SourceCatalog,
-              selected: frozenset[str]) -> Summary:
+              selected: frozenset[str], others: dict[str, frozenset[str]]) -> Summary:
     changed_files = git(["diff", "--name-only", "-z", "--no-renames", update.old, update.new], cwd=after.path)
     touched = path_prefixes(map(Path, filter(None, changed_files.split("\0"))))
     changed = {}
@@ -242,7 +274,7 @@ def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after
                   cwd=after.path).splitlines()
     unpublished = git(["log", "--format=%h %s", "origin/main..HEAD^"], cwd=worktree).splitlines()
     return Summary(commits, sorted(set(after.skills) - set(before.skills)),
-                   sorted(set(before.skills) - set(after.skills)), changed, selected, unpublished)
+                   sorted(set(before.skills) - set(after.skills)), changed, selected, unpublished, others)
 
 
 @dataclass(frozen=True)
@@ -283,9 +315,11 @@ def prepare(worktree: Path, name: str, before: Catalog, log: Log) -> Prepared | 
             return update
         commit_update(worktree, update, source, log)
         after = load_catalog(worktree)
-        selected = frozenset(line.name for line in after.resolve(read_selection_text(worktree)).lines
-                             if line.name and line.value.startswith(f"{name}:"))
-        summary = summarize(worktree, update, source, after.sources[name], selected)
+        selections = {profile: frozenset(line.name for line in after.resolve(read_selection_text(worktree, profile)).lines
+                                         if line.name and line.value.startswith(f"{name}:"))
+                      for profile in list_profiles(worktree)}
+        selected = selections.pop(home_profile(worktree), frozenset())
+        summary = summarize(worktree, update, source, after.sources[name], selected, selections)
         added = summary.added
         check_installable(worktree, after)
         return Prepared(worktree, checkpoint, update, source, after, summary)

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fixture import SkillsetFixture, configure_git, git, write_skill
+from fixture import SkillsetFixture, configure_git, git, write_profile, write_skill
 
 
 class UpdateCase(unittest.TestCase):
@@ -20,7 +20,7 @@ class UpdateCase(unittest.TestCase):
         self.fixture = SkillsetFixture(self.base, {
             "acme/skills": {"skills/alpha": "alpha", "skills/unselected": "unselected"},
             "zebra/tools": {"gamma": "gamma"},
-        }, ["acme/skills:alpha"])
+        }, {"workstation": ["acme/skills:alpha"]}, record="workstation")
         self.repo = self.fixture.repo
         self.home = self.fixture.home
         self.env = self.fixture.env
@@ -65,9 +65,15 @@ class UpdateCase(unittest.TestCase):
         other = self.base / "other"
         git(["clone", "-q", str(self.origin), str(other)], self.base)
         configure_git(other)
-        (other / "skills.txt").write_text(selection, encoding="utf-8")
+        (other / "profiles/workstation.txt").write_text(selection, encoding="utf-8")
         git(["commit", "-qam", subject], other)
         git(["push", "-q", "origin", "main"], other)
+
+    def add_profile(self, name: str, selection: list[str]) -> None:
+        write_profile(self.repo, name, selection)
+        git(["add", "--", f"profiles/{name}.txt"], self.repo)
+        git(["commit", "-qm", f"Add {name} profile"], self.repo)
+        git(["push", "-q", "origin", "main"], self.repo)
 
     def add_canonical(self, source: str) -> Path:
         canonical = self.fixture.github / f"{source}.git"
@@ -82,10 +88,23 @@ class UpdateCase(unittest.TestCase):
 
 class UpdateStartTests(UpdateCase):
     def assert_refused(self, reason: str, script: Path | None = None) -> None:
+        subjects = self.origin_subjects()
         self.assertIn(reason, self.update(ok=False, script=script))
         self.assertFalse(self.worktree.exists())
-        self.assertFalse((self.home / ".agents").exists())
-        self.assertEqual(self.origin_subjects(), ["initial skillset"])
+        self.assertFalse((self.home / ".agents/skills").exists())
+        self.assertFalse((self.home / ".claude").exists())
+        self.assertEqual(self.origin_subjects(), subjects)
+
+    def test_refuses_a_home_without_a_valid_record(self) -> None:
+        record = self.home / ".agents/.skillset/profile"
+        for content in (None, "gone\n"):
+            with self.subTest(content=content):
+                if content is None:
+                    record.unlink()
+                else:
+                    record.write_text(content, encoding="utf-8")
+                self.assert_refused("profiles at HEAD: workstation\n"
+                                    "choose one with: scripts/reconcile-skills.sh --profile <name>")
 
     def test_refuses_off_main_with_unsaved_selection_or_blocked_install(self) -> None:
         old, checkout = self.pin("acme/skills"), self.fixture.sources["acme/skills"]
@@ -98,15 +117,23 @@ class UpdateStartTests(UpdateCase):
         self.assert_refused("is on topic, not main")
         self.assertEqual(git(["rev-parse", "HEAD"], checkout), old)
         git(["checkout", "-q", "main"], self.repo)
-        (self.repo / "skills.txt").write_text("# unsaved\nacme/skills:alpha\n", encoding="utf-8")
-        self.assert_refused("skills.txt has uncommitted changes")
-        git(["checkout", "-q", "--", "skills.txt"], self.repo)
+        (self.repo / "profiles/workstation.txt").write_text("# unsaved\nacme/skills:alpha\n", encoding="utf-8")
+        self.assert_refused("profiles/workstation.txt has uncommitted changes")
+        git(["checkout", "-q", "--", "profiles/workstation.txt"], self.repo)
         (self.repo / "sources.toml").write_text("# dirty\n", encoding="utf-8")
         self.assert_refused("tracked skillset changes are not committed")
         git(["checkout", "-q", "--", "sources.toml"], self.repo)
         linked = self.base / "linked"
         git(["worktree", "add", "-q", str(linked)], self.repo)
         self.assert_refused("belong to the primary checkout", linked / "scripts/update-sources.sh")
+
+    def test_refuses_while_any_profile_file_has_uncommitted_changes(self) -> None:
+        self.add_profile("llm", ["zebra/tools:gamma"])
+        (self.repo / "profiles/llm.txt").write_text("# unsaved\n", encoding="utf-8")
+        self.assert_refused("profiles/llm.txt has uncommitted changes")
+        git(["checkout", "-q", "--", "profiles/llm.txt"], self.repo)
+        write_profile(self.repo, "review", ["acme/skills:alpha"])
+        self.assert_refused("profiles/review.txt has uncommitted changes")
 
     def test_rerun_restores_sources_an_interrupted_finish_left_behind(self) -> None:
         self.update()
@@ -162,7 +189,7 @@ class UpdateSyncTests(UpdateCase):
         self.assertIn("error: git fetch", output)
         self.assertNotIn("by hand", output)
         hidden.rename(self.origin)
-        (self.repo / "skills.txt").write_text("# local\nacme/skills:alpha\n", encoding="utf-8")
+        (self.repo / "profiles/workstation.txt").write_text("# local\nacme/skills:alpha\n", encoding="utf-8")
         git(["commit", "-qam", "local selection"], self.repo)
         self.push_elsewhere("# other machine\nacme/skills:alpha\n", "other selection")
         output = self.update(ok=False)
@@ -170,7 +197,7 @@ class UpdateSyncTests(UpdateCase):
 
     def test_rerun_recovers_a_conflicted_worktree_with_dirty_sources(self) -> None:
         self.update()
-        (self.worktree / "skills.txt").write_text("# worktree\nacme/skills:alpha\n", encoding="utf-8")
+        (self.worktree / "profiles/workstation.txt").write_text("# worktree\nacme/skills:alpha\n", encoding="utf-8")
         git(["commit", "-qam", "worktree selection"], self.worktree)
         self.push_elsewhere("# other machine\nacme/skills:alpha\n", "other selection")
         git(["fetch", "-q", "origin"], self.worktree)
@@ -185,7 +212,7 @@ class UpdateSyncTests(UpdateCase):
         self.assertEqual(git(["status", "--porcelain", "--ignore-submodules=none"], self.worktree), "")
         self.assertFalse(git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], self.worktree, ok=False))
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
-        self.assertIn("# other machine", (self.repo / "skills.txt").read_text(encoding="utf-8"))
+        self.assertIn("# other machine", (self.repo / "profiles/workstation.txt").read_text(encoding="utf-8"))
 
     def test_fork_behind_upstream_is_reported_and_left_alone(self) -> None:
         canonical = self.add_canonical("acme/skills")
@@ -283,6 +310,24 @@ class UpdateApplyTests(UpdateCase):
         self.assertEqual(git(["rev-parse", "HEAD"], self.worktree), head)
         self.assertEqual(git(["rev-parse", "HEAD"], self.worktree / "sources/acme/skills"), old)
 
+    def test_summary_adds_one_line_for_each_other_profile_whose_skills_change(self) -> None:
+        self.add_profile("llm", ["acme/skills:unselected", "acme/skills:alpha"])
+        self.add_profile("review", ["acme/skills:alpha"])
+        self.add_profile("tools", ["zebra/tools:gamma"])
+        origin = self.fixture.origins["acme/skills"]
+        for skill in ("alpha", "unselected"):
+            with (origin / f"skills/{skill}/SKILL.md").open("a", encoding="utf-8") as file:
+                file.write("\nRewritten.\n")
+        git(["add", "-A"], origin)
+        self.advance("acme/skills", "rewrite")
+        summary = self.update("s\n").split("[a]ccept", 1)[0]
+        self.assertRegex(summary, r"\n\nSkills you use\n  alpha +updated · 1 file \+2 −0\n\n"
+                                  r"also changes 2 skills in llm: alpha, unselected\n"
+                                  r"also changes 1 skill in review: alpha\n\n"
+                                  r"Skills you don't use\n  unselected +updated")
+        self.assertNotIn("tools", summary)
+        self.assertNotIn("@@", summary)
+
     def test_a_failed_source_leaves_the_others_processed_and_its_pin_unchanged(self) -> None:
         self.fixture.add_source("mid/tools", {"delta": "delta"})
         git(["commit", "-qm", "Add mid/tools"], self.repo)
@@ -305,11 +350,49 @@ class UpdateApplyTests(UpdateCase):
         git(["add", "-A"], origin)
         self.advance("acme/skills", "rename alpha")
         output = self.update(ok=False)
-        self.assertIn("acme/skills: skipped: skills.txt:2: name is missing at the pinned commit: acme/skills:alpha",
+        self.assertIn("acme/skills: skipped: profiles/workstation.txt:2: name is missing at the pinned commit: acme/skills:alpha",
                       output)
         self.assertIn("the update adds: omega", output)
         self.assertEqual(self.origin_subjects(), ["initial skillset"])
         self.assertEqual(self.check().returncode, 0)
+
+    def test_a_pin_that_breaks_only_a_profile_this_home_does_not_use_is_refused(self) -> None:
+        self.add_profile("llm", ["zebra/tools:gamma", "acme/skills:unselected"])
+        head = git(["rev-parse", "HEAD"], self.repo)
+        git(["rm", "-rq", "skills/unselected"], self.fixture.origins["acme/skills"])
+        self.advance("acme/skills", "remove unselected")
+        output = self.update("a\n", ok=False)
+        self.assertIn("acme/skills: skipped: profiles/llm.txt:3: name is missing at the pinned commit: "
+                      "acme/skills:unselected", output)
+        self.assertEqual(self.origin_subjects(), ["Add llm profile", "initial skillset"])
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
+        self.assertEqual(self.check().returncode, 0)
+
+    def test_a_profile_renamed_on_origin_main_still_lets_updates_through_then_stops_the_install(self) -> None:
+        self.update()
+        links = sorted(path.name for path in (self.home / ".agents/skills").iterdir())
+        other = self.base / "other"
+        git(["clone", "-q", str(self.origin), str(other)], self.base)
+        configure_git(other)
+        git(["mv", "profiles/workstation.txt", "profiles/desk.txt"], other)
+        git(["commit", "-qm", "Rename workstation profile to desk"], other)
+        git(["push", "-q", "origin", "main"], other)
+        origin = self.fixture.origins["acme/skills"]
+        with (origin / "skills/alpha/SKILL.md").open("a", encoding="utf-8") as skill:
+            skill.write("\nRewritten.\n")
+        git(["add", "-A"], origin)
+        acme = self.advance("acme/skills", "rewrite")
+        output = self.update("a\n", ok=False)
+        self.assertIn("origin/main has no profiles/workstation.txt, which this home uses; the install at the end "
+                      "stops until you choose a profile\n", output)
+        self.assertIn("\nalso changes 1 skill in desk: alpha\n", output)
+        self.assertNotIn("Skills you use", output)
+        self.assertIn("acme/skills: pushed", output)
+        self.assertIn("this home's profile workstation is not a profile at HEAD\nprofiles at HEAD: desk\n"
+                      "choose one with: scripts/reconcile-skills.sh --profile <name>", output)
+        self.assertEqual(self.pin("acme/skills", repo=self.origin, ref="main"), acme)
+        self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
+        self.assertEqual(sorted(path.name for path in (self.home / ".agents/skills").iterdir()), links)
 
     def test_main_that_moves_during_the_run_is_merged_validated_and_pushed(self) -> None:
         acme = self.advance("acme/skills")
@@ -323,7 +406,7 @@ class UpdateApplyTests(UpdateCase):
         ]))
         self.assertEqual(len(git(["log", "--format=%P", "-1", "main"], self.origin).split()), 2)
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), git(["rev-parse", "main"], self.origin))
-        self.assertIn("# other machine", (self.repo / "skills.txt").read_text(encoding="utf-8"))
+        self.assertIn("# other machine", (self.repo / "profiles/workstation.txt").read_text(encoding="utf-8"))
         self.assertEqual(git(["rev-parse", "HEAD"], self.fixture.sources["acme/skills"]), acme)
         self.assertEqual(self.check().returncode, 0)
 
@@ -335,7 +418,7 @@ class UpdateApplyTests(UpdateCase):
         self.read_until(process, "[a]ccept")
         self.push_elsewhere("acme/skills:alpha\nacme/skills:unselected\n", "select unselected elsewhere")
         output = self.answer(process, "a\n", ok=False)
-        self.assertIn("acme/skills: skipped: skills.txt:2: name is missing at the pinned commit: "
+        self.assertIn("acme/skills: skipped: profiles/workstation.txt:2: name is missing at the pinned commit: "
                       "acme/skills:unselected", output)
         self.assertEqual(self.origin_subjects(), ["select unselected elsewhere", "initial skillset"])
         self.assertEqual(git(["rev-parse", "HEAD"], self.repo), head)
@@ -358,14 +441,14 @@ class UpdateApplyTests(UpdateCase):
         self.assertEqual(self.check().returncode, 0)
 
     def test_a_local_selection_commit_is_announced_and_published_with_the_first_accepted_source(self) -> None:
-        (self.repo / "skills.txt").write_text("# local\nacme/skills:alpha\n", encoding="utf-8")
-        git(["commit", "-qam", "Update skill selection (+0 -0)"], self.repo)
+        (self.repo / "profiles/workstation.txt").write_text("# local\nacme/skills:alpha\n", encoding="utf-8")
+        git(["commit", "-qam", "Update workstation profile (+0 -0)"], self.repo)
         local = git(["rev-parse", "HEAD"], self.repo)
         self.advance("acme/skills")
         self.advance("zebra/tools")
         output = self.update("a\ns\n")
         first, second = output.split("[a]ccept")[:2]
-        self.assertIn(f"Also pushes 1 earlier commit not yet on GitHub\n  {local[:7]} Update skill selection (+0 -0)\n",
+        self.assertIn(f"Also pushes 1 earlier commit not yet on GitHub\n  {local[:7]} Update workstation profile (+0 -0)\n",
                       first)
         self.assertNotIn("Also pushes", second)
         self.assertEqual(git(["rev-parse", "main~1"], self.origin), local)

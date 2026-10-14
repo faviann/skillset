@@ -5,7 +5,7 @@ live checkout through `select-skills`. Source pin changes happen through
 `scripts/update-sources.sh`, which publishes each update you accept and then
 brings it into the live checkout.
 
-## Set up a machine
+## Set up a home
 
 Clone skillset to the path that becomes the live checkout, then run setup:
 
@@ -23,6 +23,26 @@ directory is missing from PATH. With terminal input and output it opens the
 selector; otherwise it prints `Ready. Run: select-skills`. Setup installs no
 skills.
 
+Then choose the profile this home installs. The selector that setup opens asks
+which profile this home should use, listing every profile plus **New profile**.
+Choosing one closes the selector and runs `scripts/reconcile-skills.sh --profile
+<name>` in your terminal. That records the choice in
+`~/.agents/.skillset/profile` and installs the profile. A profile whose file
+differs from HEAD can't be chosen. **New profile** asks for a name and edits a
+new, empty profile. Esc browses without choosing; Save then offers **Save,
+commit and use it here** for the edited profile. Without the selector, choose
+from the checkout:
+
+```bash
+scripts/reconcile-skills.sh --profile workstation
+```
+
+Until a home has a valid record, installs, `--check` and the update command
+refuse to start and list the profiles at HEAD. The selector asks again, and says
+why when the record exists but is invalid or stale. Rerun `--profile` with
+another name, or press U in the selector's Ctrl+P list, to switch. That removes
+the links only the old profile wanted and adds the new profile's.
+
 In the live checkout, rerun `./setup.sh` whenever a source is missing or at the
 wrong commit, for example after a pull that moved a pin. An install never
 fetches, pulls, initializes, or advances sources. It requires the skillset's
@@ -32,7 +52,18 @@ gitlink commit.
 ## Select skills
 
 Select skills in the live checkout, on its branch, by running `select-skills`
-from any directory. Space toggles the highlighted skill; Enter does the same in
+from any directory. It opens on the profile this home's record names and edits
+one profile at a time. The title names the edited profile and says **used here**,
+**this home uses <name>** or **this home has no profile**. Ctrl+P drops a list of
+every profile under that name, with its skill count, **● used here**, and its
+unsaved changes or **not committed** when its file differs from HEAD. Enter edits
+the highlighted profile; with unsaved changes it first asks whether to keep
+editing, review and save, or discard them and switch. N starts a new, empty
+profile and C copies the highlighted profile's saved file; both ask for a name
+that follows the skill-name rules and isn't taken. The new profile exists only
+in the selector, counted as unsaved, until Save writes `profiles/<name>.txt`;
+switching away or quitting without saving drops it. Esc or a click outside
+closes the list. Space toggles the highlighted skill; Enter does the same in
 the skills column. Clicking a circle toggles it, and clicking a name highlights
 it. Selecting a name from another source asks before replacing its current
 selection.
@@ -47,23 +78,32 @@ selector. The `ctrl+u update` hint is in the accent color when the highlighted
 source has an update.
 
 Ctrl+S reviews additions and removals against the last commit. **Save and install**
-is the default: it writes `skills.txt`, closes the selector, commits only that
-file if needed, and installs in your terminal. When the branch is ahead of its
+is the default: it writes the profile's file, `profiles/<name>.txt`, closes the
+selector, commits only that file if needed, as `Update <name> profile (+N -M)`,
+and installs in your terminal. When the branch is ahead of its
 upstream, it reminds you to run `git push`; the selector never pushes. Install
 failures keep the commit, and commit failures keep the saved file without
 installing. This choice is disabled with a reason in linked worktrees, on a
-detached HEAD, during a merge or rebase, when other tracked changes are uncommitted,
+detached HEAD, during a merge or rebase, when tracked changes outside `profiles/` are uncommitted,
 when untracked files exist under `scripts/`, or while selected entries remain
 under **Not in catalog**.
 
-The title shows **not installed** when `skills.txt` differs from HEAD or a
+The title shows **not installed**, for this home's profile only, when its file differs from HEAD or a
 read-only installation check finds links to update or fails. Ctrl+S then offers
 **Install** even with no unsaved changes; it preserves the saved file and
 commits only if needed. A failed check appears on the message line and disables
 Install with its reason. After an install failure, run the skill selector again
-and choose Install.
+and choose Install. When the selector closed to use a profile here, the failure
+names `scripts/reconcile-skills.sh --profile <name>` to run again instead.
 
-**Save only** rewrites `skills.txt` in sorted order with its standard header and
+Saving a profile this home doesn't use never installs it here unless asked. The
+dialog names the profile this home uses and offers **Save and commit (nothing
+installed here)**, which commits only that file as above; **Save, commit and use it
+here**, which then runs `scripts/reconcile-skills.sh --profile <name>`; and
+**Save only**. Committing a new profile adds its file as `Add <name> profile (+N -0)`. The title marks such a profile **not committed** while its file
+differs from HEAD.
+
+**Save only** rewrites the profile's file in sorted order with its standard header and
 stays open. It becomes the default when Save and install is unavailable.
 **Keep editing** returns to the selection. The title counts unsaved changes
 relative to the last loaded or saved file. If the file changed on disk, saving
@@ -73,7 +113,26 @@ changes. Entries that no longer resolve appear first under **Not in catalog**
 with their reasons; deselect them to remove them, or leave them to preserve them
 on save. Duplicate selected names must be resolved before saving.
 
-You can also edit `skills.txt` by hand. Each selection line is
+In the Ctrl+P list, U makes the highlighted profile the one this home uses.
+After confirmation it closes the selector and runs
+`scripts/reconcile-skills.sh --profile <name>`; other homes are not affected.
+U is refused for the same reasons as R and D below.
+
+In the Ctrl+P list, R renames and D deletes the highlighted profile. Both
+are refused while anything is unsaved or the profile's file differs from HEAD,
+and for the same reasons that disable Save and install. Rename asks for a new
+name, which follows the skill-name rules and must not be taken. Delete asks for
+confirmation; it refuses the last committed profile and the profile this home uses, so
+choose another here first. Each closes the selector and commits only the change,
+as `Rename <old> profile to <new>` with `git mv` or `Delete <name> profile` with
+`git rm`. If the commit fails, the file is put back. Renaming the profile this
+home uses then runs `scripts/reconcile-skills.sh --profile <new>`. The selector
+can't see other homes: any that use the old name stop installing until they
+choose a profile with `scripts/reconcile-skills.sh --profile <name>`.
+
+You can also edit a profile by hand. Uncommitted changes to profiles other than
+this home's never block committing or installing, but they block a source
+update, which validates every profile as committed. Each selection line is
 `owner/repo:name`: `owner/repo` is the source's folder under `sources/`,
 and `name` is the skill's frontmatter name. Neither part may contain `:`.
 For example, `faviann/agent-skills:publish-artifact` selects that named skill
@@ -96,7 +155,7 @@ frontmatter or harness identity.
 Installed links expose the live checkout's sources directly, so a pin never
 changes there by hand. Make, commit and publish skill edits in the source's own
 repository first. Then run the update command from the live checkout, on
-`main`, with `skills.txt` committed:
+`main`, with this home's profile committed:
 
 ```bash
 scripts/update-sources.sh
@@ -115,13 +174,15 @@ Then it takes each source in `.gitmodules` order:
    <short-sha>`. For a fork, the same commit sets `upstream` in `sources.toml`
    to the merge-base of the canonical branch tip and the new pin.
 3. It validates the worktree with the install's read-only checks. The catalog
-   must load, every selection must resolve and no `upstream` may be stale. A
-   failure skips the source with its reason. When a selected skill no longer resolves, the
-   report names it and lists the skills the update adds. Deselect it, commit
-   and rerun.
+   must load, every profile must resolve, not only this home's, and no
+   `upstream` may be stale. A failure skips the source with its reason. When a
+   selected skill no longer resolves, the report names it at its profile line
+   and lists the skills the update adds. Deselect it, commit and rerun.
 4. It shows the commits gained and the skills added, removed and changed, with
-   selected skills flagged `*`. Answer `d` to see the full diff of each changed
-   selected skill's directory, `a` to accept or `s` to skip. Review the content,
+   selected skills flagged `*`. Each other profile whose selected skills
+   change gets one line, such as `also changes 2 skills in llm: research,
+   tdd`. Answer `d` to see the full diff of each changed skill this home
+   selects, `a` to accept or `s` to skip. Review the content,
    not just the names. A skill can keep its name while its instructions or
    scripts change. When local `main` has commits that are not on `origin`, such
    as a selection save, the summary says they will be published with this push.
@@ -135,12 +196,17 @@ sources to the new pins and installs. If it cannot fast-forward because the
 live checkout gained commits during the run, the command says so. The pushed
 commits are safe, and a rerun finishes. Ctrl+C at a prompt stops the run the
 same way. Rerunning after an interrupted run is always safe, because finished
-sources show nothing to do.
+sources show nothing to do. If `origin/main` renamed or deleted this home's
+profile, the command says so at the start. Updates still go through, since
+every profile is validated, but the install at the end fails closed until you
+[choose a profile](#set-up-a-home) again.
 
 The command refuses to start, with the reason, outside the primary checkout,
 off `main`, on a detached `HEAD`, during a merge or rebase, with uncommitted
-tracked changes, with untracked files under `scripts/`, or with uncommitted
-`skills.txt` changes. It does not refuse a committed selection that is under
+tracked changes, with untracked files under `scripts/`, without a valid
+profile record for this home, or with uncommitted changes to any file under
+`profiles/`, untracked ones included, naming the files. It does not refuse a
+committed selection that is under
 **Not in catalog**, because the update may be what makes it resolve. It never
 pushes to a source repository.
 
@@ -207,7 +273,7 @@ git -C sources/owner/repo checkout --detach <reviewed-commit>
 rejects a source without one. Pass the repository's default branch, which
 `git ls-remote --symref https://github.com/owner/repo.git HEAD` prints.
 
-To remove a source, remove its selected lines from `skills.txt` and its
+To remove a source, remove its selected lines from every profile and its
 `sources.toml` entry, then remove the submodule.
 
 In the same change, refresh `sources.toml`. Declare each source's harness
@@ -235,27 +301,31 @@ The selector marks skills changed since that commit as `(forked)`, and
 `--check` reports an `upstream` that is not an ancestor of the pin.
 
 If the new source commit removes or renames selected skills, update
-`skills.txt` in the same commit. Moving a skill within its source while keeping
+every profile that selects them in the same commit. Moving a skill within its source while keeping
 its frontmatter name leaves its selection valid; the install relinks it at the
 new location. Commit `.gitmodules`, the gitlinks, `sources.toml` and any
 selection changes together:
 
 ```bash
-git add .gitmodules sources/owner/repo sources.toml skills.txt
+git add .gitmodules sources/owner/repo sources.toml profiles
 git commit -m "Update owner/repo source pin"
 ```
 
-Then validate the commit with an install into a throwaway home:
+Then validate the commit with an install into a throwaway home, followed by a
+check there:
 
 ```bash
-HOME="$(mktemp -d)" scripts/reconcile-skills.sh
+throwaway="$(mktemp -d)"
+HOME="$throwaway" scripts/reconcile-skills.sh --profile workstation
+HOME="$throwaway" scripts/reconcile-skills.sh --check
 ```
 
-This runs the same validation as `--check`, including repeated names that no
-declared variant tree explains, invalid variant copies, and selections that no
-longer resolve. Plain `--check` here would compare against your real install
-directories, whose links point into the live checkout, and report them as
-stale. If validation fails, fix the cause and amend the commit.
+The install validates the profile it installs. The check validates every
+profile, including repeated names that no declared variant tree explains,
+invalid variant copies, and selections that no longer resolve. Plain `--check`
+in your real home would also compare against your real install directories,
+whose links point into the live checkout, and report them as stale. If
+validation fails, fix the cause and amend the commit.
 
 Publish the new source commit before publishing the skillset commit, so a fresh
 clone can obtain it.
@@ -275,10 +345,12 @@ when nothing is unsaved.
 
 ## Install and provenance
 
-Run `scripts/reconcile-skills.sh` to install and
-`scripts/reconcile-skills.sh --check` for a read-only check. After a
-successful install, the script also links `select-skills` and its lockfile in
-`~/.local/bin` to the live checkout, as setup does, so a machine whose dotfiles
+Run `scripts/reconcile-skills.sh` to install this home's profile,
+`scripts/reconcile-skills.sh --profile <name>` to choose another and install
+it, and `scripts/reconcile-skills.sh --check` for a read-only check of every
+profile and this home's install. After a
+successful install, with or without `--profile`, the script also links `select-skills` and its lockfile in
+`~/.local/bin` to the live checkout, as setup does, so a home whose dotfiles
 hook installs skills also gets the selector command. The skillset
 commit SHA identifies the selection and source pins used for the install.
 It does not make linked source contents immutable: another process can modify
@@ -307,6 +379,11 @@ else
 fi
 env -u BW_SESSION "$skillset_repo/scripts/reconcile-skills.sh"
 ```
+
+Before the hook first runs the profile-aware installer, run
+`scripts/reconcile-skills.sh --profile workstation` once in the live checkout.
+The hook's plain install then keeps installing that profile; without the
+record it fails closed.
 
 For an existing skillset checkout, the hook only installs; it does not pull
 the superproject or initialize/advance sources implicitly. If the checkout

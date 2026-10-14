@@ -24,7 +24,7 @@ class SetupTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="skillset-setup-")
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name)
-        self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}}, [])
+        self.fixture = SkillsetFixture(self.base, {"acme/skills": {"alpha": "alpha"}}, {"workstation": []})
         self.repo = self.fixture.repo
         self.home = self.fixture.home
         self.bin = self.base / "bin"
@@ -126,7 +126,7 @@ class SetupTests(unittest.TestCase):
         self.assertNotIn("Ready.", result.stdout)
         self.assertFalse(self.command.exists())
 
-    def test_installed_shebang_opens_catalog_offline_in_a_terminal(self) -> None:
+    def test_installed_shebang_opens_offline_in_a_terminal_and_a_fresh_home_chooses_its_profile(self) -> None:
         # Start without any cached dependencies to prove setup prepares them.
         self.env["UV_CACHE_DIR"] = str(self.base / "uv-cache")
         result = self.setup()
@@ -134,7 +134,7 @@ class SetupTests(unittest.TestCase):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
         output = bytearray()
-        sent_escape = False
+        chose = False
         process = subprocess.Popen(
             [str(self.command)], cwd=self.home,
             env=dict(self.env, TERM="xterm-256color", UV_OFFLINE="1"),
@@ -155,9 +155,9 @@ class SetupTests(unittest.TestCase):
                     if not chunk:
                         break
                     output.extend(chunk)
-                    if b"Skill selector" in output and not sent_escape:
-                        os.write(master, b"\x1b")
-                        sent_escape = True
+                    if b"Which one should it use?" in output and not chose:
+                        os.write(master, b"1")
+                        chose = True
                 elif process.poll() is not None:
                     break
             process.wait(timeout=max(0.1, deadline - time.monotonic()))
@@ -168,11 +168,11 @@ class SetupTests(unittest.TestCase):
             os.close(master)
         transcript = output.decode(errors="replace")
         self.assertIn("Skill selector", transcript)
-        self.assertTrue(sent_escape, transcript)
+        self.assertTrue(chose, transcript)
         self.assertEqual(process.returncode, 0, transcript)
         self.assertNotIn("Downloading", transcript)
-        self.assertFalse((self.home / ".agents").exists())
-        self.assertFalse((self.home / ".claude").exists())
+        self.assertEqual((self.home / ".agents/.skillset/profile").read_text(), "workstation\n")
+        self.assertIn("skills are reconciled", transcript)
 
 
 if __name__ == "__main__":

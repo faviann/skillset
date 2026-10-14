@@ -15,15 +15,18 @@ from skill_catalog import (
     AGENTS_DIR,
     CLAUDE_DIR,
     INSTALL_HARNESSES,
-    NAME_PATTERN,
-    SELECTION_PATH,
+    PROFILES_DIR,
     Catalog,
     ReconcileError,
     git,
     git_env,
     identity,
+    list_profiles,
     load_catalog,
+    profile_path,
+    profile_problems,
     read_selection_text,
+    valid_name,
 )
 
 INSTALL_DIRS = tuple(INSTALL_HARNESSES)
@@ -71,6 +74,39 @@ def home_path() -> Path:
     return Path(os.path.abspath(value))
 
 
+def record_path() -> Path:
+    """This home's record of its active profile. It is never committed."""
+    return home_path() / ".agents/.skillset/profile"
+
+
+def choose_profile_hint(root: Path) -> str:
+    return (f"profiles at HEAD: {', '.join(list_profiles(root)) or 'none'}\n"
+            "choose one with: scripts/reconcile-skills.sh --profile <name>")
+
+
+def active_profile(root: Path) -> str:
+    """The profile this home's record names, which must be committed at HEAD of root."""
+    record = record_path()
+    safe_components(record)
+    st = lstat(record)
+    if st is None:
+        problem = f"this home has no profile: {record} is missing"
+    elif not stat.S_ISREG(st.st_mode):
+        problem = f"this home's profile record is not a regular file: {record}"
+    else:
+        try:
+            name = record.read_bytes().decode("utf-8").strip()
+        except UnicodeError:
+            name = None
+        if name is None or not valid_name(name):
+            problem = f"this home's profile record holds an invalid name: {record}"
+        elif name not in list_profiles(root):
+            problem = f"this home's profile {name} is not a profile at HEAD"
+        else:
+            return name
+    raise ReconcileError(f"{problem}\n{choose_profile_hint(root)}")
+
+
 def require_primary_checkout(root: Path) -> str:
     try:
         top = Path(git(["rev-parse", "--show-toplevel"], cwd=root)).resolve()
@@ -86,10 +122,13 @@ def require_primary_checkout(root: Path) -> str:
     return git(["rev-parse", "HEAD"], cwd=root)
 
 
-def ensure_skillset_committed(
-    root: Path, exempt: set[str] | frozenset[str] = frozenset(),
-) -> None:
-    """Reject tracked changes except for explicitly exempt repository-relative paths."""
+def ensure_skillset_committed(root: Path, profile: str, *, committing: bool = False) -> None:
+    """Reject tracked changes except to profiles this home does not install.
+
+    With `committing`, changes to the profile pass too, and so does its file
+    being untracked (a new profile), because the caller commits that file next.
+    """
+    path = profile_path(profile)
     changed: set[str] = set()
     # Check both comparisons: a staged gitlink can differ even when its worktree
     # has been returned to HEAD. Override local submodule.ignore configuration.
@@ -97,15 +136,16 @@ def ensure_skillset_committed(
         paths = git(["diff", *staged, "--name-only", "-z", "--no-ext-diff",
                      "--no-renames", "--ignore-submodules=none", "HEAD", "--"], cwd=root)
         changed.update(filter(None, paths.split("\0")))
-    changed.difference_update(exempt)
+    changed = {item for item in changed if not item.startswith(f"{PROFILES_DIR}/")
+               or (item == path and not committing)}
     if changed:
         raise ReconcileError(
             "tracked skillset changes are not committed; commit selection, "
             "source pins, and install code first:\n"
-            + "\n".join(f"  {path}" for path in sorted(changed))
-            + ("\nrun select-skills and choose Install" if "skills.txt" in changed else "")
+            + "\n".join(f"  {item}" for item in sorted(changed))
+            + ("\nrun select-skills and choose Install" if path in changed else "")
         )
-    for item in (".gitmodules", SELECTION_PATH, "sources.toml", "scripts/reconcile-skills.sh",
+    for item in (".gitmodules", *([] if committing else [path]), "sources.toml", "scripts/reconcile-skills.sh",
                  "scripts/reconcile_skills.py", "scripts/skill_catalog.py"):
         if git(["ls-files", "-z", "--", item], cwd=root) != item + "\0":
             raise ReconcileError(f"required install input is not tracked: {item}")
@@ -113,8 +153,8 @@ def ensure_skillset_committed(
         raise ReconcileError("untracked install input is present")
 
 
-def selection_install_blocker(root: Path) -> str | None:
-    """Why the selector cannot commit skills.txt and install, or None."""
+def selection_commit_blocker(root: Path, profile: str | None = None) -> str | None:
+    """Why the selector cannot commit the profile (by default the active one), and so cannot install it, or None."""
     try:
         require_primary_checkout(root)
         for marker, operation in (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase")):
@@ -122,7 +162,7 @@ def selection_install_blocker(root: Path) -> str | None:
                 return f"a {operation} is in progress; finish it first"
         if not git(["symbolic-ref", "--quiet", "HEAD"], cwd=root, check=False):
             return "checkout is on a detached HEAD; switch to a branch"
-        ensure_skillset_committed(root, exempt={"skills.txt"})
+        ensure_skillset_committed(root, profile or active_profile(root), committing=True)
     except (ReconcileError, OSError) as error:
         return str(error)
     return None
@@ -184,16 +224,40 @@ def local_collision(desired: set[str], retiring: set[Path]) -> None:
 
 
 
-def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str], Catalog]:
+def choose_profile(root: Path, name: str) -> None:
+    """Record name as this home's profile. Recording before installing lets a rerun converge."""
+    require_primary_checkout(root)
+    if name not in list_profiles(root):
+        raise ReconcileError(f"{name!r} is not a profile at HEAD\n{choose_profile_hint(root)}")
+    record = record_path()
+    safe_components(record)
+    record.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    staged = record.with_name(".profile.new")
+    fd = os.open(staged, os.O_CREAT | os.O_TRUNC | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(f"{name}\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(staged, record)
+    fsync_dir(record.parent)
+
+
+def read_inputs(root: Path) -> tuple[str, str, Catalog]:
+    """HEAD, the active profile and the catalog, once the checkout passes the install gates."""
     head = require_primary_checkout(root)
+    profile = active_profile(root)
     catalog = load_catalog(root)
-    ensure_skillset_committed(root)
-    return head, catalog.resolve(read_selection_text(root)).install_targets(), catalog
+    ensure_skillset_committed(root, profile)
+    return head, profile, catalog
+
+
+def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str]]:
+    head, profile, catalog = read_inputs(root)
+    return head, catalog.resolve(read_selection_text(root, profile)).install_targets(profile)
 
 
 def build_plan(root: Path) -> Plan:
-    head, selected, _ = read_selection(root)
-    return plan_links(head, selected)
+    return plan_links(*read_selection(root))
 
 
 def stale_upstreams(catalog: Catalog) -> list[str]:
@@ -241,7 +305,7 @@ def plan_links(head: str, desired: dict[tuple[Path, str], str]) -> Plan:
         receipt = home_path() / install_dir.parent / ".skillset/receipts" / name
         want = desired.get((install_dir, name))
         rs, es = lstat(receipt), lstat(entry)
-        if rs is not None and (not stat.S_ISLNK(rs.st_mode) or len(name) > 64 or NAME_PATTERN.fullmatch(name) is None):
+        if rs is not None and (not stat.S_ISLNK(rs.st_mode) or not valid_name(name)):
             raise ReconcileError(f"invalid ownership receipt: {receipt}")
         if es is not None and not owned(receipt, entry):
             if want is not None:
@@ -342,19 +406,28 @@ def apply_plan(plan: Plan) -> str:
         messages.append(f"created {created} skill links")
     return " and ".join(messages) or "skills are reconciled"
 
-def run(root: Path, check_only: bool) -> int:
-    head, selected, catalog = read_selection(root)
+def check(root: Path) -> int:
+    """Report every profile's problems and this home's install state, changing nothing."""
+    head, profile, catalog = read_inputs(root)
+    findings = profile_problems(root, catalog)
+    # read_inputs refused a file that differs from HEAD, so this is the copy profile_problems checked.
+    resolution = catalog.resolve(read_selection_text(root, profile))
+    if not resolution.problems(profile):
+        plan = plan_links(head, resolution.install_targets(profile))
+        findings += [f"missing: {r.path}" for r in plan.creations]
+        findings += [f"stale owned link: {r.path}" for r in plan.removals]
+        findings += [f"stale receipt: {r.receipt}" for r in plan.receipt_cleanup]
+    findings += stale_upstreams(catalog)
+    if findings:
+        print("\n".join(findings), file=sys.stderr)
+        return 1
+    print(f"skills are reconciled at skillset commit {head}")
+    return 0
+
+
+def install(root: Path) -> int:
+    head, selected = read_selection(root)
     plan = plan_links(head, selected)
-    if check_only:
-        discrepancies = [f"missing: {r.path}" for r in plan.creations]
-        discrepancies += [f"stale owned link: {r.path}" for r in plan.removals]
-        discrepancies += [f"stale receipt: {r.receipt}" for r in plan.receipt_cleanup]
-        discrepancies += stale_upstreams(catalog)
-        if discrepancies:
-            print("\n".join(discrepancies), file=sys.stderr)
-            return 1
-        print(f"skills are reconciled at skillset commit {plan.head}")
-        return 0
     lock = home_path() / ".agents/.skillset/lock"
     lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     flags = os.O_CREAT | os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW
@@ -367,12 +440,14 @@ def run(root: Path, check_only: bool) -> int:
     return 0
 
 def main(argv: list[str]) -> int:
-    if argv not in ([], ["--check"]):
-        print("usage: scripts/reconcile-skills.sh [--check]", file=sys.stderr)
+    if argv not in ([], ["--check"]) and (len(argv) != 2 or argv[0] != "--profile"):
+        print("usage: scripts/reconcile-skills.sh [--check | --profile <name>]", file=sys.stderr)
         return 2
     root = Path(__file__).resolve().parent.parent
     try:
-        return run(root, argv == ["--check"])
+        if argv[:1] == ["--profile"]:
+            choose_profile(root, argv[1])
+        return check(root) if argv == ["--check"] else install(root)
     except (ReconcileError, OSError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
