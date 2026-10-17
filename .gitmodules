@@ -26,3 +26,7 @@
 	path = sources/uditakhourii/adhd
 	url = https://github.com/uditakhourii/adhd.git
 	branch = main
+[submodule "sources/addyosmani/agent-skills"]
+	path = sources/addyosmani/agent-skills
+	url = https://github.com/addyosmani/agent-skills.git
+	branch = main

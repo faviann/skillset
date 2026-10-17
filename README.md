@@ -40,6 +40,8 @@ sources today:
   from the `mattpocock/skills` fork. Author new first-party skills in that
   repository, not in skillset.
 - `uditakhourii/adhd`, a single prompt-only skill, `adhd`, at `skills/adhd`.
+- `addyosmani/agent-skills`, with skills under `skills`. It is pinned for
+  reference; none of its skills are selected.
 
 ## Get started
 
