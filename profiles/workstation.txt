@@ -26,7 +26,6 @@ mattpocock/skills:to-questionnaire
 mattpocock/skills:to-spec
 mattpocock/skills:to-tickets
 mattpocock/skills:triage
-mattpocock/skills:wait-what
 mattpocock/skills:wayfinder
 mattpocock/skills:wizard
 mattpocock/skills:writing-for-agents
