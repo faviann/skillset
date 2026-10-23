@@ -42,6 +42,9 @@ sources today:
 - `uditakhourii/adhd`, a single prompt-only skill, `adhd`, at `skills/adhd`.
 - `addyosmani/agent-skills`, with skills under `skills`. It is pinned for
   reference; none of its skills are selected.
+- `danyuchn/asd-ste100`, fetched from `danyuchn/asd-ste100-skill`. Its single
+  skill, `asd-ste100`, sits at the repository root, so the source path takes
+  the skill's name. It is pinned for reference; it is not selected.
 
 ## Get started
 

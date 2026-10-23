@@ -30,3 +30,7 @@
 	path = sources/addyosmani/agent-skills
 	url = https://github.com/addyosmani/agent-skills.git
 	branch = main
+[submodule "sources/danyuchn/asd-ste100"]
+	path = sources/danyuchn/asd-ste100
+	url = https://github.com/danyuchn/asd-ste100-skill.git
+	branch = master
