@@ -158,3 +158,36 @@ class UpdateKeyTests(PilotTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiffLinesTests(unittest.TestCase):
+    DIFF = "\n".join([
+        "diff --git a/alpha/SKILL.md b/alpha/SKILL.md",
+        "--- a/alpha/SKILL.md",
+        "+++ b/alpha/SKILL.md",
+        "@@ -1,5 +1,5 @@",
+        " Context stays plain.",
+        "-Read transcripts under `~/.claude/projects/`, never elsewhere.",
+        "-",
+        "+Read transcripts under `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/`, never elsewhere.",
+        "+",
+        "-An unrelated sentence.",
+        "+Something else entirely here.",
+        "+Only added.",
+    ])
+
+    def reversed_words(self, line) -> list[str]:
+        return [line.plain[span.start:span.end] for span in line.spans if "reverse" in str(span.style)]
+
+    def test_each_diff_line_renders_once_in_order(self) -> None:
+        self.assertEqual([line.plain for line in selector.diff_lines(self.DIFF)], self.DIFF.splitlines())
+
+    def test_only_the_words_an_edit_changes_are_reversed(self) -> None:
+        lines = selector.diff_lines(self.DIFF)
+        self.assertEqual([self.reversed_words(line) for line in lines[5:9]],
+                         [["~"], [], ["${CLAUDE_CONFIG_DIR:-$HOME", "}"], []])
+        self.assertEqual([str(line.style) for line in lines[5:9]], ["red", "red", "green", "green"])
+
+    def test_headers_rewrites_and_lone_additions_are_not_reversed(self) -> None:
+        lines = selector.diff_lines(self.DIFF)
+        self.assertEqual([self.reversed_words(line) for line in lines[1:3] + lines[9:]], [[]] * 5)

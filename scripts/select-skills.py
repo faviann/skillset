@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import difflib
 import io
 import os
+import re
 import subprocess
 import sys
 import time
@@ -17,6 +19,7 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
+from itertools import accumulate, takewhile
 from pathlib import Path
 from typing import TypeVar
 
@@ -57,6 +60,7 @@ AUTOMATIC = "green"
 NOT_IN_CATALOG = "Not in catalog"
 LOOKUP_TIMEOUT_SECONDS = 5
 TITLE_PREFIX = "Skill selector  "
+WORD = re.compile(r"\s+|\w+|[^\w\s]")
 DialogResult = TypeVar("DialogResult")
 
 
@@ -525,9 +529,8 @@ class UpdateDialog(ModalScreen[bool]):
             return
         diff.write(Text(f"{name} · {self.prepared.summary.change(name)}", style=f"bold {ACCENT}"))
         diff.write(Text())
-        for line in update_sources.diff_text(self.prepared, {name}).splitlines():
-            diff.write(Text(line, style=AUTOMATIC if line.startswith("+") else MANUAL if line.startswith("-")
-                            else SECONDARY if line.startswith("@@") else ""))
+        for line in diff_lines(update_sources.diff_text(self.prepared, {name})):
+            diff.write(line)
         diff.scroll_home(animate=False)
 
     def action_scroll_diff(self, direction: int) -> None:
@@ -576,6 +579,42 @@ class UpdateDialog(ModalScreen[bool]):
             self.run_worker(self.discard, thread=True)
         elif self.phase in (Phase.DONE, Phase.FAILED):
             self.dismiss(self.pushed)
+
+
+def diff_lines(diff: str) -> list[Text]:
+    """Colour a unified diff by line. Where removed lines are followed by added ones, also reverse the words that
+    differ between the two runs, so a small edit to a long line stands out."""
+    lines = diff.splitlines()
+    rendered: list[Text] = []
+    in_hunk = False
+    while len(rendered) < len(lines):
+        line = lines[len(rendered)]
+        in_hunk = line.startswith("@@") or in_hunk and not line.startswith("diff ")
+        if in_hunk and line.startswith("-"):
+            removed = list(takewhile(lambda line: line.startswith("-"), lines[len(rendered):]))
+            added = list(takewhile(lambda line: line.startswith("+"), lines[len(rendered) + len(removed):]))
+            rendered += changed_words(removed, added)
+        else:
+            rendered.append(Text(line, style=AUTOMATIC if line.startswith("+") else MANUAL if line.startswith("-")
+                                 else SECONDARY if line.startswith("@@") else ""))
+    return rendered
+
+
+def changed_words(removed: list[str], added: list[str]) -> list[Text]:
+    """A run of removed lines and the added run replacing it, with the differing words reversed unless the runs
+    share too little for the words to line up."""
+    old, new = (Text("\n".join(line[1:] for line in run)) for run in (removed, added))
+    old_words, new_words = WORD.findall(old.plain), WORD.findall(new.plain)
+    matcher = difflib.SequenceMatcher(None, old_words, new_words, autojunk=False)
+    if added and matcher.ratio() >= 0.5:
+        old_at, new_at = (list(accumulate(map(len, words), initial=0)) for words in (old_words, new_words))
+        for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+            if tag != "equal":
+                old.stylize("reverse", old_at[old_start], old_at[old_end])
+                new.stylize("reverse", new_at[new_start], new_at[new_end])
+    return [Text(sign, style=style).append_text(part) for run, text, sign, style in
+            ((removed, old, "-", MANUAL), (added, new, "+", AUTOMATIC)) if run
+            for part in text.split("\n", allow_blank=True)]
 
 
 class SkillHeading(rich_markdown.Heading):
