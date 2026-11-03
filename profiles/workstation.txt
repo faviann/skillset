@@ -2,7 +2,6 @@
 faviann/agent-skills:herdr-playbook
 faviann/agent-skills:publish-artifact
 faviann/agent-skills:quest-3s
-faviann/agent-skills:tailscale-policy
 humanlayer/skills:improve-claude-md
 humanlayer/skills:show-me
 mattpocock/skills:ask-matt
