@@ -220,7 +220,8 @@ profile line per pack. Drift: shadowing or a managed block, reported by
 
 Real cases: pstack `5851c896..7c045e56` changed `plugins/pstack/hooks/hooks.json`,
 `hooks/codex-hooks.json`, `hooks/session-start-copilot.md` and the manifest
-version (4 of the bump's 40 changed files are under `hooks/` and `.claude-plugin/`). In agent-skills, 5 of 13 bumps changed the
+version (4 of the bump's 40 changed files are under `plugins/pstack/hooks/` and
+`plugins/pstack/.claude-plugin/`). In agent-skills, 5 of 13 bumps changed the
 herdr script.
 
 1. Run `scripts/update-sources.sh`, or press Ctrl+U on the source.
