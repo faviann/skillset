@@ -50,7 +50,7 @@ choose one by one. Discovery would fill the catalog with packs nobody selects.
 
 A plugin pack must carry hooks or agents. A skills-only plugin directory is
 refused with "select its skills instead". A pack link renames its skills to
-`<pack>:<skill>` (observed, P1 and S1), and decision 2a keeps skills-only
+`<pack>:<skill>` (observed in the design prototypes), and decision 2a keeps skills-only
 selections under their own names.
 
 A skill directory must not carry its own plugin manifest. Codex lists such a
@@ -103,7 +103,7 @@ that blocks plugins (scenario 4).
 | Surface | Claude Code (`~/.claude/skills`) | Codex, Pi, OpenCode (`~/.agents/skills`) |
 |---|---|---|
 | Skill | skill link, unchanged | skill link, unchanged |
-| Plugin pack | one link; skills load as `<pack>:<skill>`, agents as `<pack>:<agent>`; hooks run with `CLAUDE_PLUGIN_ROOT` set to the link path (observed, P1, S1) | nothing (ADR 0004) |
+| Plugin pack | one link; skills load as `<pack>:<skill>`, agents as `<pack>:<agent>`; hooks run with `CLAUDE_PLUGIN_ROOT` set to the link path (observed: agent names and hooks in S1, skill names and the hook root in the design prototypes) | nothing (ADR 0004) |
 | Instruction file | out of scope (ADR 0004) | out of scope |
 
 Hook commands in a plugin pack refer to their scripts through
@@ -192,7 +192,7 @@ this script, and each now gets the second question.
 ### 1. Add a source that ships hooks
 
 Example: `addyosmani/agent-skills`, already pinned. Its root holds
-`.claude-plugin/plugin.json`, 4 agents, 27 commands and 9 files under `hooks/`,
+`.claude-plugin/plugin.json`, 4 agents, 9 commands and 9 files under `hooks/`,
 but no `hooks/hooks.json`. Its hook scripts are meant to be registered by hand
 in a project's settings (its `hooks/SDD-CACHE.md`), so as a pack it brings 25
 skills and 4 agents and runs no hook. Getting the hooks needs a fork that
@@ -220,7 +220,7 @@ profile line per pack. Drift: shadowing or a managed block, reported by
 
 Real cases: pstack `5851c896..7c045e56` changed `plugins/pstack/hooks/hooks.json`,
 `hooks/codex-hooks.json`, `hooks/session-start-copilot.md` and the manifest
-version (`git diff --stat`, 4 files). In agent-skills, 5 of 13 bumps changed the
+version (4 of the bump's 40 changed files are under `hooks/` and `.claude-plugin/`). In agent-skills, 5 of 13 bumps changed the
 herdr script.
 
 1. Run `scripts/update-sources.sh`, or press Ctrl+U on the source.
@@ -303,7 +303,8 @@ the two update paths are separate.
    `enabled 0.9.119` and `extraKnownMarketplaces` is empty (observed, P3).
 4. Delete `~/.claude/plugins/cache/pstack-claude/` by hand. It matters:
    pstack's `poteto-agent`, when its parent passes no path, searches
-   `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/` for `poteto-mode/SKILL.md`.
+   `${CLAUDE_CODE_PLUGIN_CACHE_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins}/`
+   for `poteto-mode/SKILL.md` and uses the copy with the highest manifest version.
    With the cache left behind it silently reads the old 0.9.114 copy; with the
    cache gone it finds nothing and stops. Report that fallback upstream.
 5. Update the README paragraph that says selecting pstack's skills would
@@ -493,7 +494,7 @@ tests/harness-premises.sh --sessions --codex    # adds 4 haiku sessions and 2 Co
 ```
 
 Pass: the last line is `0 failed` and the exit code is 0. Last run: 2026-11-03,
-Claude Code 2.1.316, Codex 0.166.0, `0 failed` (24 checks).
+Claude Code 2.1.316, Codex 0.166.0, `0 failed` (22 checks: 14 without flags, 6 with `--sessions`, 2 with `--codex`).
 
 | Check | Pass condition | Seeded twin |
 |---|---|---|
