@@ -414,30 +414,30 @@ def path_prefixes(paths: Iterable[str]) -> Counter[str]:
 
 
 def validate_skill(
-    root: Path, module: str, value: str, tracked: set[str],
+    root: Path, module: str, rel: str, tracked: set[str],
     descriptors: Counter[str], extras: Counter[str],
 ) -> tuple[str, str]:
     """Validate one skill directory under its configured source."""
+    value = f"{module}/{rel}" if rel else module
     skill_dir = root / value
-    rel = skill_dir.relative_to(root / module)
-    cursor = root / module
-    for part in rel.parts:
-        cursor /= part
-        if cursor.is_symlink():
+    cursor = str(root / module)
+    for part in rel.split("/") if rel else ():
+        cursor += "/" + part
+        if os.path.islink(cursor):
             raise ReconcileError(f"selected skill path traverses a symlink: {value}")
     if not skill_dir.is_dir():
         raise ReconcileError(f"selected skill directory is missing: {value}")
     # Reject any selected subtree content Git does not track, including ignored files.
-    if extras[rel.as_posix()]:
+    if extras[rel or "."]:
         raise ReconcileError(f"selected skill contains untracked or ignored content: {value}")
-    descriptor = str(rel / "SKILL.md")
+    descriptor = f"{rel}/SKILL.md" if rel else "SKILL.md"
     if descriptor not in tracked:
         raise ReconcileError(f"selected SKILL.md is not tracked: {value}")
-    if descriptors[rel.as_posix()] != 1:
+    if descriptors[rel or "."] != 1:
         raise ReconcileError(f"selected directory contains additional SKILL.md files: {value}")
     for directory, children, _ in os.walk(skill_dir, followlinks=False):
         children.sort()
-        if any((Path(directory) / child).is_symlink() for child in children):
+        if any(os.path.islink(os.path.join(directory, child)) for child in children):
             raise ReconcileError(f"selected skill contains directory symlinks: {value}")
     name = skill_name(skill_dir)
     if name == "synced":
@@ -463,6 +463,7 @@ def load_catalog(root: Path) -> Catalog:
 
 def discover_catalog(root: Path, modules: dict[str, Module], run: GitRun = git) -> Catalog:
     variants, upstreams = read_sources(root, modules)
+    root_abs = str(root.absolute())
     catalog = {}
     for module in sorted(modules):
         source = root / module
@@ -488,16 +489,17 @@ def discover_catalog(root: Path, modules: dict[str, Module], run: GitRun = git) 
         descriptors = path_prefixes(skill_files)
         extra_prefixes = path_prefixes(extras)
         for path in sorted(skill_files):
-            matching_trees = [tree for tree in variant_skills if Path(path).is_relative_to(tree)]
-            directory = (source / path).parent
-            value = directory.relative_to(root).as_posix()
+            matching_trees = [tree for tree in variant_skills if path == tree or path.startswith(tree + "/")]
+            rel = path.rpartition("/")[0]
+            value = f"{module}/{rel}" if rel else module
             try:
-                name, target = validate_skill(root, module, value, tracked_paths,
+                name, target = validate_skill(root, module, rel, tracked_paths,
                                               descriptors, extra_prefixes)
             except ReconcileError as error:
                 if matching_trees:
                     raise ReconcileError(f"invalid variant skill in {value}: {error}") from error
-                invalid.setdefault(directory.name, []).append(InvalidSkill(str(directory.absolute()), str(error)))
+                invalid.setdefault(value.rpartition("/")[2], []).append(
+                    InvalidSkill(os.path.join(root_abs, value), str(error)))
             else:
                 if matching_trees:
                     for tree in matching_trees:
