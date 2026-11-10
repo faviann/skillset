@@ -8,6 +8,7 @@ import subprocess
 import tomllib
 from collections import Counter
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -271,7 +272,14 @@ def parse_modules(root: Path) -> dict[str, Module]:
         )
     return {path: Module(urls[section], branches[section], pins[path]) for path, section in sections.items()}
 
-def validate_sources(root: Path, modules: dict[str, Module]) -> None:
+SOURCE_HEAD = ("rev-parse", "--show-toplevel", "HEAD")
+SOURCE_STATUS = ("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none")
+SOURCE_TRACKED = ("ls-files", "--stage", "-z")
+SOURCE_OTHERS = ("ls-files", "--others", "-z")
+GitRun = Callable[[list[str], Path], str]
+
+
+def validate_sources(root: Path, modules: dict[str, Module], run: GitRun = git) -> None:
     for path, module in sorted(modules.items()):
         expected = module.pin
         source = root / path
@@ -280,15 +288,14 @@ def validate_sources(root: Path, modules: dict[str, Module]) -> None:
         if source.resolve() != source.absolute():
             raise ReconcileError(f"source path traverses a symlink: {path}")
         try:
-            top = Path(git(["rev-parse", "--show-toplevel"], cwd=source)).resolve()
-            actual = git(["rev-parse", "HEAD"], cwd=source)
+            top, _, actual = run(list(SOURCE_HEAD), source).rpartition("\n")
         except ReconcileError as error:
             raise ReconcileError(f"source is not an initialized Git checkout: {path}") from error
-        if top != source.resolve():
+        if Path(top).resolve() != source.resolve():
             raise ReconcileError(f"source checkout root does not match its submodule path: {path}")
         if actual != expected:
             raise ReconcileError(f"source revision mismatch for {path}: expected {expected}, found {actual}; run ./setup.sh")
-        if git(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], cwd=source):
+        if run(list(SOURCE_STATUS), source):
             raise ReconcileError(f"source checkout is dirty: {path}")
 
 
@@ -440,22 +447,32 @@ def validate_skill(
 
 def load_catalog(root: Path) -> Catalog:
     modules = parse_modules(root)
-    validate_sources(root, modules)
-    return discover_catalog(root, modules)
+    with ThreadPoolExecutor() as pool:
+        reads: dict[tuple[Path, tuple[str, ...]], Future[str]] = {
+            (root / path, args): pool.submit(git, list(args), root / path)
+            for path in sorted(modules)
+            for args in (SOURCE_HEAD, SOURCE_STATUS, SOURCE_TRACKED, SOURCE_OTHERS)
+        }
+
+        def prefetched(args: list[str], cwd: Path) -> str:
+            return reads[cwd, tuple(args)].result()
+
+        validate_sources(root, modules, prefetched)
+        return discover_catalog(root, modules, prefetched)
 
 
-def discover_catalog(root: Path, modules: dict[str, Module]) -> Catalog:
+def discover_catalog(root: Path, modules: dict[str, Module], run: GitRun = git) -> Catalog:
     variants, upstreams = read_sources(root, modules)
     catalog = {}
     for module in sorted(modules):
         source = root / module
         tracked = {}
-        for row in git(["ls-files", "--stage", "-z"], cwd=source).split("\0"):
+        for row in run(list(SOURCE_TRACKED), source).split("\0"):
             if row:
                 metadata, path = row.split("\t", 1)
                 tracked[path] = metadata.split()[0]
         # Without exclude rules, --others includes ignored files as well.
-        extras = set(filter(None, git(["ls-files", "--others", "-z"], cwd=source).split("\0")))
+        extras = set(filter(None, run(list(SOURCE_OTHERS), source).split("\0")))
         if "160000" in tracked.values():
             raise ReconcileError(f"nested source submodules are unsupported: {module}")
         trees = variants.get(module, {})
