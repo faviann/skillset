@@ -394,14 +394,21 @@ def skill_name(skill_dir: Path) -> str:
     return name
 
 
-def path_prefixes(paths: Iterable[Path]) -> Counter[Path]:
-    """Count paths under each prefix: counts[p] == sum(path.is_relative_to(p) for path in paths)."""
-    return Counter(prefix for path in paths for prefix in (path, *path.parents))
+def path_prefixes(paths: Iterable[str]) -> Counter[str]:
+    """Count relative POSIX paths under each prefix, keyed like Path.as_posix() ("." for the root)."""
+    counts: Counter[str] = Counter()
+    for path in paths:
+        counts["."] += 1
+        end = len(path)
+        while end > 0:
+            counts[path[:end]] += 1
+            end = path.rfind("/", 0, end)
+    return counts
 
 
 def validate_skill(
     root: Path, module: str, value: str, tracked: set[str],
-    descriptors: Counter[Path], extras: Counter[Path],
+    descriptors: Counter[str], extras: Counter[str],
 ) -> tuple[str, str]:
     """Validate one skill directory under its configured source."""
     skill_dir = root / value
@@ -414,12 +421,12 @@ def validate_skill(
     if not skill_dir.is_dir():
         raise ReconcileError(f"selected skill directory is missing: {value}")
     # Reject any selected subtree content Git does not track, including ignored files.
-    if extras[rel]:
+    if extras[rel.as_posix()]:
         raise ReconcileError(f"selected skill contains untracked or ignored content: {value}")
     descriptor = str(rel / "SKILL.md")
     if descriptor not in tracked:
         raise ReconcileError(f"selected SKILL.md is not tracked: {value}")
-    if descriptors[rel] != 1:
+    if descriptors[rel.as_posix()] != 1:
         raise ReconcileError(f"selected directory contains additional SKILL.md files: {value}")
     for directory, children, _ in os.walk(skill_dir, followlinks=False):
         children.sort()
@@ -460,11 +467,10 @@ def discover_catalog(root: Path, modules: dict[str, Module]) -> Catalog:
         variant_skills: dict[str, dict[str, str]] = {tree: {} for tree in trees.values()}
         tracked_paths = set(tracked)
         # Prefix counts keep per-skill subtree checks linear in the source size.
-        descriptors = path_prefixes(Path(path) for path in tracked if Path(path).name == "SKILL.md")
-        extra_prefixes = path_prefixes(map(Path, extras))
-        for path in sorted(tracked):
-            if Path(path).name != "SKILL.md":
-                continue
+        skill_files = [path for path in tracked if path.rpartition("/")[2] == "SKILL.md"]
+        descriptors = path_prefixes(skill_files)
+        extra_prefixes = path_prefixes(extras)
+        for path in sorted(skill_files):
             matching_trees = [tree for tree in variant_skills if Path(path).is_relative_to(tree)]
             directory = (source / path).parent
             value = directory.relative_to(root).as_posix()

@@ -106,17 +106,18 @@ def display_catalog(catalog: skill_catalog.Catalog) -> dict[str, list[Skill]]:
         paths = list(source.skills.values())
         common_root = Path(os.path.commonpath([Path(path).parent for path in paths])) if paths else source.path
         skills = [display_skill(name, path, common_root) for name, path in source.skills.items()]
-        files = skill_catalog.path_prefixes(source.path / path for path in source.tracked)
-        changed: Counter[Path] = Counter()
+        files = skill_catalog.path_prefixes(source.tracked)
+        changed: Counter[str] = Counter()
         if source.upstream:
             # A missing upstream object (a shallow clone) fails the diff and marks nothing.
             diff = skill_catalog.git(["diff", "--name-only", "-z", "--no-renames", source.upstream, "HEAD"],
                                      cwd=source.path, check=False)
-            changed = skill_catalog.path_prefixes(source.path / path for path in diff.split("\0") if path)
+            changed = skill_catalog.path_prefixes(filter(None, diff.split("\0")))
         groups = Counter(skill.group for skill in skills)
         for skill in skills:
-            skill.file_count = files[skill.path]
-            skill.forked = changed[skill.path] > 0
+            rel = skill.path.relative_to(source.path).as_posix()
+            skill.file_count = files[rel]
+            skill.forked = changed[rel] > 0
             if groups[skill.group] == 1:
                 skill.group = ""
         result[source_name] = sorted(
