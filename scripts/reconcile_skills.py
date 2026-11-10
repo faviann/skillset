@@ -242,22 +242,23 @@ def choose_profile(root: Path, name: str) -> None:
     fsync_dir(record.parent)
 
 
-def read_inputs(root: Path) -> tuple[str, str, Catalog]:
+def read_inputs(root: Path, catalog: Catalog | None = None) -> tuple[str, str, Catalog]:
     """HEAD, the active profile and the catalog, once the checkout passes the install gates."""
     head = require_primary_checkout(root)
     profile = active_profile(root)
-    catalog = load_catalog(root)
+    if catalog is None:
+        catalog = load_catalog(root)
     ensure_skillset_committed(root, profile)
     return head, profile, catalog
 
 
-def read_selection(root: Path) -> tuple[str, dict[tuple[Path, str], str]]:
-    head, profile, catalog = read_inputs(root)
+def read_selection(root: Path, catalog: Catalog | None = None) -> tuple[str, dict[tuple[Path, str], str]]:
+    head, profile, catalog = read_inputs(root, catalog)
     return head, catalog.resolve(read_selection_text(root, profile)).install_targets(profile)
 
 
-def build_plan(root: Path) -> Plan:
-    return plan_links(*read_selection(root))
+def build_plan(root: Path, catalog: Catalog | None = None) -> Plan:
+    return plan_links(*read_selection(root, catalog))
 
 
 def stale_upstreams(catalog: Catalog) -> list[str]:
@@ -277,10 +278,10 @@ def stale_upstreams(catalog: Catalog) -> list[str]:
     return stale
 
 
-def install_status(root: Path) -> InstallStatus:
+def install_status(root: Path, catalog: Catalog | None = None) -> InstallStatus:
     """Plan read-only, without the lock, and report whether HEAD's selection is installed."""
     try:
-        return InstallStatus(build_plan(root).empty)
+        return InstallStatus(build_plan(root, catalog).empty)
     except (ReconcileError, OSError) as error:
         return InstallStatus(False, str(error))
 

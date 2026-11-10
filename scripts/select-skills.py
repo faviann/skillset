@@ -789,6 +789,7 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.profile = self.active or skill_catalog.list_profiles(self.root)[0]
         # Browsing needs source validation, not the reconciler's deployment gate.
         self.selection_catalog = skill_catalog.load_catalog(self.root)
+        self.catalog_stale = False
         self.catalog = display_catalog(self.selection_catalog)
         self.store = CheckoutStore(self.root, self.profile)
         self.draft = SelectionDraft.load(self.store, self.selection_catalog)
@@ -875,8 +876,8 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.fill_sources(keep_cursor=True)
         self.refresh_hints()
 
-    def check_install_status(self) -> None:
-        status = reconcile_skills.install_status(self.root)
+    def check_install_status(self, catalog: skill_catalog.Catalog | None) -> None:
+        status = reconcile_skills.install_status(self.root, catalog)
         self.call_from_thread(self.show_install_status, not status.installed, status.problem)
 
     def refresh_file_status(self) -> None:
@@ -890,7 +891,8 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         self.install_error = None
         self.install_check = None
         if used_here and not self.not_installed:
-            self.install_check = self.run_worker(self.check_install_status, thread=True)
+            catalog = None if self.catalog_stale else self.selection_catalog
+            self.install_check = self.run_worker(partial(self.check_install_status, catalog), thread=True)
 
     def show_install_status(self, not_installed: bool, error: str | None) -> None:
         if self.profile != self.active:
@@ -1389,7 +1391,9 @@ class SelectorApp(App[Callable[[Path], int] | None]):
         try:
             self.selection_catalog = skill_catalog.load_catalog(self.root)
             self.catalog = display_catalog(self.selection_catalog)
+            self.catalog_stale = False
         except (reconcile_skills.ReconcileError, OSError) as error:
+            self.catalog_stale = True
             self.query_one("#message", Static).update(Text(f"⎿ Could not reload: {error}"))
             return
         if self.load_profile(self.profile, "Could not reload", keep_cursor=True):
