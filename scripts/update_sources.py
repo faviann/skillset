@@ -277,11 +277,11 @@ def diffstat(path: Path, old: str, new: str, directories: set[Path]) -> str:
 def summarize(worktree: Path, update: SourceUpdate, before: SourceCatalog, after: SourceCatalog,
               selected: frozenset[str], others: dict[str, frozenset[str]]) -> Summary:
     changed_files = git(["diff", "--name-only", "-z", "--no-renames", update.old, update.new], cwd=after.path)
-    touched = path_prefixes(map(Path, filter(None, changed_files.split("\0"))))
+    touched = path_prefixes(filter(None, changed_files.split("\0")))
     changed = {}
     for name in sorted(set(before.skills) & set(after.skills)):
         directories = skill_directories(name, before, after)
-        if any(touched[directory] for directory in directories):
+        if any(touched[directory.as_posix()] for directory in directories):
             changed[name] = diffstat(after.path, update.old, update.new, directories)
     commits = git(["log", "--no-merges", "--reverse", "--format=%h %s", f"{update.old}..{update.new}"],
                   cwd=after.path).splitlines()
