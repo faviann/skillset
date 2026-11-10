@@ -78,6 +78,9 @@ class Skill:
     forked: bool = False
 
 
+YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
 def display_skill(name: str, path: str, common_root: Path) -> Skill:
     """Read display metadata only; the catalog has already validated identity."""
     skill = Skill(name, Path(path))
@@ -87,7 +90,7 @@ def display_skill(name: str, path: str, common_root: Path) -> Skill:
         lines = (skill.path / "SKILL.md").read_text(encoding="utf-8").splitlines()
         end = lines.index("---", 1)
         skill.body = "\n".join(lines[end + 1:])
-        metadata = yaml.safe_load("\n".join(lines[1:end]))
+        metadata = yaml.load("\n".join(lines[1:end]), Loader=YAML_LOADER)
         description = metadata.get("description", "")
         category = metadata.get("category", "")
         skill.description = description if isinstance(description, str) else ""
